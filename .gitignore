@@ -3,6 +3,8 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 *.local
+*.log
 .DS_Store
 Thumbs.db
 release/
+generated-images/
