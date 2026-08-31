@@ -1,0 +1,54 @@
+[package]
+name = "chatfloat"
+version = "2.1.2"
+description = "Desktop floating-window AI chat assistant (OpenAI-compatible)"
+authors = ["ChatFloat"]
+edition = "2021"
+
+[lib]
+name = "chatfloat_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-store = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+tokio-util = "0.7"
+futures-util = "0.3"
+url = "2"
+keyring = { version = "3", features = ["windows-native"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+base64 = "0.22"
+regex = "1"
+urlencoding = "2"
+chrono = "0.4"
+arboard = "3"
+screenshots = "0.8"
+pdf-extract = "0.7"
+open = "5"
+rfd = "0.15"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

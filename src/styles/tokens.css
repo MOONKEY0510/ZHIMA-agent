@@ -1,0 +1,121 @@
+/* Design tokens — plan §4.2 */
+
+:root {
+  --cf-bg: #f7f7f8;
+  --cf-panel: #ffffff;
+  --cf-panel-2: #f3f3f5;
+  --cf-text: #202123;
+  --cf-text-2: #6b7280;
+  --cf-border: #e5e7eb;
+  --cf-accent: #111827;
+  --cf-accent-fg: #ffffff;
+  --cf-success: #16865c;
+  --cf-danger: #c2413b;
+  --cf-code-bg: #f6f6f7;
+  --cf-user-bubble: #f0f0f2;
+  --cf-avatar-bg: #e8e8ec;
+  --cf-avatar-fg: #555;
+  --hl-keyword: #8250df;
+  --hl-string: #1a7f37;
+  --hl-number: #953800;
+  --hl-title: #0550ae;
+  --hl-attr: #953800;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --cf-bg: #171717;
+  --cf-panel: #212121;
+  --cf-panel-2: #2a2a2a;
+  --cf-text: #ececec;
+  --cf-text-2: #a3a3a3;
+  --cf-border: #3a3a3a;
+  --cf-accent: #ececec;
+  --cf-accent-fg: #171717;
+  --cf-success: #2eb883;
+  --cf-danger: #e5695f;
+  --cf-code-bg: #191919;
+  --cf-user-bubble: #2f2f2f;
+  --cf-avatar-bg: #3a3a3a;
+  --cf-avatar-fg: #ccc;
+  --hl-keyword: #d2a8ff;
+  --hl-string: #7ee787;
+  --hl-number: #ffa657;
+  --hl-title: #79c0ff;
+  --hl-attr: #ffa657;
+  color-scheme: dark;
+}
+
+/* --- Extended themes (v1.1) --------------------------------------------- */
+
+/* Warm — warm beige tones, cozy reading feel */
+[data-theme="warm"] {
+  --cf-bg: #faf6f0;
+  --cf-panel: #fffaf3;
+  --cf-panel-2: #f5ede0;
+  --cf-text: #3d2e1e;
+  --cf-text-2: #8a7560;
+  --cf-border: #e0d5c3;
+  --cf-accent: #8b5e3c;
+  --cf-accent-fg: #ffffff;
+  --cf-success: #5a7c4e;
+  --cf-danger: #b04a3a;
+  --cf-code-bg: #f4ece0;
+  --cf-user-bubble: #f0e6d6;
+  --cf-avatar-bg: #e8dcc8;
+  --cf-avatar-fg: #6b4e2e;
+  --hl-keyword: #7c3aed;
+  --hl-string: #4d7c0f;
+  --hl-number: #9a3412;
+  --hl-title: #1e40af;
+  --hl-attr: #9a3412;
+  color-scheme: light;
+}
+
+/* Rose — soft pink-tinted light */
+[data-theme="rose"] {
+  --cf-bg: #fdf5f7;
+  --cf-panel: #fffafc;
+  --cf-panel-2: #f9eef2;
+  --cf-text: #3d2230;
+  --cf-text-2: #9a6e7e;
+  --cf-border: #ecd6df;
+  --cf-accent: #c2185b;
+  --cf-accent-fg: #ffffff;
+  --cf-success: #5a8a6e;
+  --cf-danger: #c2413b;
+  --cf-code-bg: #f6eaf0;
+  --cf-user-bubble: #f3e2ea;
+  --cf-avatar-bg: #ecd6df;
+  --cf-avatar-fg: #8e3a5e;
+  --hl-keyword: #7c3aed;
+  --hl-string: #4d7c0f;
+  --hl-number: #9a3412;
+  --hl-title: #1e40af;
+  --hl-attr: #9a3412;
+  color-scheme: light;
+}
+
+/* Spring Whisper - bright anime-inspired pastel palette. */
+[data-theme="spring"] {
+  --cf-bg: #f3f9ff;
+  --cf-panel: #fffeff;
+  --cf-panel-2: #eef7ff;
+  --cf-text: #35435d;
+  --cf-text-2: #71829b;
+  --cf-border: #d6e8f4;
+  --cf-accent: #639fd0;
+  --cf-accent-fg: #ffffff;
+  --cf-success: #62a98a;
+  --cf-danger: #cf728e;
+  --cf-code-bg: #f4f8ff;
+  --cf-user-bubble: #f9e8f0;
+  --cf-avatar-bg: #dceefb;
+  --cf-avatar-fg: #5287b5;
+  --hl-keyword: #8d70c9;
+  --hl-string: #529579;
+  --hl-number: #c88763;
+  --hl-title: #5386bd;
+  --hl-attr: #bd7090;
+  color-scheme: light;
+}

@@ -1,0 +1,449 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  html,
+  body {
+    background: transparent;
+  }
+
+  body {
+    font-family:
+      "Segoe UI",
+      "PingFang SC",
+      "Microsoft YaHei",
+      system-ui,
+      -apple-system,
+      sans-serif;
+    font-size: 14px;
+    color: var(--cf-text);
+    overflow: hidden;
+    user-select: none;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--cf-text) 20%, transparent);
+  }
+}
+
+/* --- Scrollbars --------------------------------------------------------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cf-border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--cf-border);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* --- Streaming caret (low-frequency blink, plan §4.3) -------------------- */
+.stream-caret {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 2px;
+  background: var(--cf-text);
+  animation: caret-blink 1.2s steps(1) infinite;
+}
+@keyframes caret-blink {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  56%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stream-caret {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+[data-theme] .cf-window-shell--custom-bg {
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  /* Create an isolated stacking context so the ::before overlay (z-index: -1)
+     stays above the shell's own background but below all real content. */
+  isolation: isolate;
+}
+[data-theme] .cf-window-shell--custom-bg::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  content: "";
+  background: color-mix(in srgb, var(--cf-panel) 84%, transparent);
+  backdrop-filter: blur(2px);
+}
+/* NOTE: the overlay uses a NEGATIVE z-index so it sits under the content.
+   Do NOT force z-index on direct children (e.g. `> * { z-index: 1 }`) — that
+   flattens the stacking context and breaks the title-bar dropdown (it gets
+   covered by the history sidebar). */
+
+/* --- Water transition visuals --------------------------------------------- */
+/* The motion itself is driven by react-spring (see App.tsx); these are the
+   purely decorative layers that ride on top of it. */
+
+/* Frosted glass — only enabled once the entry animation has settled, because
+   `backdrop-filter` is expensive to composite and would steal frames during
+   the flight. */
+.cf-window-shell.cf-shell--settled {
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+}
+
+/* While the water is moving: the shell is inert (a half-transparent window must
+   not take clicks), and the compositor is told up front which properties are
+   about to change so the blur does not cost a relayout every frame.  Both hints
+   are dropped the moment the motion settles. */
+.cf-window-shell.cf-shell--in-flight {
+  pointer-events: none;
+  will-change: transform, opacity, filter;
+}
+
+/* Highlight sweeping across the top edge.  A wide diagonal gradient band that
+   is translated left-to-right by a CSS animation; the movement is composited
+   on the element's own layer so it never triggers a repaint of the content
+   below. */
+.cf-sheen {
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    rgb(255 255 255 / 14%) 47%,
+    rgb(255 255 255 / 28%) 50%,
+    rgb(255 255 255 / 14%) 53%,
+    transparent 70%
+  );
+  background-size: 250% 100%;
+  animation: cf-sheen-flow 4.5s ease-in-out infinite;
+  mask-image: linear-gradient(to bottom, rgb(0 0 0 / 55%), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, rgb(0 0 0 / 55%), transparent);
+}
+@keyframes cf-sheen-flow {
+  0% { background-position: 180% 0; }
+  100% { background-position: -80% 0; }
+}
+
+/* Aurora ripple hugging the bottom edge.  The scaleX is driven by a spring in
+   App.tsx; the colour band is static so only the transform animates. */
+.cf-ripple {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--cf-accent) 30%,
+    color-mix(in srgb, var(--cf-accent) 60%, var(--cf-success)) 50%,
+    var(--cf-accent) 70%,
+    transparent
+  );
+  opacity: 0.35;
+}
+
+/* --- Markdown body ------------------------------------------------------- */
+.md-body {
+  user-select: text;
+  line-height: 1.65;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.md-body > *:first-child {
+  margin-top: 0;
+}
+.md-body > *:last-child {
+  margin-bottom: 0;
+}
+.md-body p {
+  margin: 0.45em 0;
+}
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  margin: 0.9em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.md-body h1 {
+  font-size: 1.25em;
+}
+.md-body h2 {
+  font-size: 1.15em;
+}
+.md-body h3 {
+  font-size: 1.05em;
+}
+.md-body ul,
+.md-body ol {
+  margin: 0.45em 0;
+  padding-left: 1.4em;
+}
+.md-body ul {
+  list-style: disc;
+}
+.md-body ol {
+  list-style: decimal;
+}
+.md-body li {
+  margin: 0.2em 0;
+}
+.md-body blockquote {
+  margin: 0.6em 0;
+  padding: 0.1em 0.9em;
+  border-left: 3px solid var(--cf-border);
+  color: var(--cf-text-2);
+}
+.md-body a {
+  color: var(--cf-success);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.md-body code:not(pre code) {
+  padding: 0.12em 0.4em;
+  border-radius: 5px;
+  background: var(--cf-code-bg);
+  border: 1px solid var(--cf-border);
+  font-size: 13px;
+  font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+}
+.md-body pre {
+  margin: 0.6em 0;
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid var(--cf-border);
+  background: var(--cf-code-bg);
+}
+.md-body pre .code-scroll {
+  overflow-x: auto;
+  padding: 10px 12px;
+}
+.md-body pre code {
+  font-size: 13px;
+  line-height: 1.55;
+  font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+  white-space: pre;
+}
+.md-body table {
+  display: block;
+  margin: 0.6em 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.md-body th,
+.md-body td {
+  padding: 5px 10px;
+  border: 1px solid var(--cf-border);
+}
+.md-body th {
+  background: var(--cf-panel-2);
+  font-weight: 600;
+}
+.md-body hr {
+  margin: 0.9em 0;
+  border: none;
+  border-top: 1px solid var(--cf-border);
+}
+
+/* --- Syntax highlighting tokens (lowlight / hljs) ------------------------ */
+.md-body .hljs-comment,
+.md-body .hljs-quote {
+  color: var(--cf-text-2);
+  font-style: italic;
+}
+.md-body .hljs-keyword,
+.md-body .hljs-selector-tag,
+.md-body .hljs-literal,
+.md-body .hljs-doctag,
+.md-body .hljs-meta {
+  color: var(--hl-keyword);
+}
+.md-body .hljs-string,
+.md-body .hljs-regexp,
+.md-body .hljs-addition {
+  color: var(--hl-string);
+}
+.md-body .hljs-number,
+.md-body .hljs-symbol,
+.md-body .hljs-bullet,
+.md-body .hljs-deletion {
+  color: var(--hl-number);
+}
+.md-body .hljs-title,
+.md-body .hljs-section,
+.md-body .hljs-name,
+.md-body .hljs-type {
+  color: var(--hl-title);
+}
+.md-body .hljs-attr,
+.md-body .hljs-attribute,
+.md-body .hljs-variable,
+.md-body .hljs-template-variable,
+.md-body .hljs-built_in {
+  color: var(--hl-attr);
+}
+.md-body .hljs-emphasis {
+  font-style: italic;
+}
+.md-body .hljs-strong {
+  font-weight: 600;
+}
+
+/* --- Spring Whisper theme ------------------------------------------------ */
+[data-theme="spring"] .cf-app {
+  /* Keep the app root transparent so the OS/WebView2 clip edge does not show
+     a second background arc outside the rounded shell. */
+  background: transparent;
+}
+
+[data-theme="spring"] .cf-window-shell {
+  background:
+    radial-gradient(circle at 7% 5%, rgb(255 255 255 / 88%) 0 8%, transparent 26%),
+    radial-gradient(circle at 96% 98%, rgb(255 222 236 / 54%) 0 7%, transparent 24%),
+    linear-gradient(135deg, #eff9ff 0%, #f9f7ff 52%, #fff7fb 100%);
+  box-shadow: 0 18px 44px rgb(83 134 189 / 14%);
+}
+
+[data-theme="spring"] .cf-window-shell::after {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  content: "";
+  opacity: 0.52;
+  background-image:
+    radial-gradient(circle at 7% 21%, rgb(120 188 235 / 30%) 0 2px, transparent 2.5px),
+    radial-gradient(circle at 91% 13%, rgb(245 175 197 / 36%) 0 2px, transparent 2.5px),
+    radial-gradient(circle at 82% 85%, rgb(168 222 200 / 34%) 0 2px, transparent 2.5px),
+    radial-gradient(circle at 17% 91%, rgb(246 215 138 / 34%) 0 1.5px, transparent 2px);
+}
+
+[data-theme="spring"] .cf-spring-decor {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+[data-theme="spring"] .cf-spring-cloud {
+  position: absolute;
+  display: block;
+  width: 68px;
+  height: 20px;
+  border: 1px solid rgb(159 205 236 / 34%);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 40%);
+  box-shadow: 18px -8px 0 2px rgb(255 255 255 / 34%), 40px -3px 0 -2px rgb(255 255 255 / 36%);
+}
+
+[data-theme="spring"] .cf-spring-cloud--one {
+  top: 14%;
+  left: -18px;
+}
+
+[data-theme="spring"] .cf-spring-cloud--two {
+  right: -26px;
+  bottom: 15%;
+  transform: scale(0.72);
+}
+
+[data-theme="spring"] .cf-spring-sparkle {
+  position: absolute;
+  display: block;
+  width: 8px;
+  height: 8px;
+  background: rgb(245 175 197 / 55%);
+  transform: rotate(45deg);
+}
+
+[data-theme="spring"] .cf-spring-sparkle--one {
+  top: 24%;
+  right: 7%;
+}
+
+[data-theme="spring"] .cf-spring-sparkle--two {
+  bottom: 21%;
+  left: 8%;
+  width: 6px;
+  height: 6px;
+  background: rgb(120 188 235 / 48%);
+}
+
+[data-theme="spring"] button,
+[data-theme="spring"] input,
+[data-theme="spring"] textarea {
+  transition-duration: 160ms;
+}
+
+[data-theme="spring"] button:hover:not(:disabled) {
+  transition-timing-function: ease-out;
+}
+
+[data-theme="spring"] aside.bg-panel-2,
+[data-theme="spring"] nav.bg-panel-2 {
+  background: rgb(242 249 255 / 78%);
+}
+
+[data-theme="spring"] .bg-panel-2 {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 64%);
+}
+
+[data-theme="spring"] .rounded-input.border-line.bg-panel-2 {
+  border-color: rgb(190 218 237 / 94%);
+  background: rgb(255 255 255 / 68%);
+  box-shadow: 0 7px 18px rgb(92 150 196 / 8%);
+}
+
+[data-theme="spring"] .rounded-input.border-line.bg-panel-2:focus-within {
+  border-color: var(--cf-accent);
+  box-shadow: 0 0 0 3px rgb(120 188 235 / 17%);
+}
+
+[data-theme="spring"] .bg-\[var\(--cf-user-bubble\)\] {
+  border: 1px solid rgb(239 195 213 / 68%);
+  box-shadow: 0 4px 12px rgb(190 120 151 / 8%);
+}
+
+[data-theme="spring"] .bg-accent {
+  box-shadow: 0 5px 12px rgb(99 159 208 / 23%);
+}
+
+[data-theme="spring"] .border-line {
+  border-color: rgb(214 232 244 / 88%);
+}
+
+[data-theme="spring"] .md-body blockquote {
+  border-color: var(--cf-accent);
+  background: rgb(238 247 255 / 60%);
+  border-radius: 0 10px 10px 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="spring"] button,
+  [data-theme="spring"] input,
+  [data-theme="spring"] textarea {
+    transition: none;
+  }
+}

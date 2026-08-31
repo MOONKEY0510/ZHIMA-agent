@@ -1,0 +1,304 @@
+/* Settings page shared utilities */
+
+/* Form row: label + description on the left, control on the right, separated by hairline borders. */
+.cf-form-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.875rem 1rem;
+  border-top: 1px solid var(--cf-border);
+}
+
+.cf-form-row:first-child {
+  border-top: 0;
+}
+
+/* Toggle switch (pure CSS + token colors). */
+.cf-switch {
+  position: relative;
+  display: inline-flex;
+  height: 1.25rem;
+  width: 2.25rem;
+  flex-shrink: 0;
+  cursor: pointer;
+  align-items: center;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--cf-text-2) 40%, transparent);
+  transition: background-color 150ms ease;
+}
+
+.cf-switch:hover {
+  background: color-mix(in srgb, var(--cf-text-2) 55%, transparent);
+}
+
+.cf-switch[aria-checked="true"] {
+  background: var(--cf-accent);
+}
+
+.cf-switch[aria-checked="true"]:hover {
+  filter: brightness(1.05);
+}
+
+.cf-switch-knob {
+  position: absolute;
+  left: 0.125rem;
+  top: 0.125rem;
+  height: 1rem;
+  width: 1rem;
+  border-radius: 9999px;
+  background: var(--cf-panel);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+  transition: transform 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.cf-switch[aria-checked="true"] .cf-switch-knob {
+  transform: translateX(1rem);
+}
+
+/* Switches inside form rows hug the right edge so every toggle lines up
+   with the dropdowns / buttons in the rows below. */
+.cf-form-row .cf-switch {
+  margin-left: auto;
+}
+
+/* Visual pill (icon/text radio). */
+.cf-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: 9999px;
+  border: 1px solid var(--cf-border);
+  background: var(--cf-panel);
+  color: var(--cf-text-2);
+  padding: 0.375rem 0.875rem;
+  font-size: 12px;
+  transition: all 150ms ease;
+}
+
+.cf-pill:hover {
+  border-color: color-mix(in srgb, var(--cf-accent) 50%, var(--cf-border));
+  color: var(--cf-text);
+}
+
+.cf-pill.is-active {
+  border-color: var(--cf-accent);
+  background: var(--cf-accent);
+  color: var(--cf-accent-fg);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--cf-accent) 20%, transparent);
+}
+
+/* Template card used in Persona tab. */
+.cf-template-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  border-radius: var(--rounded-btn, 9px);
+  border: 1px solid var(--cf-border);
+  background: var(--cf-panel);
+  padding: 0.75rem;
+  text-align: left;
+  transition: all 150ms ease;
+}
+
+.cf-template-card:hover {
+  border-color: color-mix(in srgb, var(--cf-accent) 55%, var(--cf-border));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--cf-text-2) 10%, transparent);
+  transform: translateY(-1px);
+}
+
+.cf-template-card.is-active {
+  border-color: var(--cf-accent);
+  background: color-mix(in srgb, var(--cf-accent) 8%, var(--cf-panel));
+}
+
+/* Compact tool item used in Agent tools tab. */
+.cf-tool-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--cf-border);
+}
+
+.cf-tool-item:first-child {
+  border-top: 0;
+}
+
+.cf-tool-item.is-disabled {
+  opacity: 0.55;
+}
+
+/* Provider card in Models tab. */
+.cf-provider-card {
+  border-radius: var(--rounded-input, 14px);
+  border: 1px solid var(--cf-border);
+  background: var(--cf-panel);
+  padding: 0.875rem 1rem;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.cf-provider-card:hover {
+  border-color: color-mix(in srgb, var(--cf-accent) 35%, var(--cf-border));
+}
+
+.cf-provider-card.is-default {
+  border-color: color-mix(in srgb, var(--cf-accent) 55%, var(--cf-border));
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--cf-accent) 10%, transparent);
+}
+
+.cf-provider-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--cf-accent) 12%, var(--cf-panel-2));
+  padding: 0.125rem 0.5rem;
+  font-size: 10px;
+  line-height: 1.25;
+  color: var(--cf-accent);
+}
+
+/* Page-level card: each settings tab is one large surface containing
+   smaller section cards. */
+.cf-settings-page {
+  margin: 0.5rem auto 1rem;
+  padding: 1rem;
+  border: 1px solid var(--cf-border);
+  border-radius: var(--rounded-input, 14px);
+  background: color-mix(in srgb, var(--cf-panel) 94%, transparent);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--cf-text) 5%, transparent);
+}
+
+/* Section container: title + description + card body. */
+.cf-settings-section {
+  margin-bottom: 1.25rem;
+}
+
+.cf-settings-page > .cf-settings-section:last-child {
+  margin-bottom: 0;
+}
+
+.cf-settings-section-header {
+  margin-bottom: 0.625rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.cf-settings-section-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--cf-text);
+}
+
+.cf-settings-section-desc {
+  margin-top: 0.125rem;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--cf-text-2);
+}
+
+.cf-settings-section-body {
+  position: relative;
+  border-radius: var(--rounded-input, 14px);
+  border: 1px solid var(--cf-border);
+  background: var(--cf-panel);
+  /* Dropdown menus are absolutely positioned and must be allowed to extend
+     beyond the card instead of being clipped at its bottom edge. */
+  overflow: visible;
+}
+
+.cf-settings-section-body > .cf-form-row:first-child,
+.cf-settings-section-body > .cf-provider-card:first-child {
+  border-top-left-radius: var(--rounded-input, 14px);
+  border-top-right-radius: var(--rounded-input, 14px);
+}
+
+/* Compact inline action buttons inside cards. */
+.cf-icon-btn {
+  display: grid;
+  height: 1.5rem;
+  width: 1.5rem;
+  place-items: center;
+  border-radius: var(--rounded-btn, 9px);
+  color: var(--cf-text-2);
+  transition: color 150ms ease, background-color 150ms ease;
+}
+
+.cf-icon-btn:hover {
+  background: var(--cf-panel-2);
+  color: var(--cf-text);
+}
+
+.cf-icon-btn.danger:hover {
+  background: color-mix(in srgb, var(--cf-danger) 10%, transparent);
+  color: var(--cf-danger);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Page / view transitions                                                    */
+/* ------------------------------------------------------------------------ */
+
+/* Settings tab pages: the incoming page drifts in from the direction of
+   travel (next = downwards list order feels like moving forward, so it
+   slides from the right; previous slides from the left) while fading in.
+   Only transform + opacity are animated — both are compositor-friendly,
+   so the scroll container never repaints mid-flight. */
+@keyframes cf-page-in-next {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes cf-page-in-prev {
+  from {
+    opacity: 0;
+    transform: translateX(-14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.cf-page-enter-next {
+  animation: cf-page-in-next 220ms cubic-bezier(0.22, 0.8, 0.36, 1) both;
+}
+
+.cf-page-enter-prev {
+  animation: cf-page-in-prev 220ms cubic-bezier(0.22, 0.8, 0.36, 1) both;
+}
+
+/* Top-level view switch (chat / settings / image workbench): a soft rise
+   + fade, matching the water-surface language of the window itself. */
+@keyframes cf-view-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.cf-view-enter {
+  animation: cf-view-in 260ms cubic-bezier(0.22, 0.8, 0.36, 1) both;
+}
+
+/* Respect users who ask the OS for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .cf-page-enter-next,
+  .cf-page-enter-prev,
+  .cf-view-enter {
+    animation: none;
+  }
+}

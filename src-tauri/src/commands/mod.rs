@@ -1,0 +1,10 @@
+pub mod avatar;
+pub mod chat;
+pub mod diagnostics;
+pub mod history;
+pub mod imagegen;
+pub mod memory;
+pub mod providers;
+pub mod settings;
+pub mod tools;
+pub mod window;
