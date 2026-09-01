@@ -71,18 +71,9 @@ npm test                          # 前端测试（Vitest + RTL）
 cd src-tauri && cargo test        # Rust 单元测试
 ```
 
-## 📚 文档
-
-- [完整开发计划](./docs/桌面悬浮窗AI助手-完整开发计划.md)
-- [Agent 功能演进计划](./docs/Agent助手功能演进计划.md)
-- [优化实施计划](./docs/ChatFloat-优化实施计划.md)
-- [v2.0.0 推进计划](./docs/ChatFloat-v2.0.0-完整推进计划.md)
-- [隐私说明](./docs/PRIVACY.md)
-- [发布与升级说明](./docs/RELEASE-AND-UPGRADE.md)
-
 ## 🔒 隐私
 
-所有对话历史、记忆、生成图片均保存在本地 SQLite 数据库；API Key 存储在 Windows 凭据管理器；敏感工具结果（剪贴板 / 文件 / PDF / 截图）默认不写入历史。详见 [隐私说明](./docs/PRIVACY.md)。
+所有对话历史、记忆、生成图片均保存在本地 SQLite 数据库；API Key 存储在 Windows 凭据管理器；敏感工具结果（剪贴板 / 文件 / PDF / 截图）默认不写入历史。
 
 ## ⚠️ 已知限制
 
