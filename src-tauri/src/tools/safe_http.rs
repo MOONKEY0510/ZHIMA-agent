@@ -231,7 +231,7 @@ impl SafeHttpFetcher {
         let mut builder = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(10))
-            .user_agent(concat!("ChatFloat/", env!("CARGO_PKG_VERSION")));
+            .user_agent(concat!("Zhima/", env!("CARGO_PKG_VERSION")));
         if let Some(host) = url.host_str() {
             if host.parse::<IpAddr>().is_err() && !addrs.is_empty() {
                 builder = builder.resolve_to_addrs(host, addrs);

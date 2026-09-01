@@ -1,8 +1,8 @@
 [package]
 name = "chatfloat"
 version = "2.1.2"
-description = "Desktop floating-window AI chat assistant (OpenAI-compatible)"
-authors = ["ChatFloat"]
+description = "Zhima · Desktop floating-window AI chat assistant (OpenAI-compatible)"
+authors = ["Zhima"]
 edition = "2021"
 
 [lib]

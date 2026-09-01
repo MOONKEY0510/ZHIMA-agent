@@ -88,7 +88,7 @@ fn build_http_client(proxy_url: Option<&str>, use_system_proxy: bool) -> reqwest
         .pool_max_idle_per_host(8)
         .pool_idle_timeout(std::time::Duration::from_secs(90))
         .http2_adaptive_window(true)
-        .user_agent(concat!("ChatFloat/", env!("CARGO_PKG_VERSION")));
+        .user_agent(concat!("Zhima/", env!("CARGO_PKG_VERSION")));
 
     // Proxy handling (方案 A).
     match (proxy_url, use_system_proxy) {

@@ -140,5 +140,5 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running ChatFloat");
+        .expect("error while running Zhima");
 }

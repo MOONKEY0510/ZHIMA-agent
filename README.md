@@ -1,180 +1,90 @@
-# ChatFloat · 桌面悬浮窗 AI 助手
+# Zhima · 芝麻 — 桌面悬浮窗 AI 助手
 
-面向 Windows 的轻量级桌面 AI 助手：全局快捷键 `Alt+Space` 唤起一个悬浮输入框，输入问题后以流式方式获得回答，不打断当前工作流。
+面向 Windows 的轻量级桌面 AI 助手：按 `Alt+Space` 唤出一个悬浮窗，输入问题即可获得流式回答，**不打断当前工作流**。内置 Agent 工具、长期记忆、会话历史、文生图，数据全部保存在本地。
 
-> 本项目按 [`桌面悬浮窗AI助手-完整开发计划.md`](./桌面悬浮窗AI助手-完整开发计划.md) 与 [`ChatFloat-v2.0.0-完整推进计划.md`](./ChatFloat-v2.0.0-完整推进计划.md) 推进。当前为 **v2.0.0**（Agent 内核升级，未签名，见下方说明）。
+> 已实现完整会话历史、Agent 工具系统、自动更新、生图工作台。当前版本 **v2.1.6**。
 
-## 已实现
+## ✨ 核心特性
 
-**v2.0.0（Agent 内核升级，开发中）**
+- **随叫随到**：`Alt+Space` 全局唤起 / 隐藏，悬浮窗不遮挡工作区，失焦自动隐藏（可在设置中关闭）
+- **多服务商多模型**：添加任意 OpenAI 兼容接口（DeepSeek / OpenAI / 通义 / Ollama…），API Key 存入 Windows 凭据管理器，不落盘
+- **流式对话**：Rust `reqwest` 直连 + 健壮 SSE 解析（粘包 / 拆包 / UTF-8 跨块），支持思考过程展示与等级选择
+- **Agent 工具系统**：10 个内置工具（联网搜索 / 剪贴板 / 文件 / PDF / 截图 / 网页抓取 / 计算…），敏感工具执行前需确认，工具调用时间线可视化
+- **长期记忆**：用户确认式保存，按使用频率注入，密码等敏感内容自动拒绝保存
+- **会话历史**：SQLite 本地持久化，搜索 / 重命名 / 批量删除 / 轮次索引快速跳转
+- **文生图工作台**：文生图 + 参考图生图，参数面板 + 画布 + 生成历史
+- **多主题**：系统 / 浅色 / 深色 / 暖色 / 玫瑰 / 春日
+- **自动更新**：内置自动更新，发现新版本一键下载静默安装（Ed25519 签名校验）
+- **安全设计**：Prompt 分层防注入、网页抓取防 SSRF、敏感工具结果不落盘、请求限流与重试
 
-- **可靠运行状态**：前端预生成 `requestId` 消除流式事件竞态；事件带单调序号，支持去重与缺口检测；流内错误正确终止整个执行；审批超时自动按拒绝处理
-- **上下文预算管理**：Rust 端按 token/字节估算裁剪旧轮次，超大附件直接报错而非静默截断
-- **会话滚动摘要**：长对话自动生成摘要并注入后续请求，保留最近完整轮次
-- **长期记忆**：用户确认式保存、类别管理、按使用频率注入、敏感内容拦截、完整增删改查
-- **工具协议 2.0**：执行前 JSON Schema 参数校验、重复调用循环保护、敏感数据流二次审批
-- **安全网页访问**：独立 `SafeHttpFetcher`，DNS/重定向逐跳校验，拒绝私网/环回/云元数据地址
-- **敏感结果不落盘**：剪贴板、文件、PDF、截图结果默认不写入本地历史
-- **Prompt 分层**：内置安全策略 + 用户 persona + 长期记忆 + 会话摘要，外部内容统一标记为不可信资料
-- **自动重试**：连接失败/超时/429/5xx 指数退避重试，尊重 `Retry-After`
-- **本地脱敏 Trace**：记录模型、状态、错误码、耗时，可在设置中查看与清空
-- **错误恢复**：失败消息支持"重试"与"不使用工具重试"
+## 🛠 技术栈
 
-**v1.6.0（Agent 工具版）**
+| 层 | 技术 |
+|---|---|
+| 前端 | React 18 · TypeScript · Vite · Tailwind CSS · Zustand · react-virtuoso |
+| 后端 | Rust · Tauri 2 · reqwest · rusqlite (SQLite) · keyring (Windows 凭据) |
+| 动画 | react-spring（窗口"水浮现"入场 / 页面切换过渡） |
 
-- Agent 工具系统：统一工具注册表、多轮工具循环、流式 tool_calls 解析、前端工具开关
-- 10 个内置工具：时间 / 计算 / 联网搜索 / 剪贴板读写 / 文本文件读取 / PDF 提取 / 屏幕截图 / 网页正文抓取 / 打开网页
-- 安全审批机制：敏感工具执行前用户确认（允许/拒绝），超时与结果大小限制，工具调用持久化到历史会话
-- 工具调用时间线展示在助手消息中，可展开查看参数、结果与状态
-
-**v1.2.1（代码质量优化版）**
-
-- 性能优化：设置页细粒度选择器、模型选择器响应式化、历史筛选 useMemo、Vite manualChunks 与 Rust lto 打包优化
-- 清理死代码与多余参数，补全类型守卫与错误处理
-- 新增 ThinkingFilter 单元测试 5 个（共 36 个测试全部通过）
-- 修复 ThinkingFilter 非思考态误查找闭标签的问题，跨 chunk 思维链剥离更可靠
-
-**v1.2.0（功能更新版）**
-
-- 文生图模块：标题栏图片按钮切换对话 / 文生图模式
-- 文生图界面：输入描述生成 AI 图片（3 种尺寸），浏览历史、切换、下载
-- 图像模型设置：设置→模型设置→图像生成，配置文生图模型（/v1/images/generations）
-- 未配置图像模型时回退到当前默认模型
-
-**v1.1.2（功能更新版）**
-
-- 图片发送：对话框支持上传图片（附件按钮 / Ctrl+V 粘贴），最多 4 张
-- 视觉模型中转：当前模型不支持视觉时，自动调用默认视觉模型描述图片，整合后发送给当前模型
-- 视觉模型设置：设置→模型设置中配置默认视觉模型 + 标记模型视觉能力
-- 长对话虚拟化渲染：react-virtuoso 虚拟滚动，超长对话不卡顿
-
-**v1.1.1（体验更新版）**
-
-- AI / 用户头像支持自定义上传图片（PNG/JPEG/GIF/BMP/WebP），形状裁剪仍可配置
-- 对话中用户消息增加头像显示，与 AI 头像对称布局
-- 标题栏右侧新增主题切换按钮，随时快速切换
-- 精简主题：移除海洋、森林，保留系统/浅色/深色/暖色/玫瑰共 5 套
-
-**v1.1.0（功能更新版）**
-
-- 多主题系统：浅色 / 深色 / 暖色 / 玫瑰 / 跟随系统
-- 窗口唤醒动画：快捷键 / 托盘唤起时窗口淡入上滑（0.18s），不再突兀出现
-- 设置面板侧边栏导航：分为"模型设置""外观行为""通用"三个标签页
-- AI 头像：助手消息左侧显示头像，支持圆形 / 圆角 / 方形 + 8 种预设颜色
-- 会话批量管理：历史侧边栏批量选择模式，全选 / 多选 / 批量删除
-- 模型下拉列表排序：按字母顺序 → 名称长度排序，查找更方便
-
-**v1.0.3（修复版）**
-
-- 修复思维链泄漏：部分服务商将思考过程以 `<think>` 标签嵌入 content 字段直接输出到正文；新增 Rust 端流式 ThinkingFilter 实时剥离标签并路由为 reasoning 事件
-- 兼容 `reasoning` 与 `reasoning_content` 两种字段名，覆盖更多思维链模型供应商
-- 用户消息添加复制按钮（hover 显示），修复无法复制用户消息的问题
-- 修复删除当前会话后界面仍停留在旧消息的问题，现自动重置为空白新对话
-- 修复托盘图标白底：运行时剥离近白像素 Alpha 通道使其透明，并重新生成 32x32 透明图标
-
-**v1.0.2（体验修复版）**
-
-- 托盘：仅左键切换窗口；右键只弹菜单，不再误触发"弹窗后立即消失"
-- 失焦隐藏增加 600ms 宽限：托盘/快捷键唤起后不再被立即隐藏
-- 去掉悬浮窗外圈可见的透明边框/阴影环
-- 完整会话模式下打开设置不再缩回窄窗，设置内容居中限宽
-- 设置页右上角 × 在设置中为"关闭设置"，不再把程序隐藏到后台
-- "温度"改为"随机性（温度）"并附说明文案
-- 唤起快捷键自定义：设置 → 通用 → 唤起快捷键，录入式设置（需含修饰键或 F1–F12），立即生效并持久化
-
-**v1.0.1（修复版）**
-
-- 修复 API Key 丢失问题：keyring 依赖缺少 windows-native 特性，密钥实际写入了进程内存模拟存储，应用退出即丢失；现已真正写入 Windows 凭据管理器，重启后保留
-- 修复保存服务商时返回的"Key 已配置"状态与实际写入顺序不一致的问题
-- 注意：此前版本保存过的 API Key 均未真正落盘，升级后需在设置中重新填写一次
-
-**v1.0（发布版）**
-
-- 代码块语法高亮（lowlight 常用语言集 + 自定义浅色/深色配色）
-- 前端测试套件：Vitest + React Testing Library，20 用例（Markdown/XSS、流式编排、持久化）
-- 流式渲染优化：消息行 memo 化，增量渲染
-- 隐私说明与发布/升级策略文档（`docs/`）
-- 注意：安装包**未代码签名**（未购置证书），首次运行可能有 SmartScreen 提示；未启用自动更新
-
-**v0.3（会话历史与完整会话模式）**
-
-- SQLite 本地会话历史（`rusqlite` bundled），重启后历史不丢
-- 完整会话模式：宽窗口 + 左侧历史列表，支持搜索、切换、重命名、删除
-- 生成中断恢复：崩溃/强退遗留的流式消息在启动时标记为已停止
-- 数据库迁移机制（`PRAGMA user_version`），升级不丢数据
-- 设置"通用"区：历史记录开关、一键清空全部会话
-- 历史列表分页上限 200 条，按更新时间倒序
-
-**v0.2（多服务商 MVP）**
-
-- 多服务商管理：添加 / 编辑 / 删除任意 OpenAI 兼容接口，连接测试，HTTP 明文警告
-- 多模型管理：`GET /v1/models` 拉取、手工添加、移除、收藏、默认模型设置
-- 标题栏模型快速切换器：搜索、收藏置顶、按服务商分组
-- API Key 存储在 Windows 凭据管理器（keyring），配置文件不含密钥，前端不接触密钥
-- 生成参数：温度 / 最大输出长度（"自动"即不发送该参数）
-- v0.1 单服务商配置自动迁移
-
-**v0.1（技术原型）**
-
-- 全局快捷键 `Alt+Space` 唤醒 / 隐藏窗口，失焦自动隐藏（生成中不隐藏，可在设置关闭）
-- 无边框 + 圆角悬浮窗，置顶显示，自定义拖动区，托盘常驻与菜单
-- 单实例运行，重复启动自动聚焦现有窗口
-- OpenAI 兼容 `/v1/chat/completions` 流式协议（`stream: true`），由 Rust `reqwest` 发起请求
-- 健壮的 SSE 解析：粘包 / 拆包 / CRLF / 心跳 / `[DONE]` / UTF-8 跨块切分（带单元测试）
-- 请求取消（停止生成）、可读的网络 / 401 / 403 / 404 / 429 / 5xx 错误映射与重试
-- 多轮上下文、Markdown + GFM + 代码块复制、流式光标
-- 浅色 / 深色 / 跟随系统主题，设计令牌见 `src/styles/tokens.css`
-
-## 目录结构
+## 📁 目录结构
 
 ```text
 src/                     React + TypeScript 前端
   app/                   入口组件
   components/            composer / conversation / history / markdown / model-picker / window-shell
-  features/settings/     设置面板（服务商 / 模型 / 生成参数 / 外观 / 通用 / 记忆 / 诊断）
-  stores/                Zustand：chat / providers / settings / window
-  services/              Rust 流式事件桥接、providers / history / memory / diagnostics API 与历史状态
+  features/settings/     设置面板（模型 / 外观 / 角色 / 工具 / 诊断 / 通用）
+  features/imagegen/     文生图工作台
+  stores/                Zustand：chat / providers / settings / window / imagegen
+  services/              流式事件桥接、providers / history / memory / diagnostics API
   styles/                设计令牌与全局样式
 src-tauri/src/           Rust / Tauri 后端
   agent/                 上下文预算 / 滚动摘要 / 长期记忆
   api/                   OpenAI 适配器 + SSE 解析器 + 网页搜索
-  commands/              chat / providers / history / settings / memory / diagnostics Tauri 命令
+  commands/              chat / providers / history / settings / memory / diagnostics 命令
   storage/               providers.json 配置 + keyring 密钥 + SQLite 会话库
-  tools/                 工具注册表（协议 2.0）+ 内置工具 + SafeHttpFetcher
+  tools/                 工具注册表 + 内置工具 + SafeHttpFetcher
   window/                窗口管理 / 快捷键 / 托盘
   models/                请求 / 响应 / 配置数据结构
 ```
 
-## 开发
+## 🚀 开发
 
-前置：Node.js ≥ 18、Rust（stable-msvc）、Windows 上使用 MSVC 构建工具。
+前置：Node.js ≥ 18、Rust（stable-msvc）、Windows MSVC 构建工具。
 
 ```bash
 npm install
 npm run tauri:dev
 ```
 
-## 构建 Windows 安装包
+## 📦 构建 Windows 安装包
 
 ```bash
 npm run tauri:build
 ```
 
-产物（NSIS 安装版 `.exe`）输出到 `src-tauri/target/release/bundle/nsis/`；
-发布副本连同 `checksums.txt` 与 `release-notes.txt` 放在 `release/`。
-打包工具（NSIS）通过 `bundle.useLocalToolsDir` 存放在项目 `target/.tauri/` 内，不占用用户目录缓存。
+产物（NSIS 安装版 `.exe`）输出到 `src-tauri/target/release/bundle/nsis/`。打包工具（NSIS）通过 `bundle.useLocalToolsDir` 存放在项目 `target/tools/` 内。
 
-## 测试
+## 🧪 测试
 
 ```bash
 npm run typecheck                 # TypeScript 类型检查
-npm test                          # 前端测试（Vitest + RTL，21 用例）
-cd src-tauri && cargo test        # Rust 单元测试（SSE、预算、摘要、记忆、工具、SSRF、SQLite，75 用例）
+npm test                          # 前端测试（Vitest + RTL）
+cd src-tauri && cargo test        # Rust 单元测试
 ```
 
-## 已知限制（按计划在后续版本解决）
+## 📚 文档
 
-- 长会话使用虚拟化渲染，超长对话已不卡顿（v1.1.2 起）
-- 安装包未签名（未购置证书），首次运行可能触发 SmartScreen 提示；拿到证书后按 `docs/RELEASE-AND-UPGRADE.md` 接入
-- 会话摘要生成依赖当前所选模型的一次非流式调用；若模型不支持 `max_tokens` 或拒绝该参数，摘要会自动跳过
-- 长期记忆为本地结构化检索（类别 / 使用频率 / 数量上限），尚未引入向量检索
+- [完整开发计划](./docs/桌面悬浮窗AI助手-完整开发计划.md)
+- [Agent 功能演进计划](./docs/Agent助手功能演进计划.md)
+- [优化实施计划](./docs/ChatFloat-优化实施计划.md)
+- [v2.0.0 推进计划](./docs/ChatFloat-v2.0.0-完整推进计划.md)
+- [隐私说明](./docs/PRIVACY.md)
+- [发布与升级说明](./docs/RELEASE-AND-UPGRADE.md)
+
+## 🔒 隐私
+
+所有对话历史、记忆、生成图片均保存在本地 SQLite 数据库；API Key 存储在 Windows 凭据管理器；敏感工具结果（剪贴板 / 文件 / PDF / 截图）默认不写入历史。详见 [隐私说明](./docs/PRIVACY.md)。
+
+## ⚠️ 已知限制
+
+- 安装包未代码签名（未购置证书），首次运行可能触发 SmartScreen 提示
+- 长期记忆为本地结构化检索，尚未引入向量检索

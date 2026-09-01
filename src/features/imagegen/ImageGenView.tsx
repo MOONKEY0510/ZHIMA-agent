@@ -220,7 +220,7 @@ export function ImageGenView() {
     try {
       const a = document.createElement("a");
       a.href = selected.imageData;
-      a.download = `chatfloat-${selected.id}.png`;
+      a.download = `zhima-${selected.id}.png`;
       a.click();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

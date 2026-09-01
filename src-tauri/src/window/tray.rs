@@ -28,7 +28,7 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     let toggle_item =
         MenuItemBuilder::with_id("toggle", format!("显示 / 隐藏（{shortcut_label}）"))
             .build(app)?;
-    let quit_item = MenuItemBuilder::with_id("quit", "退出 ChatFloat").build(app)?;
+    let quit_item = MenuItemBuilder::with_id("quit", "退出 Zhima").build(app)?;
     let menu = MenuBuilder::new(app)
         .items(&[&toggle_item, &quit_item])
         .build()?;
@@ -36,7 +36,7 @@ pub fn create(app: &tauri::App) -> tauri::Result<()> {
     TrayIconBuilder::with_id("main-tray")
         .icon(tray_icon())
         .icon_as_template(false)
-        .tooltip("ChatFloat · 桌面 AI 助手")
+        .tooltip("Zhima · 桌面 AI 助手")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
