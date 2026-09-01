@@ -2480,7 +2480,7 @@ function AboutSection() {
   return (
     <section className="mt-2 text-center">
       <p className="text-[11px] leading-5 text-ink-2">
-        Zhima v{version} · 全局快捷键唤起 / 隐藏
+        芝麻 v{version} · 全局快捷键唤起 / 隐藏
         <br />
         默认模型可随时在顶部模型选择器中切换
       </p>
