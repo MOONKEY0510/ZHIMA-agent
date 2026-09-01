@@ -8,3 +8,4 @@ src-tauri/gen/
 Thumbs.db
 release/
 generated-images/
+docs/
