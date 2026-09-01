@@ -15,22 +15,6 @@
 | 依赖 | **无账号、无云端** | 本地 SQLite 存储，API Key 存 Windows 凭据管理器，不依赖任何中介服务 |
 | 运行时 | **Rust 后端** | 网络请求、SSE 解析、工具执行在 Rust 侧完成，内存占用低、响应快 |
 
-## 📸 界面预览
-
-![主界面](./assets/screenshots/Snipaste_2026-09-01_16-37-54.png)
-
-![完整会话与历史](./assets/screenshots/Snipaste_2026-09-01_16-38-30.png)
-
-![对话与轮次索引](./assets/screenshots/Snipaste_2026-09-01_16-39-02.png)
-
-![生图工作台](./assets/screenshots/Snipaste_2026-09-01_16-39-17.png)
-
-![设置 · 模型](./assets/screenshots/Snipaste_2026-09-01_16-39-28.png)
-
-![设置 · 外观与工具](./assets/screenshots/Snipaste_2026-09-01_16-39-44.png)
-
-![设置 · 通用](./assets/screenshots/Snipaste_2026-09-01_16-39-53.png)
-
 ## ✨ 核心特性
 
 - **随叫随到**：`Alt+Space` 全局唤起 / 隐藏，悬浮窗不遮挡工作区，失焦自动隐藏（可在设置中关闭）
@@ -106,3 +90,19 @@ cd src-tauri && cargo test        # Rust 单元测试
 
 - 安装包未代码签名（未购置证书），首次运行可能触发 SmartScreen 提示
 - 长期记忆为本地结构化检索，尚未引入向量检索
+
+## 📸 界面预览
+
+![主界面](./assets/screenshots/Snipaste_2026-09-01_16-37-54.png)
+
+![完整会话与历史](./assets/screenshots/Snipaste_2026-09-01_16-38-30.png)
+
+![对话与轮次索引](./assets/screenshots/Snipaste_2026-09-01_16-39-02.png)
+
+![生图工作台](./assets/screenshots/Snipaste_2026-09-01_16-39-17.png)
+
+![设置 · 模型](./assets/screenshots/Snipaste_2026-09-01_16-39-28.png)
+
+![设置 · 外观与工具](./assets/screenshots/Snipaste_2026-09-01_16-39-44.png)
+
+![设置 · 通用](./assets/screenshots/Snipaste_2026-09-01_16-39-53.png)
