@@ -139,7 +139,7 @@ export function TitleBar() {
           title={view === "settings" ? "关闭设置" : "隐藏窗口（Esc）"}
           onClick={() => {
             if (view === "settings") closeSettings();
-            else void hideWindow();
+            else requestHide();
           }}
         >
           <X size={14} />

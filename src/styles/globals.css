@@ -51,6 +51,49 @@
   background: transparent;
 }
 
+/* --- Conversation turn index ---------------------------------------------- */
+.cf-turn-index {
+  position: absolute;
+  top: 0.75rem;
+  bottom: 0.75rem;
+  left: 0.375rem;
+  z-index: 10;
+  display: flex;
+  width: 0.625rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-evenly;
+  gap: 0.25rem;
+  padding: 0.25rem 0;
+  border-right: 1px solid color-mix(in srgb, var(--cf-border) 75%, transparent);
+}
+
+.cf-turn-index-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: 0 0 auto;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--cf-text-2) 18%, transparent);
+  transition: transform 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.cf-turn-index-dot:hover {
+  transform: scale(1.25);
+  background: color-mix(in srgb, var(--cf-accent) 60%, var(--cf-text-2));
+}
+
+.cf-turn-index-dot.is-active {
+  transform: scale(1.35);
+  background: var(--cf-text-2);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cf-panel) 85%, transparent);
+}
+
+@media (max-height: 420px) {
+  .cf-turn-index-dot:nth-child(n + 9) {
+    display: none;
+  }
+}
+
 /* --- Streaming caret (low-frequency blink, plan §4.3) -------------------- */
 .stream-caret {
   display: inline-block;

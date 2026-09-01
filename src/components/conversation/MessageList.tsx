@@ -1,5 +1,5 @@
-import { memo, useEffect, useRef, useState } from "react";
-import { Virtuoso } from "react-virtuoso";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
   Bookmark,
   Check,
@@ -95,29 +95,87 @@ export function MessageList() {
   const streaming = useChatStore(
     (s) => s.streamingRequestId !== null || s.streamingMessageId !== null,
   );
+  const listRef = useRef<VirtuosoHandle>(null);
+  const previousLength = useRef(messages.length);
+  const [activeTurn, setActiveTurn] = useState(0);
+  const turnIndexes = useMemo(
+    () => messages.flatMap((message, index) => (message.role === "user" ? [index] : [])),
+    [messages],
+  );
+
+  // A new prompt must always land at the latest turn, even if the user had
+  // browsed older messages before sending it.
+  useEffect(() => {
+    if (messages.length > previousLength.current) {
+      listRef.current?.scrollToIndex({ index: messages.length - 1, align: "end", behavior: "smooth" });
+    }
+    previousLength.current = messages.length;
+  }, [messages.length]);
+
+  useEffect(() => {
+    previousLength.current = messages.length;
+    setActiveTurn(Math.max(0, turnIndexes.length - 1));
+  }, [activeId]);
 
   if (messages.length === 0) {
     return <EmptyState />;
   }
 
+  const jumpToTurn = (turn: number) => {
+    const index = turnIndexes[turn];
+    if (index === undefined) return;
+    setActiveTurn(turn);
+    listRef.current?.scrollToIndex({ index, align: "start", behavior: "smooth" });
+  };
+
   return (
-    <Virtuoso
-      // Re-mount on conversation switch so the list starts at the newest
-      // message (bottom) instead of the top.
-      key={activeId ?? "new"}
-      data={messages}
-      computeItemKey={(_index, message) => message.id}
-      initialTopMostItemIndex={Math.max(0, messages.length - 1)}
-      style={{ height: "100%" }}
-      className="flex-1"
-      followOutput={"smooth"}
-      increaseViewportBy={{ top: 200, bottom: 200 }}
-      itemContent={(_index, message) => (
-        <div className="px-3 pb-5">
-          <MessageItem message={message} streaming={streaming} />
-        </div>
+    <div className="relative flex min-h-0 flex-1">
+      <Virtuoso
+        ref={listRef}
+        // Re-mount on conversation switch so the list starts at the newest
+        // message (bottom) instead of the top.
+        key={activeId ?? "new"}
+        data={messages}
+        computeItemKey={(_index, message) => message.id}
+        initialTopMostItemIndex={Math.max(0, messages.length - 1)}
+        style={{ height: "100%" }}
+        className="flex-1"
+        followOutput={"smooth"}
+        increaseViewportBy={{ top: 200, bottom: 200 }}
+        rangeChanged={({ startIndex, endIndex }) => {
+          let visibleTurn = -1;
+          for (let turn = turnIndexes.length - 1; turn >= 0; turn--) {
+            if (turnIndexes[turn] <= endIndex) {
+              visibleTurn = turn;
+              break;
+            }
+          }
+          if (visibleTurn >= 0 && startIndex <= turnIndexes[visibleTurn] + 1) {
+            setActiveTurn(visibleTurn);
+          }
+        }}
+        itemContent={(_index, message) => (
+          <div className="px-3 pb-5">
+            <MessageItem message={message} streaming={streaming} />
+          </div>
+        )}
+      />
+      {turnIndexes.length > 1 && (
+        <nav aria-label="对话轮次索引" className="cf-turn-index">
+          {turnIndexes.map((messageIndex, turn) => (
+            <button
+              key={messages[messageIndex]?.id}
+              type="button"
+              title={`跳转到第 ${turn + 1} 轮对话`}
+              aria-label={`跳转到第 ${turn + 1} 轮对话`}
+              aria-current={turn === activeTurn ? "true" : undefined}
+              onClick={() => jumpToTurn(turn)}
+              className={`cf-turn-index-dot ${turn === activeTurn ? "is-active" : ""}`}
+            />
+          ))}
+        </nav>
       )}
-    />
+    </div>
   );
 }
 

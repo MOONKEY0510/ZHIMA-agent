@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Activity,
@@ -2525,12 +2526,15 @@ function Modal({
   onClose: () => void;
   children: React.ReactNode;
 }) {
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className="relative flex w-full max-w-lg flex-col rounded-xl border border-line bg-panel shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
@@ -2542,7 +2546,8 @@ function Modal({
         </div>
         <div className="max-h-[80vh] overflow-y-auto p-4">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

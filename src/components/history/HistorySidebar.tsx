@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, CheckSquare, FileText, Pencil, Plus, Search, Square, Trash2, X, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useHistoryStore } from "../../services/history-store";
 import { setConversationSystemPrompt } from "../../services/history-api";
@@ -51,6 +51,7 @@ export function HistorySidebar() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchConfirming, setBatchConfirming] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const streaming = useChatStore((s) => s.streamingRequestId !== null);
 
@@ -60,6 +61,16 @@ export function HistorySidebar() {
       ? conversations.filter((c) => c.title.toLowerCase().includes(q))
       : conversations;
   }, [conversations, query]);
+
+  useEffect(() => {
+    if (!activeId || collapsed) return;
+    const frame = window.requestAnimationFrame(() => {
+      listRef.current
+        ?.querySelector<HTMLElement>(`[data-conversation-id="${activeId}"]`)
+        ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeId, conversations, collapsed]);
 
   const startRename = (id: string, current: string) => {
     setRenamingId(id);
@@ -214,7 +225,7 @@ export function HistorySidebar() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto px-2 pb-2">
+      <div ref={listRef} className="flex-1 overflow-y-auto px-2 pb-2">
         {filtered.length === 0 && (
           <p className="px-2 py-6 text-center text-xs text-ink-2">
             {conversations.length === 0 ? "暂无会话记录" : "没有匹配的会话"}
@@ -229,6 +240,7 @@ export function HistorySidebar() {
           return (
             <div
               key={c.id}
+              data-conversation-id={c.id}
               onClick={() => {
                 if (batchMode) {
                   toggleSelect(c.id);
