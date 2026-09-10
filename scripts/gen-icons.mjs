@@ -1,10 +1,13 @@
-// Generate all app icons from a 1024x1024 source image.
+// Generate all app icons from the project icon source.
 // Usage: node scripts/gen-icons.mjs
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { PNG } from "pngjs";
 
-const SRC = 1024;
-const src = PNG.sync.read(readFileSync("generated-images/A_stunning_catgirl__neko__anim_2026-08-07T03-24-34.png"));
+const src = PNG.sync.read(readFileSync("assets/icon-source.png"));
+const SRC = src.width;
+if (src.width !== src.height) {
+  throw new Error(`Icon source must be square, got ${src.width}x${src.height}`);
+}
 
 // Check if source has alpha; if not, make near-white transparent.
 const hasAlpha = src.data[3] < 255;

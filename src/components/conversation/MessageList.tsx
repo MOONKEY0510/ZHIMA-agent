@@ -21,6 +21,7 @@ import { useWindowStore } from "../../stores/window-store";
 import { useSettingsStore, type AvatarShape } from "../../stores/settings-store";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Markdown } from "../markdown/Markdown";
+import { StreamingMarkdown } from "../markdown/StreamingMarkdown";
 import { markdownToPlainText } from "../../lib/markdown-plain";
 
 /** Small reusable dropdown used by the memory category picker. */
@@ -327,11 +328,10 @@ const MessageItem = memo(function MessageItem({
         {message.content.length > 0 && (
           <div className="md-body select-text text-sm">
             {isStreamingThis ? (
-              <span className="whitespace-pre-wrap break-words">{message.content}</span>
+              <StreamingMarkdown content={message.content} caret />
             ) : (
               <Markdown content={message.content} />
             )}
-            {isStreamingThis && <span className="stream-caret" />}
           </div>
         )}
 
