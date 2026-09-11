@@ -103,7 +103,9 @@ pub fn force_rounded_corners(window: &WebviewWindow) {
 
 /// Persist the current position when "remember window position" is enabled.
 fn save_position(window: &WebviewWindow) {
-    let Ok(pos) = window.outer_position() else { return };
+    let Ok(pos) = window.outer_position() else {
+        return;
+    };
     if let Some(store) = window.app_handle().try_state::<ConfigStore>() {
         let _ = store.update(|cfg| {
             if cfg.remember_window_position {

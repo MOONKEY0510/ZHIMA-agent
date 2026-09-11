@@ -139,7 +139,15 @@ pub fn build_body(
     system_prompt: Option<&str>,
 ) -> Value {
     let out_messages = messages_to_openai(messages, system_prompt);
-    build_body_from_values(model, &out_messages, temperature, max_tokens, None, true, "medium")
+    build_body_from_values(
+        model,
+        &out_messages,
+        temperature,
+        max_tokens,
+        None,
+        true,
+        "medium",
+    )
 }
 
 /// Build a **non-streaming** vision request body for `describe_image`.
@@ -178,8 +186,17 @@ pub fn extract_completion_text(body: &str) -> Result<String, String> {
         .and_then(|m| m.get("content"));
     let text = content
         .and_then(content_value_to_text)
-        .or_else(|| choice.and_then(|c| c.get("text")).and_then(Value::as_str).map(str::to_string))
-        .or_else(|| v.get("output_text").and_then(Value::as_str).map(str::to_string))
+        .or_else(|| {
+            choice
+                .and_then(|c| c.get("text"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            v.get("output_text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "模型未返回有效文本内容".to_string())?;
     Ok(text)
@@ -340,7 +357,12 @@ pub fn parse_stream_chunk(data: &str) -> ParsedChunk {
                         .and_then(|m| m.get("content"))
                         .and_then(content_value_to_text)
                 })
-                .or_else(|| choice.get("text").and_then(Value::as_str).map(str::to_string))
+                .or_else(|| {
+                    choice
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
             {
                 parts.content.push_str(&text);
             }

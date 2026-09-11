@@ -20,6 +20,9 @@ use crate::api::openai_chat::{
     map_http_error, messages_to_openai, parse_stream_chunk, ParsedChunk,
 };
 use crate::api::stream_parser::SseParser;
+use crate::api::text_tool_calls::{
+    call_id as text_call_id, is_text_call_id, ParsedToolCall, TextToolCallFilter,
+};
 use crate::api::web_search;
 use crate::errors::{brief, read_body_capped};
 use crate::models::request::{ChatSendRequest, DescribeImageRequest};
@@ -601,7 +604,11 @@ async fn run_stream(
     let debug_log = |msg: &str| {
         use std::io::Write;
         let Some(path) = &debug_log_path else { return };
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             let _ = writeln!(f, "{msg}");
         }
     };
@@ -906,6 +913,10 @@ async fn run_stream(
         let mut finished = false;
         let mut fatal_error = false;
         let mut thinking = ThinkingFilter::new();
+        let mut text_tools = TextToolCallFilter::new();
+        // Set when the model printed a tool call as text instead of using the
+        // native `tool_calls` field.
+        let mut text_tool_seen = false;
         let mut tool_calls: BTreeMap<usize, ToolCallAcc> = BTreeMap::new();
         let mut finish_reason: Option<String> = None;
         let mut has_meaningful_output = false;
@@ -917,7 +928,15 @@ async fn run_stream(
         loop {
             tokio::select! {
                 _ = token.cancelled() => {
-                    flush_thinking(&mut thinking, &request_id, &emit, enable_thinking);
+                    flush_content_filters(
+                        &mut thinking,
+                        &mut text_tools,
+                        &request_id,
+                        &emit,
+                        enable_thinking,
+                        &mut text_tool_seen,
+                        &mut tool_calls,
+                    );
                     emit(ChatEvent::Finish {
                         request_id: request_id.clone(),
                         reason: Some("cancelled".into()),
@@ -929,15 +948,13 @@ async fn run_stream(
                     // Once finished, wait only briefly for the trailing usage
                     // payload instead of blocking on the upstream forever.
                     if finished && !usage_seen {
-                        match tokio::time::timeout(
+                        // The timeout elapsing means the payload never arrived.
+                        tokio::time::timeout(
                             Duration::from_millis(USAGE_GRACE_MS),
                             stream.next(),
                         )
                         .await
-                        {
-                            Ok(value) => value,
-                            Err(_) => None,
-                        }
+                        .unwrap_or_default()
                     } else {
                         stream.next().await
                     }
@@ -954,6 +971,8 @@ async fn run_stream(
                                     &mut finished,
                                     &mut fatal_error,
                                     &mut thinking,
+                                    &mut text_tools,
+                                    &mut text_tool_seen,
                                     &mut tool_calls,
                                     &mut finish_reason,
                                     &mut has_meaningful_output,
@@ -968,7 +987,15 @@ async fn run_stream(
                             }
                         }
                         Some(Err(err)) => {
-                            flush_thinking(&mut thinking, &request_id, &emit, enable_thinking);
+                            flush_content_filters(
+                                &mut thinking,
+                                &mut text_tools,
+                                &request_id,
+                                &emit,
+                                enable_thinking,
+                                &mut text_tool_seen,
+                                &mut tool_calls,
+                            );
                             emit(ChatEvent::Error {
                                 request_id: request_id.clone(),
                                 code: "stream_broken".into(),
@@ -989,6 +1016,8 @@ async fn run_stream(
                                     &mut finished,
                                     &mut fatal_error,
                                     &mut thinking,
+                                    &mut text_tools,
+                                    &mut text_tool_seen,
                                     &mut tool_calls,
                                     &mut finish_reason,
                                     &mut has_meaningful_output,
@@ -1009,7 +1038,15 @@ async fn run_stream(
             }
         }
 
-        flush_thinking(&mut thinking, &request_id, &emit, enable_thinking);
+        flush_content_filters(
+            &mut thinking,
+            &mut text_tools,
+            &request_id,
+            &emit,
+            enable_thinking,
+            &mut text_tool_seen,
+            &mut tool_calls,
+        );
 
         // If the stream produced a fatal error (ParsedChunk::Error), the
         // Error event has already been emitted.  Return immediately without
@@ -1031,18 +1068,28 @@ async fn run_stream(
         }
 
         // ---- Execute tool calls (agent loop) --------------------------------
-        let wants_tools = enable_tools
-            && finish_reason.as_deref() == Some("tool_calls")
-            && !tool_calls.is_empty();
+        // Native tool calls require the Agent toggle.  Text-format calls are
+        // honored even with the toggle off (they are only recognized when the
+        // model explicitly wrote a `<tool_call>` block); the per-call gate
+        // below then restricts that case to read-only public tools.
+        let wants_tools = !tool_calls.is_empty()
+            && (text_tool_seen || (enable_tools && finish_reason.as_deref() == Some("tool_calls")));
         if wants_tools {
             // Assistant message carrying the tool calls the model requested.
             let assistant_calls: Vec<Value> = tool_calls
                 .values()
                 .map(|tc| {
+                    // Text-format calls may use the model's own spelling
+                    // (`WebSearch`); report the registry name so the next round
+                    // and the tool result stay consistent.
+                    let name = registry
+                        .resolve(&tc.name)
+                        .map(|d| d.name.clone())
+                        .unwrap_or_else(|| tc.name.clone());
                     json!({
                         "id": tc.id,
                         "type": "function",
-                        "function": { "name": tc.name, "arguments": tc.arguments }
+                        "function": { "name": name, "arguments": tc.arguments }
                     })
                 })
                 .collect();
@@ -1054,7 +1101,35 @@ async fn run_stream(
 
             // Execute each call, stream events, and feed results back.
             for tc in tool_calls.values() {
-                let def = registry.find(&tc.name);
+                // Text-format calls often use the model's own spelling
+                // (`WebSearch`); map it back to the registry name.
+                let canonical = registry
+                    .resolve(&tc.name)
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| tc.name.clone());
+                let def = registry.find(&canonical);
+
+                // ---- Agent toggle gate --------------------------------------
+                // A text-format call is honored even when the Agent toggle is
+                // off, but only for read-only public lookups (web search, page
+                // fetch).  With the toggle off nothing may reach the clipboard,
+                // files, the screen or any other local data.
+                if is_text_call_id(&tc.id)
+                    && !enable_tools
+                    && !def.map(is_public_lookup).unwrap_or(false)
+                {
+                    emit(ChatEvent::ToolRejected {
+                        request_id: request_id.clone(),
+                        call_id: tc.id.clone(),
+                        name: canonical.clone(),
+                    });
+                    openai_messages.push(json!({
+                        "role": "tool",
+                        "tool_call_id": tc.id.clone(),
+                        "content": "Agent 工具已关闭，该工具当前不可用，请直接基于已有信息回答。",
+                    }));
+                    continue;
+                }
 
                 // ---- Loop protection ----------------------------------------
                 // Reject a call that repeats an identical (name, args) call
@@ -1062,12 +1137,12 @@ async fn run_stream(
                 // stuck in a loop and feeding the result back would just
                 // burn tokens.
                 let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(Value::Null);
-                let call_key = format!("{}::{}", tc.name, args);
+                let call_key = format!("{}::{}", canonical, args);
                 if !seen_tool_calls.insert(call_key) {
                     emit(ChatEvent::ToolError {
                         request_id: request_id.clone(),
                         call_id: tc.id.clone(),
-                        name: tc.name.clone(),
+                        name: canonical.clone(),
                         message: "检测到重复工具调用，已跳过，请直接基于已有信息回答。".into(),
                     });
                     openai_messages.push(json!({
@@ -1088,12 +1163,12 @@ async fn run_stream(
                 //    silently approve "then upload it".
                 // A policy-disabled tool should never execute; treat it like a
                 // rejected call and tell the model to stop using it.
-                let policy = tool_policies.get(&tc.name).copied().unwrap_or_default();
+                let policy = tool_policies.get(&canonical).copied().unwrap_or_default();
                 if policy == crate::storage::config::ToolPolicy::Disabled {
                     emit(ChatEvent::ToolRejected {
                         request_id: request_id.clone(),
                         call_id: tc.id.clone(),
-                        name: tc.name.clone(),
+                        name: canonical.clone(),
                     });
                     openai_messages.push(json!({
                         "role": "tool",
@@ -1111,20 +1186,20 @@ async fn run_stream(
 
                 // A tool approved for the rest of this session skips the
                 // gate entirely (no prompt, no timeout).
-                if needs_approval && !session_tool_approvals.lock().unwrap().contains(&tc.name) {
+                if needs_approval && !session_tool_approvals.lock().unwrap().contains(&canonical) {
                     let summary = if context_sensitive && is_network && !requires_confirmation {
                         // Explain why this extra confirmation is needed.
                         format!(
                             "{}（当前上下文包含本地敏感数据，联网前需要再次确认）",
-                            summarize_tool_call(&tc.name, &tc.arguments)
+                            summarize_tool_call(&canonical, &tc.arguments)
                         )
                     } else {
-                        summarize_tool_call(&tc.name, &tc.arguments)
+                        summarize_tool_call(&canonical, &tc.arguments)
                     };
                     emit(ChatEvent::ToolPending {
                         request_id: request_id.clone(),
                         call_id: tc.id.clone(),
-                        name: tc.name.clone(),
+                        name: canonical.clone(),
                         summary: summary.clone(),
                     });
 
@@ -1153,7 +1228,7 @@ async fn run_stream(
                             emit(ChatEvent::ToolRejected {
                                 request_id: request_id.clone(),
                                 call_id: tc.id.clone(),
-                                name: tc.name.clone(),
+                                name: canonical.clone(),
                             });
                             // Treat as rejection — push a tool result telling
                             // the model the user did not respond in time.
@@ -1166,7 +1241,7 @@ async fn run_stream(
                         emit(ChatEvent::ToolRejected {
                             request_id: request_id.clone(),
                             call_id: tc.id.clone(),
-                            name: tc.name.clone(),
+                            name: canonical.clone(),
                         });
                         openai_messages.push(json!({
                             "role": "tool",
@@ -1181,17 +1256,17 @@ async fn run_stream(
                         session_tool_approvals
                             .lock()
                             .unwrap()
-                            .insert(tc.name.clone());
+                            .insert(canonical.clone());
                     } else if verdict.policy == "always" {
                         // Remember for the session AND persist the policy as
                         // "allow" so it never asks again.
                         session_tool_approvals
                             .lock()
                             .unwrap()
-                            .insert(tc.name.clone());
+                            .insert(canonical.clone());
                         if let Some(config) = window.try_state::<ConfigStore>() {
                             let _ = config.update(|cfg| {
-                                cfg.tool_policies.remove(&tc.name);
+                                cfg.tool_policies.remove(&canonical);
                                 Ok(())
                             });
                         }
@@ -1201,12 +1276,12 @@ async fn run_stream(
                 emit(ChatEvent::ToolStart {
                     request_id: request_id.clone(),
                     call_id: tc.id.clone(),
-                    name: tc.name.clone(),
+                    name: canonical.clone(),
                     arguments: tc.arguments.clone(),
                 });
 
                 tool_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let result = registry.execute(&client, &tc.name, args).await;
+                let result = registry.execute(&client, &canonical, args).await;
                 let content = match result {
                     Ok(v) => {
                         // Mark the context as sensitive when a local-sensitive
@@ -1228,7 +1303,7 @@ async fn run_stream(
                         emit(ChatEvent::ToolEnd {
                             request_id: request_id.clone(),
                             call_id: tc.id.clone(),
-                            name: tc.name.clone(),
+                            name: canonical.clone(),
                             result: s.clone(),
                         });
                         s
@@ -1237,7 +1312,7 @@ async fn run_stream(
                         emit(ChatEvent::ToolError {
                             request_id: request_id.clone(),
                             call_id: tc.id.clone(),
-                            name: tc.name.clone(),
+                            name: canonical.clone(),
                             message: e.clone(),
                         });
                         e
@@ -1314,19 +1389,58 @@ fn summarize_tool_call(name: &str, arguments: &str) -> String {
     format!("{name}（{text}）")
 }
 
-/// Flush any text still buffered in the thinking filter before the stream
-/// terminates, so no content is silently dropped.
-fn flush_thinking(
+/// Whether a tool only reads public data and never needs confirmation
+/// (`web_search`, `fetch_webpage`).  These stay usable for text-format tool
+/// calls even when the Agent toggle is off — see the gate in `run_stream`.
+fn is_public_lookup(def: &crate::tools::ToolDefinition) -> bool {
+    def.network_access
+        && !def.requires_confirmation
+        && def.data_access == crate::tools::DataAccess::Public
+}
+
+/// Merge tool calls parsed out of the text stream into the per-round
+/// accumulator, so they are executed exactly like native `tool_calls`.
+fn merge_text_tool_calls(
+    calls: Vec<ParsedToolCall>,
+    tool_calls: &mut BTreeMap<usize, ToolCallAcc>,
+) -> bool {
+    let mut found = false;
+    for call in calls {
+        found = true;
+        tool_calls.insert(
+            call.index,
+            ToolCallAcc {
+                id: text_call_id(call.index),
+                name: call.name,
+                arguments: call.arguments.to_string(),
+            },
+        );
+    }
+    found
+}
+
+/// Flush the content filters at the end of a round so no buffered text or
+/// text-format tool call is lost.  Content released by the thinking filter
+/// still has to pass through the text tool-call filter, hence the order.
+#[allow(clippy::too_many_arguments)]
+fn flush_content_filters(
     thinking: &mut ThinkingFilter,
+    text_tools: &mut TextToolCallFilter,
     request_id: &str,
     emit: &impl Fn(ChatEvent),
     enable_thinking: bool,
+    text_tool_seen: &mut bool,
+    tool_calls: &mut BTreeMap<usize, ToolCallAcc>,
 ) {
     let (content, reasoning) = thinking.flush();
-    if !content.is_empty() {
+    let (mut visible, parsed) = text_tools.process(&content);
+    let (tail, more) = text_tools.flush();
+    visible.push_str(&tail);
+
+    if !visible.is_empty() {
         emit(ChatEvent::Delta {
             request_id: request_id.to_string(),
-            text: content,
+            text: visible,
         });
     }
     if enable_thinking && !reasoning.is_empty() {
@@ -1334,6 +1448,9 @@ fn flush_thinking(
             request_id: request_id.to_string(),
             text: reasoning,
         });
+    }
+    if merge_text_tool_calls(parsed, tool_calls) | merge_text_tool_calls(more, tool_calls) {
+        *text_tool_seen = true;
     }
 }
 
@@ -1352,6 +1469,8 @@ fn handle_data(
     finished: &mut bool,
     fatal_error: &mut bool,
     thinking: &mut ThinkingFilter,
+    text_tools: &mut TextToolCallFilter,
+    text_tool_seen: &mut bool,
     tool_calls: &mut BTreeMap<usize, ToolCallAcc>,
     finish_reason: &mut Option<String>,
     has_meaningful_output: &mut bool,
@@ -1369,13 +1488,23 @@ fn handle_data(
             true
         }
         ParsedChunk::Parts(parts) => {
-            if !parts.content.is_empty() || !parts.reasoning.is_empty() || !parts.tool_calls.is_empty() {
+            if !parts.content.is_empty()
+                || !parts.reasoning.is_empty()
+                || !parts.tool_calls.is_empty()
+            {
                 *has_meaningful_output = true;
             }
             if !parts.content.is_empty() {
                 // Strip `</think>` tags that some providers embed in the
                 // content field, routing the enclosed text to reasoning.
                 let (content, reasoning) = thinking.process(&parts.content);
+                // Some models print tool calls as text (`<tool_call>…`) instead
+                // of filling the native `tool_calls` field.  Turn those into
+                // real calls and keep the markup out of the visible answer.
+                let (content, parsed) = text_tools.process(&content);
+                if merge_text_tool_calls(parsed, tool_calls) {
+                    *text_tool_seen = true;
+                }
                 if !content.is_empty() {
                     emit(ChatEvent::Delta {
                         request_id: request_id.to_string(),
@@ -1557,6 +1686,41 @@ mod tests {
         let (c1, r1) = f.process("a <think>1</think> b <think>2</think> c");
         assert_eq!(c1, "a  b  c");
         assert_eq!(r1, "12");
+    }
+
+    #[test]
+    fn merge_text_tool_calls_builds_executable_accumulators() {
+        let mut tool_calls: BTreeMap<usize, ToolCallAcc> = BTreeMap::new();
+        let calls = vec![ParsedToolCall {
+            index: 10_000,
+            name: "WebSearch".into(),
+            arguments: serde_json::json!({ "query": "天气" }),
+        }];
+        assert!(merge_text_tool_calls(calls, &mut tool_calls));
+        assert!(!merge_text_tool_calls(Vec::new(), &mut tool_calls));
+
+        let acc = tool_calls.get(&10_000).unwrap();
+        assert_eq!(acc.name, "WebSearch");
+        assert_eq!(acc.id, "text-call-10000");
+        assert!(is_text_call_id(&acc.id));
+        assert_eq!(
+            serde_json::from_str::<Value>(&acc.arguments).unwrap()["query"],
+            serde_json::json!("天气")
+        );
+    }
+
+    #[test]
+    fn only_unconfirmed_public_lookups_bypass_the_agent_toggle() {
+        let registry = crate::tools::ToolRegistry::builtin();
+        // web_search reads public data and never needs a confirmation, so a
+        // text-format call to it still works with the Agent toggle off.
+        assert!(is_public_lookup(registry.find("web_search").unwrap()));
+        // fetch_webpage requires an approval, so it does not.
+        assert!(!is_public_lookup(registry.find("fetch_webpage").unwrap()));
+        // Anything touching local data never does.
+        assert!(!is_public_lookup(registry.find("read_clipboard").unwrap()));
+        assert!(!is_public_lookup(registry.find("read_pdf").unwrap()));
+        assert!(!is_public_lookup(registry.find("calculate").unwrap()));
     }
 
     #[test]
