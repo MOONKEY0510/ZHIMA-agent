@@ -162,6 +162,22 @@ function currentProvider(): ProviderView | null {
   );
 }
 
+/**
+ * Resolve a specific provider/model pair (used by assistants with a pinned
+ * model), falling back to the global selection when it is missing.
+ */
+export function modelFor(
+  providerId: string | null,
+  modelKey: string | null,
+): { provider: ProviderView; model: ModelEntry } | null {
+  if (!providerId) return currentModel();
+  const provider = useProvidersStore.getState().providers.find((p) => p.id === providerId);
+  if (!provider) return currentModel();
+  const model =
+    provider.models.find((m) => m.modelKey === modelKey) ?? provider.models[0] ?? null;
+  return model ? { provider, model } : currentModel();
+}
+
 /** The currently selected model of the current provider. */
 export function currentModel(): { provider: ProviderView; model: ModelEntry } | null {
   const provider = currentProvider();

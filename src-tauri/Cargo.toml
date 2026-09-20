@@ -1,6 +1,6 @@
 [package]
 name = "chatfloat"
-version = "2.1.9"
+version = "2.2.0"
 description = "Zhima · Desktop floating-window AI chat assistant (OpenAI-compatible)"
 authors = ["Zhima"]
 edition = "2021"
@@ -25,7 +25,7 @@ tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "stream"] }
-tokio = { version = "1", features = ["sync", "time", "macros"] }
+tokio = { version = "1", features = ["sync", "time", "macros", "process", "io-util"] }
 tokio-util = "0.7"
 futures-util = "0.3"
 url = "2"
@@ -41,10 +41,18 @@ screenshots = "0.8"
 pdf-extract = "0.7"
 open = "5"
 rfd = "0.15"
+# P1-8 document parsing: office formats are zip containers, and GBK covers
+# Chinese text files exported by Windows tools.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+encoding_rs = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
 
 [profile.release]
 opt-level = "s"

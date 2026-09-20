@@ -1,32 +1,28 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Activity,
   Calculator,
   Check,
   ChevronDown,
   Clipboard,
-  ClipboardList,
   ClipboardPaste,
   Clock,
-  Code2,
   ExternalLink,
   Eye,
   EyeOff,
   FileText,
   FileType,
   Globe,
-  Languages,
   Link as LinkIcon,
   Loader2,
-  MessageCircle,
   MonitorUp,
   Pencil,
-  PenLine,
   Plus,
   RefreshCw,
-  Search,
   Settings as SettingsIcon,
   SlidersHorizontal,
   Palette,
@@ -56,7 +52,53 @@ import {
   type ToolInfo,
   type ToolPolicy,
 } from "../../services/tools-api";
-import { AGENT_TEMPLATES, type AgentTemplate } from "./agent-templates";
+import { PROVIDER_PRESETS, type ProviderPreset } from "./provider-presets";
+import {
+  isBuiltinAssistant,
+  type AssistantView,
+} from "../../services/assistants-api";
+import { sortedAssistants, useAssistantsStore } from "../../stores/assistants-store";
+import {
+  getWebSearchConfig,
+  setWebSearchApiKey,
+  setWebSearchConfig,
+  testWebSearch,
+  type WebSearchConfigView,
+  type WebSearchTestResult,
+} from "../../services/web-search-api";
+import {
+  exportData,
+  importData,
+  previewBackup,
+  type BackupPreview,
+  type ImportStrategy,
+} from "../../services/backup-api";
+import {
+  addKbFile,
+  addKbText,
+  addKbUrl,
+  deleteKbDocument,
+  getKnowledgeConfig,
+  listKbDocuments,
+  pickKbFile,
+  searchKb,
+  setKnowledgeConfig,
+  type KbDocument,
+  type KbHit,
+  type KnowledgeView,
+} from "../../services/knowledge-api";
+import {
+  deleteMcpServer,
+  listMcpServers,
+  parseMcpJson,
+  setMcpServerEnabled,
+  testMcpServer,
+  upsertMcpServer,
+  type McpServerConfig,
+  type McpServerView,
+  type McpToolInfo,
+  type McpView,
+} from "../../services/mcp-api";
 
 type SettingsTab = "models" | "appearance" | "tools" | "diagnostics" | "general" | "persona";
 
@@ -382,6 +424,19 @@ function ProviderForm({
   const [error, setError] = useState<string | null>(null);
   const [testMsg, setTestMsg] = useState<{ ok: boolean; message: string } | null>(null);
   const [testing, setTesting] = useState(false);
+  // Highlighted vendor preset chip (create mode only).
+  const [presetId, setPresetId] = useState<string | null>(null);
+
+  const selectedPreset = PROVIDER_PRESETS.find((p) => p.id === presetId) ?? null;
+  const presetConsoleUrl = selectedPreset?.consoleUrl ?? null;
+
+  const applyPreset = (preset: ProviderPreset) => {
+    setPresetId(preset.id);
+    setName(preset.name);
+    setBaseUrl(preset.baseUrl);
+    setError(null);
+    setTestMsg(null);
+  };
 
   const httpPlainWarning =
     /^http:\/\//i.test(baseUrl.trim()) &&
@@ -431,11 +486,39 @@ function ProviderForm({
 
   return (
     <div className="space-y-4">
+      {!provider && (
+        <div>
+          <label className="mb-1 block text-xs text-ink-2">常用服务商</label>
+          <div className="flex flex-wrap gap-1.5">
+            {PROVIDER_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => applyPreset(preset)}
+                className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                  presetId === preset.id
+                    ? "border-accent bg-accent text-accent-fg"
+                    : "border-line text-ink-2 hover:bg-panel-2 hover:text-ink"
+                }`}
+              >
+                {preset.name}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-xs text-ink-2">
+            选择后自动填入名称与 Base URL，也可以直接手动填写。
+          </p>
+        </div>
+      )}
+
       <div>
         <label className="mb-1 block text-xs text-ink-2">名称</label>
         <input
           value={name}
-          onChange={(e) => setName(e.target.value)}
+          onChange={(e) => {
+            setName(e.target.value);
+            setPresetId(null);
+          }}
           placeholder="例如：OpenAI / DeepSeek / 本地 Ollama"
           className={inputCls}
         />
@@ -445,7 +528,10 @@ function ProviderForm({
         <label className="mb-1 block text-xs text-ink-2">Base URL</label>
         <input
           value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
+          onChange={(e) => {
+            setBaseUrl(e.target.value);
+            setPresetId(null);
+          }}
           placeholder="https://api.openai.com/v1"
           className={inputCls}
           spellCheck={false}
@@ -480,6 +566,16 @@ function ProviderForm({
         <p className="mt-1 text-xs text-ink-2">
           保存在 Windows 凭据管理器中，不会写入配置文件。
         </p>
+        {presetConsoleUrl && (
+          <button
+            type="button"
+            onClick={() => void openUrl(presetConsoleUrl).catch(() => undefined)}
+            className="mt-1 flex items-center gap-1 text-xs text-accent transition-opacity hover:opacity-80"
+          >
+            <ExternalLink size={11} />
+            前往 {selectedPreset?.name} 获取 API Key
+          </button>
+        )}
       </div>
 
       <div className="flex items-center justify-end gap-2">
@@ -917,63 +1013,311 @@ function GenerationSection() {
 }
 
 /* ------------------------------------------------------------------------ */
-/* Agent role templates                                                      */
+/* Assistants (P1-7)                                                         */
 /* ------------------------------------------------------------------------ */
 
-const TEMPLATE_ICONS: Record<string, React.ElementType> = {
-  default: MessageCircle,
-  researcher: Search,
-  writer: PenLine,
-  coder: Code2,
-  translator: Languages,
-  meeting: ClipboardList,
-};
+function AssistantsSection() {
+  const assistants = useAssistantsStore((s) => s.assistants);
+  const activeId = useAssistantsStore((s) => s.activeId);
+  const setActive = useAssistantsStore((s) => s.setActive);
+  const remove = useAssistantsStore((s) => s.remove);
+  const resetBuiltin = useAssistantsStore((s) => s.resetBuiltin);
+  const providers = useProvidersStore((s) => s.providers);
 
-function AgentTemplatesSection() {
-  const setDefaultSystemPrompt = useProvidersStore((s) => s.setDefaultSystemPrompt);
-  const [applied, setApplied] = useState<string | null>(null);
+  const [draft, setDraft] = useState<AssistantView | null>(null);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const applyTemplate = async (template: AgentTemplate) => {
-    await setDefaultSystemPrompt(template.systemPrompt);
-    // Apply recommended tool policies.
-    for (const [name, policy] of Object.entries(template.toolSuggestions ?? {})) {
-      setToolPolicy(name, policy).catch((err) =>
-        console.error(`应用模板工具策略失败(${name}):`, err),
-      );
+  const newDraft = (): AssistantView => ({
+    id: "",
+    name: "",
+    icon: "🤖",
+    description: "",
+    systemPrompt: "",
+    providerId: null,
+    modelKey: null,
+    toolPoliciesJson: null,
+    sortOrder: 100 + assistants.length,
+    createdAt: 0,
+    updatedAt: 0,
+  });
+
+  const doRemove = async (id: string) => {
+    setError(null);
+    try {
+      await remove(id);
+      setConfirmingId(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
-    setApplied(template.id);
-    setTimeout(() => setApplied(null), 1500);
+  };
+
+  const doReset = async (id: string) => {
+    setError(null);
+    try {
+      await resetBuiltin(id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const modelLabel = (a: AssistantView) => {
+    if (!a.providerId) return "跟随全局模型";
+    const provider = providers.find((p) => p.id === a.providerId);
+    const model =
+      a.modelKey ?? provider?.models[0]?.modelKey ?? "";
+    return `${provider?.name ?? "未知服务商"}${model ? ` · ${model}` : ""}`;
   };
 
   return (
     <SettingsSection
-      title="角色模板"
-      description="一键设置 AI 的角色。选择模板会替换当前默认系统提示词，并推荐相应工具策略。你仍可手动微调下方系统提示词。"
+      title="助手"
+      description="每个助手带一套角色提示词与模型。选中后新对话即使用它，侧栏顶部可随时切换。"
     >
       <div className="grid grid-cols-2 gap-2 p-3">
-        {AGENT_TEMPLATES.map((template) => {
-          const Icon = TEMPLATE_ICONS[template.id] ?? Bot;
-          return (
+        {sortedAssistants(assistants).map((a) => (
+          <div key={a.id} className="relative">
             <button
-              key={template.id}
-              onClick={() => void applyTemplate(template)}
-              className={`cf-template-card ${applied === template.id ? "is-active" : ""}`}
+              type="button"
+              onClick={() => setActive(a.id)}
+              title={a.description ?? undefined}
+              className={`cf-template-card w-full ${activeId === a.id ? "is-active" : ""}`}
             >
               <span className="flex items-center gap-1.5 text-xs text-ink">
-                <Icon size={14} className="text-accent/80" />
-                <span className="font-medium">{template.name}</span>
-                {applied === template.id && (
-                  <Check size={12} className="text-success" />
-                )}
+                <span aria-hidden="true">{a.icon || "🤖"}</span>
+                <span className="truncate font-medium">{a.name}</span>
+                {activeId === a.id && <Check size={12} className="shrink-0 text-success" />}
               </span>
               <span className="line-clamp-2 text-[10px] leading-4 text-ink-2">
-                {template.description}
+                {a.description || a.systemPrompt.slice(0, 40)}
               </span>
+              <span className="truncate text-[10px] text-ink-2/80">{modelLabel(a)}</span>
             </button>
-          );
-        })}
+            <span className="absolute right-1.5 top-1.5 flex items-center gap-0.5">
+              <button
+                type="button"
+                className="cf-icon-btn"
+                title="编辑"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDraft(a);
+                }}
+              >
+                <Pencil size={11} />
+              </button>
+              {isBuiltinAssistant(a.id) ? (
+                <button
+                  type="button"
+                  className="cf-icon-btn"
+                  title="恢复默认（内置助手不可删除）"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void doReset(a.id);
+                  }}
+                >
+                  <RefreshCw size={11} />
+                </button>
+              ) : confirmingId === a.id ? (
+                <button
+                  type="button"
+                  className="cf-icon-btn danger"
+                  title="确认删除"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void doRemove(a.id);
+                  }}
+                >
+                  <Check size={11} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="cf-icon-btn danger"
+                  title="删除"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setConfirmingId(a.id);
+                  }}
+                >
+                  <Trash2 size={11} />
+                </button>
+              )}
+            </span>
+          </div>
+        ))}
       </div>
+
+      <div className="flex items-center justify-between gap-2 px-3 py-2">
+        <p className="text-[11px] text-ink-2">
+          内置助手可编辑并随时恢复默认；删除自定义助手后，其会话回到全局默认。
+        </p>
+        <button
+          type="button"
+          onClick={() => setDraft(newDraft())}
+          className="flex shrink-0 items-center gap-1 rounded-btn border border-line px-2 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
+        >
+          <Plus size={12} /> 新建助手
+        </button>
+      </div>
+
+      {error && <p className="px-4 pb-2 text-[11px] text-danger">{error}</p>}
+
+      {draft !== null && (
+        <Modal
+          title={draft.id ? `编辑助手 · ${draft.name}` : "新建助手"}
+          onClose={() => setDraft(null)}
+        >
+          <AssistantForm initial={draft} onDone={() => setDraft(null)} />
+        </Modal>
+      )}
     </SettingsSection>
+  );
+}
+
+/** Create / edit form for one assistant. */
+function AssistantForm({
+  initial,
+  onDone,
+}: {
+  initial: AssistantView;
+  onDone: () => void;
+}) {
+  const save = useAssistantsStore((s) => s.save);
+  const providers = useProvidersStore((s) => s.providers);
+
+  const [name, setName] = useState(initial.name);
+  const [icon, setIcon] = useState(initial.icon ?? "🤖");
+  const [description, setDescription] = useState(initial.description ?? "");
+  const [prompt, setPrompt] = useState(initial.systemPrompt);
+  const [providerId, setProviderId] = useState(initial.providerId ?? "");
+  const [modelKey, setModelKey] = useState(initial.modelKey ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const models = providers.find((p) => p.id === providerId)?.models ?? [];
+
+  const submit = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await save({
+        ...initial,
+        name: name.trim(),
+        icon: icon.trim() || null,
+        description: description.trim() || null,
+        systemPrompt: prompt.trim(),
+        // A pinned model only makes sense together with a provider.
+        providerId: providerId || null,
+        modelKey: providerId ? modelKey || null : null,
+      });
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const inputCls =
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        <div className="w-20 shrink-0">
+          <label className="mb-1 block text-xs text-ink-2">图标</label>
+          <input
+            value={icon}
+            onChange={(e) => setIcon(e.target.value)}
+            placeholder="🤖"
+            className={`${inputCls} text-center`}
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <label className="mb-1 block text-xs text-ink-2">名称</label>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="例如：周报助手"
+            className={inputCls}
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs text-ink-2">简介（可选）</label>
+        <input
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="一句话说明这个助手擅长什么"
+          className={inputCls}
+        />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs text-ink-2">系统提示词</label>
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          rows={5}
+          placeholder="定义这个助手的角色、输出结构与风格"
+          className={`${inputCls} resize-none leading-5`}
+        />
+      </div>
+
+      <div className="flex gap-2">
+        <div className="min-w-0 flex-1">
+          <label className="mb-1 block text-xs text-ink-2">服务商</label>
+          <Dropdown
+            value={providerId}
+            onChange={(value) => {
+              setProviderId(value);
+              setModelKey("");
+            }}
+            options={[
+              { value: "", label: "跟随全局默认" },
+              ...providers.map((p) => ({ value: p.id, label: p.name })),
+            ]}
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <label className="mb-1 block text-xs text-ink-2">模型</label>
+          <Dropdown
+            value={modelKey}
+            onChange={setModelKey}
+            disabled={!providerId || models.length === 0}
+            options={[
+              { value: "", label: providerId ? "该服务商首个模型" : "跟随全局默认" },
+              ...models.map((m) => ({
+                value: m.modelKey,
+                label: m.displayName || m.modelKey,
+              })),
+            ]}
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={onDone}
+          className="rounded-btn border border-line px-3 py-1.5 text-xs text-ink-2 transition-colors hover:bg-panel-2"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          onClick={() => void submit()}
+          disabled={saving || !name.trim() || !prompt.trim()}
+          className="flex items-center gap-1.5 rounded-btn bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+        >
+          {saving && <Loader2 size={12} className="animate-spin" />}
+          保存
+        </button>
+      </div>
+
+      {error && <Notice ok={false} text={error} />}
+    </div>
   );
 }
 
@@ -1160,13 +1504,13 @@ function ImageGenSection() {
 }
 
 /* ------------------------------------------------------------------------ */
-/* Persona tab — agent templates + system prompt                             */
+/* Persona tab — assistants + system prompt                                  */
 /* ------------------------------------------------------------------------ */
 
 function PersonaTab() {
   return (
     <>
-      <AgentTemplatesSection />
+      <AssistantsSection />
       <SystemPromptSection />
     </>
   );
@@ -1297,6 +1641,1022 @@ function ProxySection() {
         >
           {saved && <Check size={12} />}
           {saving ? "应用中…" : saved ? "已应用" : "应用"}
+        </button>
+      </div>
+      {error && <p className="px-4 pb-2 text-[11px] text-danger">{error}</p>}
+    </SettingsSection>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Web-search engine (P0-3)                                                  */
+/* ------------------------------------------------------------------------ */
+
+const SEARCH_ENGINE_OPTIONS = [
+  { value: "duckduckgo", label: "DuckDuckGo（免费，无需 Key）" },
+  { value: "tavily", label: "Tavily（需 API Key）" },
+  { value: "bocha", label: "博查（需 API Key）" },
+  { value: "searxng", label: "SearXNG（自建实例）" },
+];
+
+/* ------------------------------------------------------------------------ */
+/* Data backup: export / import (P0-4)                                       */
+/* ------------------------------------------------------------------------ */
+
+function BackupSection() {
+  const [includeImages, setIncludeImages] = useState(false);
+  const [includeMemories, setIncludeMemories] = useState(true);
+  const [busy, setBusy] = useState<"export" | "import" | null>(null);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pendingPath, setPendingPath] = useState<string | null>(null);
+  const [preview, setPreview] = useState<BackupPreview | null>(null);
+  const [strategy, setStrategy] = useState<ImportStrategy>("merge");
+  const [confirming, setConfirming] = useState(false);
+
+  const doExport = async () => {
+    setMessage(null);
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+    let path: string | null = null;
+    try {
+      path = await saveDialog({
+        title: "导出芝麻数据",
+        defaultPath: `zhima-backup-${stamp}.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    if (!path) return;
+
+    setBusy("export");
+    try {
+      const report = await exportData(path, { includeImages, includeMemories });
+      setMessage({
+        ok: true,
+        text: `已导出 ${report.conversations} 个会话 · ${report.messages} 条消息${
+          report.memories ? ` · ${report.memories} 条记忆` : ""
+        }${report.images ? ` · ${report.images} 张图片` : ""}（${(report.bytes / 1024).toFixed(1)} KB）`,
+      });
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const pickImportFile = async () => {
+    setMessage(null);
+    let path: string | null = null;
+    try {
+      const picked = await openDialog({
+        title: "选择芝麻备份文件",
+        multiple: false,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      path = typeof picked === "string" ? picked : null;
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    if (!path) return;
+
+    setBusy("import");
+    try {
+      const info = await previewBackup(path);
+      setPendingPath(path);
+      setPreview(info);
+      setStrategy("merge");
+      setConfirming(false);
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const confirmImport = async () => {
+    if (!pendingPath) return;
+    setBusy("import");
+    setMessage(null);
+    try {
+      const report = await importData(pendingPath, strategy);
+      setMessage({
+        ok: true,
+        text: `导入完成：新增 ${report.conversations} 个会话 · ${report.messages} 条消息 · ${report.memories} 条记忆${
+          report.skipped > 0 ? `，跳过 ${report.skipped} 条已存在内容` : ""
+        }`,
+      });
+      setPendingPath(null);
+      setPreview(null);
+      setConfirming(false);
+
+      // Refresh the sidebar and re-load the open conversation so imported
+      // data shows up without a restart.
+      await useHistoryStore.getState().refreshList();
+      const activeId = useHistoryStore.getState().activeId;
+      if (activeId) {
+        await useChatStore.getState().loadConversation(activeId);
+      }
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <SettingsSection
+      title="数据备份"
+      description="导出/导入会话、记忆与生成图片。备份中不包含 API Key，换机器后需要重新填写。"
+    >
+      <div className="space-y-2 px-3 pb-2 pt-1">
+        <label className="flex items-center gap-2 text-xs text-ink">
+          <input
+            type="checkbox"
+            checked={includeMemories}
+            onChange={(e) => setIncludeMemories(e.target.checked)}
+            className="rounded border-line"
+          />
+          包含长期记忆
+        </label>
+        <label className="flex items-center gap-2 text-xs text-ink">
+          <input
+            type="checkbox"
+            checked={includeImages}
+            onChange={(e) => setIncludeImages(e.target.checked)}
+            className="rounded border-line"
+          />
+          包含生成图片（体积较大）
+        </label>
+      </div>
+
+      <div className="flex items-center justify-end gap-2 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => void doExport()}
+          disabled={busy !== null}
+          className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+        >
+          {busy === "export" && <Loader2 size={12} className="animate-spin" />}
+          导出备份…
+        </button>
+        <button
+          type="button"
+          onClick={() => void pickImportFile()}
+          disabled={busy !== null}
+          className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+        >
+          {busy === "import" && <Loader2 size={12} className="animate-spin" />}
+          导入备份…
+        </button>
+      </div>
+
+      {preview && (
+        <div className="mx-3 mb-2 rounded-btn border border-line bg-panel-2 p-2.5">
+          <p className="text-xs text-ink">
+            该备份包含 {preview.conversations} 个会话 · {preview.messages} 条消息 ·{" "}
+            {preview.memories} 条记忆
+            {preview.images > 0 ? ` · ${preview.images} 张图片` : ""}
+          </p>
+          <p className="mt-0.5 text-[11px] text-ink-2">
+            导出于 {new Date(preview.exportedAt).toLocaleString("zh-CN")}
+          </p>
+
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-1.5 text-[11px] text-ink">
+              <input
+                type="radio"
+                checked={strategy === "merge"}
+                onChange={() => setStrategy("merge")}
+                className="border-line"
+              />
+              合并（保留现有数据）
+            </label>
+            <label className="flex items-center gap-1.5 text-[11px] text-ink">
+              <input
+                type="radio"
+                checked={strategy === "replace"}
+                onChange={() => setStrategy("replace")}
+                className="border-line"
+              />
+              替换（先清空现有数据）
+            </label>
+          </div>
+
+          {strategy === "replace" && (
+            <p className="mt-1.5 text-[11px] text-danger">
+              替换会删除当前全部会话、记忆与生成图片，且无法撤销。
+            </p>
+          )}
+
+          <div className="mt-2 flex items-center gap-2">
+            {confirming ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void confirmImport()}
+                  disabled={busy !== null}
+                  className="rounded-btn bg-danger px-2.5 py-1 text-[11px] text-white transition-opacity hover:opacity-85 disabled:opacity-40"
+                >
+                  确认导入
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirming(false)}
+                  className="rounded-btn border border-line px-2.5 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel"
+                >
+                  取消
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setConfirming(true)}
+                  className="rounded-btn bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90"
+                >
+                  开始导入
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreview(null);
+                    setPendingPath(null);
+                  }}
+                  className="rounded-btn border border-line px-2.5 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel"
+                >
+                  取消
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {message && (
+        <p className={`px-4 pb-2 text-[11px] ${message.ok ? "text-ink-2" : "text-danger"}`}>
+          {message.text}
+        </p>
+      )}
+    </SettingsSection>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Knowledge base (P1-9)                                                     */
+/* ------------------------------------------------------------------------ */
+
+const KB_SOURCE_LABELS: Record<string, string> = {
+  file: "文件",
+  url: "网页",
+  text: "文本",
+};
+
+/* ------------------------------------------------------------------------ */
+/* MCP servers (P1-10)                                                       */
+/* ------------------------------------------------------------------------ */
+
+function McpSection() {
+  const [servers, setServers] = useState<McpServerView[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [editing, setEditing] = useState<McpServerConfig | null>(null);
+  const [toolsFor, setToolsFor] = useState<Record<string, McpToolInfo[]>>({});
+  const [jsonDraft, setJsonDraft] = useState("");
+
+  const apply = (view: McpView) => setServers(view.servers);
+
+  const refresh = async () => {
+    try {
+      apply(await listMcpServers());
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const run = async (label: string, fn: () => Promise<void>) => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      await fn();
+      setNotice({ ok: true, text: `${label}完成` });
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const emptyServer = (): McpServerConfig => ({
+    id: "",
+    name: "",
+    command: "",
+    args: [],
+    env: {},
+    enabled: true,
+  });
+
+  const applyJson = async () => {
+    setNotice(null);
+    try {
+      const parsed = await parseMcpJson(jsonDraft);
+      setEditing({ ...parsed, id: editing?.id ?? "" });
+      setJsonDraft("");
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  const inputCls =
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+
+  return (
+    <SettingsSection
+      title="MCP 服务器"
+      description="接入 Model Context Protocol 工具服务器（stdio）。其工具会出现在 Agent 工具列表中，且默认每次调用都需要确认。"
+    >
+      <div className="mx-3 mb-2 rounded-btn border border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--cf-danger)_8%,transparent)] px-2.5 py-1.5 text-[11px] leading-5 text-danger">
+        MCP 服务器会在本机执行任意代码（与你当前用户权限相同）。仅添加你信任来源的服务器。
+      </div>
+
+      {servers.map((server) => (
+        <div key={server.id} className="mx-3 mb-2 rounded-btn border border-line bg-panel p-2.5">
+          <div className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-xs text-ink">{server.name}</span>
+            <span className="shrink-0 text-[10px] text-ink-2">{server.tools.length} 个工具</span>
+            <Dropdown
+              value={server.enabled ? "on" : "off"}
+              onChange={(value) =>
+                void run("切换启用状态", async () => {
+                  apply(await setMcpServerEnabled(server.id, value === "on"));
+                })
+              }
+              options={[
+                { value: "on", label: "启用" },
+                { value: "off", label: "禁用" },
+              ]}
+              className="w-20 shrink-0"
+            />
+          </div>
+          <p className="mt-1 break-all font-mono text-[10px] text-ink-2">{server.commandLine}</p>
+
+          <div className="mt-1.5 flex items-center gap-1.5">
+            <button
+              type="button"
+              disabled={busy || !server.enabled}
+              onClick={() =>
+                void run("测试连接", async () => {
+                  const tools = await testMcpServer(server.id);
+                  setToolsFor((prev) => ({ ...prev, [server.id]: tools }));
+                })
+              }
+              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+            >
+              测试连接
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing({ ...server })}
+              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel-2"
+            >
+              编辑
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                void run("删除服务器", async () => {
+                  apply(await deleteMcpServer(server.id));
+                })
+              }
+              className="rounded-btn border border-line px-2 py-1 text-[11px] text-danger transition-colors hover:bg-panel-2 disabled:opacity-40"
+            >
+              删除
+            </button>
+            {toolsFor[server.id] && (
+              <span className="text-[10px] text-ink-2">
+                发现 {toolsFor[server.id].length} 个工具
+              </span>
+            )}
+          </div>
+
+          {toolsFor[server.id] && toolsFor[server.id].length > 0 && (
+            <ul className="mt-1.5 space-y-0.5">
+              {toolsFor[server.id].map((tool) => (
+                <li key={tool.qualified} className="truncate text-[10px] text-ink-2" title={tool.description}>
+                  · {tool.toolName} → {tool.qualified}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {server.tools.length > 0 && !toolsFor[server.id] && (
+            <ul className="mt-1.5 space-y-0.5">
+              {server.tools.map((tool) => (
+                <li key={tool.qualified} className="truncate text-[10px] text-ink-2" title={tool.description}>
+                  · {tool.qualified}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+
+      {editing ? (
+        <div className="mx-3 mb-2 space-y-2 rounded-btn border border-line bg-panel-2 p-2.5">
+          <input
+            value={editing.name}
+            onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+            placeholder="名称，例如：文件系统"
+            className={inputCls}
+          />
+          <input
+            value={editing.command}
+            onChange={(e) => setEditing({ ...editing, command: e.target.value })}
+            placeholder="命令，例如 npx / uvx / C:\\tools\\server.exe"
+            spellCheck={false}
+            className={inputCls}
+          />
+          <textarea
+            value={editing.args.join("\n")}
+            onChange={(e) =>
+              setEditing({
+                ...editing,
+                args: e.target.value.split("\n").map((line) => line.trim()).filter(Boolean),
+              })
+            }
+            rows={2}
+            placeholder={"参数，每行一个，例如：\n-y\n@modelcontextprotocol/server-filesystem\nD:\\docs"}
+            spellCheck={false}
+            className={`${inputCls} resize-none font-mono text-[11px] leading-5`}
+          />
+          <textarea
+            value={Object.entries(editing.env)
+              .map(([key, value]) => `${key}=${value}`)
+              .join("\n")}
+            onChange={(e) =>
+              setEditing({
+                ...editing,
+                env: Object.fromEntries(
+                  e.target.value
+                    .split("\n")
+                    .map((line) => line.trim())
+                    .filter(Boolean)
+                    .map((line) => {
+                      const index = line.indexOf("=");
+                      return index < 0
+                        ? [line, ""]
+                        : [line.slice(0, index).trim(), line.slice(index + 1).trim()];
+                    }),
+                ),
+              })
+            }
+            rows={2}
+            placeholder={"环境变量，每行 KEY=VALUE（明文保存，注意不要放长期密钥）"}
+            spellCheck={false}
+            className={`${inputCls} resize-none font-mono text-[11px] leading-5`}
+          />
+          <div className="flex items-center justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={() => setEditing(null)}
+              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              disabled={busy || !editing.name.trim() || !editing.command.trim()}
+              onClick={() =>
+                void run("保存服务器", async () => {
+                  apply(await upsertMcpServer(editing));
+                  setEditing(null);
+                })
+              }
+              className="rounded-btn bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              保存并连接
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="mx-3 mb-2 space-y-2">
+          <div className="flex items-center gap-2">
+            <input
+              value={jsonDraft}
+              onChange={(e) => setJsonDraft(e.target.value)}
+              placeholder='JSON 快捷粘贴：{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","D:\\docs"]}'
+              spellCheck={false}
+              className={`${inputCls} font-mono text-[11px]`}
+            />
+            <button
+              type="button"
+              disabled={!jsonDraft.trim()}
+              onClick={() => void applyJson()}
+              className="shrink-0 rounded-btn border border-line px-2.5 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+            >
+              解析
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => setEditing(emptyServer())}
+            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
+          >
+            <Plus size={12} /> 手动添加服务器
+          </button>
+        </div>
+      )}
+
+      {notice && (
+        <p className={`px-4 pb-2 text-[11px] ${notice.ok ? "text-ink-2" : "text-danger"}`}>
+          {notice.text}
+        </p>
+      )}
+    </SettingsSection>
+  );
+}
+
+function KnowledgeSection() {
+  const [view, setView] = useState<KnowledgeView | null>(null);
+  const [documents, setDocuments] = useState<KbDocument[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [url, setUrl] = useState("");
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<KbHit[] | null>(null);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+
+  const refresh = async () => {
+    try {
+      const [cfg, docs] = await Promise.all([getKnowledgeConfig(), listKbDocuments()]);
+      setView(cfg);
+      setDocuments(docs);
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const run = async (label: string, fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      await fn();
+      await refresh();
+      setNotice({ ok: true, text: `${label}完成` });
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addFile = async () => {
+    setNotice(null);
+    let path: string | null = null;
+    try {
+      path = await pickKbFile();
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    if (!path) return;
+    await run("导入文件", () => addKbFile(path));
+  };
+
+  const runSearch = async () => {
+    const q = query.trim();
+    if (!q) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      setHits(await searchKb(q, 5));
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const inputCls =
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+
+  return (
+    <SettingsSection
+      title="知识库"
+      description="把本地文档、网页或笔记分块入库；提问时按相关度检索，命中片段自动注入上下文（无需向量模型）。"
+    >
+      <FormRow
+        label="自动注入"
+        description={`每次提问检索最相关的片段：当前 ${view?.maxChunks ?? 3} 条`}
+      >
+        <div className="flex items-center gap-2">
+          <Dropdown
+            value={String(view?.maxChunks ?? 3)}
+            onChange={(value) =>
+              void run("保存设置", () =>
+                setKnowledgeConfig(view?.autoInject ?? true, Number(value)),
+              )
+            }
+            options={[1, 2, 3, 4, 5, 6, 8].map((n) => ({ value: String(n), label: `${n} 条` }))}
+            className="w-24"
+          />
+          <Dropdown
+            value={view?.autoInject === false ? "off" : "on"}
+            onChange={(value) =>
+              void run("保存设置", () =>
+                setKnowledgeConfig(value === "on", view?.maxChunks ?? 3),
+              )
+            }
+            options={[
+              { value: "on", label: "开启" },
+              { value: "off", label: "关闭" },
+            ]}
+            className="w-24"
+          />
+        </div>
+      </FormRow>
+
+      <div className="flex items-center justify-between gap-2 px-3 pb-1 pt-2 text-[11px] text-ink-2">
+        <span>
+          共 {view?.documents ?? documents.length} 篇 · {view?.chunks ?? 0} 个片段
+        </span>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => void addFile()}
+            disabled={busy}
+            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+          >
+            {busy ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />} 导入文件
+          </button>
+          <button
+            type="button"
+            onClick={() => setPasteOpen((v) => !v)}
+            className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2"
+          >
+            粘贴文本
+          </button>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 px-3 pb-2">
+        <input
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="或粘贴网页地址，例如 https://example.com/article"
+          spellCheck={false}
+          className={inputCls}
+        />
+        <button
+          type="button"
+          disabled={busy || !url.trim()}
+          onClick={() => void run("导入网页", () => addKbUrl(url.trim()))}
+          className="shrink-0 rounded-btn border border-line px-2.5 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+        >
+          导入网页
+        </button>
+      </div>
+
+      {pasteOpen && (
+        <div className="mx-3 mb-2 space-y-2 rounded-btn border border-line bg-panel-2 p-2.5">
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="资料标题"
+            className={inputCls}
+          />
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            rows={4}
+            placeholder="粘贴要入库的文本内容"
+            className={`${inputCls} resize-none leading-5`}
+          />
+          <div className="flex items-center justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={() => setPasteOpen(false)}
+              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              disabled={busy || !title.trim() || !body.trim()}
+              onClick={() =>
+                void run("保存文本", async () => {
+                  await addKbText(title.trim(), body.trim());
+                  setTitle("");
+                  setBody("");
+                  setPasteOpen(false);
+                })
+              }
+              className="rounded-btn bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              入库
+            </button>
+          </div>
+        </div>
+      )}
+
+      {documents.length > 0 && (
+        <div className="mx-3 mb-2 divide-y divide-[var(--cf-border)] overflow-hidden rounded-btn border border-line">
+          {documents.map((doc) => (
+            <div key={doc.id} className="flex items-center gap-2 bg-panel px-2.5 py-1.5">
+              <FileText size={12} className="shrink-0 text-ink-2" />
+              <span className="min-w-0 flex-1 truncate text-xs text-ink" title={doc.sourceRef ?? doc.title}>
+                {doc.title}
+              </span>
+              <span className="cf-provider-badge shrink-0">
+                {KB_SOURCE_LABELS[doc.sourceType] ?? doc.sourceType}
+              </span>
+              <span className="shrink-0 text-[10px] text-ink-2">{doc.chunkCount} 片段</span>
+              {confirmingId === doc.id ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void run("删除", () => deleteKbDocument(doc.id));
+                    setConfirmingId(null);
+                  }}
+                  className="shrink-0 text-[11px] text-danger"
+                >
+                  确认删除
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingId(doc.id)}
+                  title="从知识库移除"
+                  className="cf-icon-btn danger shrink-0"
+                >
+                  <Trash2 size={11} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="px-3 pb-2">
+        <label className="mb-1 block text-xs text-ink-2">检索测试</label>
+        <div className="flex items-center gap-2">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void runSearch();
+              }
+            }}
+            placeholder="输入问题，看看会召回哪些片段"
+            className={inputCls}
+          />
+          <button
+            type="button"
+            disabled={busy || !query.trim()}
+            onClick={() => void runSearch()}
+            className="shrink-0 rounded-btn border border-line px-2.5 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+          >
+            检索
+          </button>
+        </div>
+        {hits && (
+          <div className="mt-1.5 space-y-1.5">
+            {hits.length === 0 && <p className="text-[11px] text-ink-2">没有命中片段</p>}
+            {hits.map((hit, index) => (
+              <div
+                key={`${hit.documentId}-${hit.seq}-${index}`}
+                className="rounded-btn border border-line bg-panel-2 px-2 py-1.5 text-[11px] leading-5"
+              >
+                <p className="text-ink-2">
+                  {hit.title} · 片段 {hit.seq + 1}
+                </p>
+                <p className="text-ink">{hit.snippet}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {notice && (
+        <p className={`px-4 pb-2 text-[11px] ${notice.ok ? "text-ink-2" : "text-danger"}`}>
+          {notice.text}
+        </p>
+      )}
+    </SettingsSection>
+  );
+}
+
+function WebSearchSection() {
+  const [engine, setEngine] = useState("duckduckgo");
+  const [searxUrl, setSearxUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [keySet, setKeySet] = useState(false);
+  const [ready, setReady] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [testQuery, setTestQuery] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<WebSearchTestResult | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
+
+  const applyView = (view: WebSearchConfigView) => {
+    setEngine(view.engine);
+    setSearxUrl(view.searxngBaseUrl ?? "");
+    setKeySet(
+      view.engine === "tavily"
+        ? view.tavilyKeySet
+        : view.engine === "bocha"
+          ? view.bochaKeySet
+          : false,
+    );
+    setReady(view.ready);
+  };
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        applyView(await getWebSearchConfig());
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  const needsKey = engine === "tavily" || engine === "bocha";
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      let view = await setWebSearchConfig(
+        engine,
+        engine === "searxng" ? searxUrl.trim() : null,
+      );
+      if (needsKey && apiKey.trim()) {
+        view = await setWebSearchApiKey(engine, apiKey.trim());
+        setApiKey("");
+      }
+      applyView(view);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runTest = async () => {
+    setTesting(true);
+    setTestError(null);
+    setTestResult(null);
+    try {
+      setTestResult(await testWebSearch(testQuery.trim() || "今日新闻"));
+    } catch (err) {
+      setTestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const inputCls =
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+
+  return (
+    <SettingsSection
+      title="联网搜索"
+      description="Agent 的 web_search 工具与对话中的联网搜索都使用这里选择的引擎。"
+    >
+      <FormRow label="搜索引擎" description="DuckDuckGo 免费无需配置；其余引擎需要 Key 或自建实例">
+        <Dropdown
+          value={engine}
+          onChange={setEngine}
+          options={SEARCH_ENGINE_OPTIONS}
+          className="w-56"
+        />
+      </FormRow>
+
+      {needsKey && (
+        <div className="px-3 pb-2">
+          <label className="mb-1 block text-xs text-ink-2">API Key</label>
+          <div className="relative">
+            <input
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              type={showKey ? "text" : "password"}
+              placeholder={keySet ? "已配置 · 留空则保持不变" : "粘贴 API Key"}
+              spellCheck={false}
+              className={`${inputCls} pr-9`}
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey(!showKey)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-2 hover:text-ink"
+            >
+              {showKey ? <EyeOff size={13} /> : <Eye size={13} />}
+            </button>
+          </div>
+          <p className="mt-1 text-[11px] text-ink-2">
+            保存在 Windows 凭据管理器中，不会写入配置文件。保存后可用下方「测试搜索」验证。
+          </p>
+        </div>
+      )}
+
+      {engine === "searxng" && (
+        <div className="px-3 pb-2">
+          <label className="mb-1 block text-xs text-ink-2">实例地址</label>
+          <input
+            value={searxUrl}
+            onChange={(e) => setSearxUrl(e.target.value)}
+            placeholder="https://searx.example.com"
+            spellCheck={false}
+            className={inputCls}
+          />
+          <p className="mt-1 text-[11px] text-ink-2">
+            需在实例的 settings.yml 中开启 JSON 输出（format: json）。
+          </p>
+        </div>
+      )}
+
+      {loaded && !ready && engine !== "duckduckgo" && (
+        <p className="px-4 pb-1 text-[11px] text-danger">
+          当前引擎尚未配置完成，联网搜索会返回错误提示。
+        </p>
+      )}
+
+      <div className="px-3 pb-2 pt-1">
+        <label className="mb-1 block text-xs text-ink-2">测试搜索</label>
+        <div className="flex items-center gap-2">
+          <input
+            value={testQuery}
+            onChange={(e) => setTestQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void runTest();
+              }
+            }}
+            placeholder="输入关键词（默认：今日新闻）"
+            spellCheck={false}
+            className={inputCls}
+          />
+          <button
+            type="button"
+            onClick={() => void runTest()}
+            disabled={testing || !ready}
+            className="flex shrink-0 items-center gap-1 rounded-btn border border-line px-3 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+          >
+            {testing && <Loader2 size={12} className="animate-spin" />}
+            测试
+          </button>
+        </div>
+        {testError && <p className="mt-1.5 text-[11px] text-danger">{testError}</p>}
+        {testResult && (
+          <div className="mt-1.5 space-y-1.5 rounded-btn border border-line bg-panel-2 p-2">
+            <p className="text-[11px] text-ink-2">
+              {testResult.count} 条结果 · {testResult.elapsedMs} ms
+            </p>
+            {testResult.results.map((r, i) => (
+              <div key={i} className="min-w-0 text-[11px] leading-4">
+                <p className="truncate text-ink">{r.title || r.url}</p>
+                <p className="truncate text-ink-2">{r.snippet}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center justify-end gap-2 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving || !loaded}
+          className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-xs font-medium text-accent-fg transition-colors hover:opacity-90 disabled:opacity-40"
+        >
+          {saved && <Check size={12} />}
+          {saving ? "保存中…" : saved ? "已保存" : "保存"}
         </button>
       </div>
       {error && <p className="px-4 pb-2 text-[11px] text-danger">{error}</p>}
@@ -1632,14 +2992,30 @@ function acceleratorKey(code: string): string | null {
   return null;
 }
 
-function ShortcutRecorder() {
+/**
+ * Records one accelerator.  `kind` selects which chord is being edited:
+ * `wake` = show/hide the window, `quick` = the selected-text hotkey (P1-5),
+ * which additionally has an on/off switch.
+ */
+function ShortcutRecorder({ kind = "wake" }: { kind?: "wake" | "quick" }) {
   const [current, setCurrent] = useState<string>("");
   const [recording, setRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [enabled, setEnabled] = useState(true);
 
   useEffect(() => {
-    void api.getShortcut().then(setCurrent).catch(() => undefined);
-  }, []);
+    if (kind === "quick") {
+      void api
+        .getQuickAction()
+        .then((view) => {
+          setCurrent(view.shortcut);
+          setEnabled(view.enabled);
+        })
+        .catch(() => undefined);
+    } else {
+      void api.getShortcut().then(setCurrent).catch(() => undefined);
+    }
+  }, [kind]);
 
   useEffect(() => {
     if (!recording) return;
@@ -1668,32 +3044,63 @@ function ShortcutRecorder() {
 
       const accel = parts.join("+");
       setRecording(false);
-      api
-        .setShortcut(accel)
+      const request =
+        kind === "quick" ? api.setQuickAction(enabled, accel) : api.setShortcut(accel);
+      request
         .then((value) => {
-          setCurrent(value);
+          setCurrent(typeof value === "string" ? value : value.shortcut);
+          if (typeof value !== "string") setEnabled(value.enabled);
           setError(null);
         })
         .catch((err) => setError(err instanceof Error ? err.message : String(err)));
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [recording]);
+  }, [recording, kind, enabled]);
+
+  const toggleEnabled = () => {
+    const next = !enabled;
+    setEnabled(next);
+    void api
+      .setQuickAction(next, current || "Alt+Q")
+      .then((view) => {
+        setCurrent(view.shortcut);
+        setError(null);
+      })
+      .catch((err) => {
+        setEnabled(!next);
+        setError(err instanceof Error ? err.message : String(err));
+      });
+  };
 
   return (
-    <div className="flex items-center gap-2">
-      <span className="min-w-24 flex-1 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-center text-xs text-ink">
-        {recording ? "按下新快捷键…" : current || "Alt+Space"}
-      </span>
-      <button
-        onClick={() => {
-          setError(null);
-          setRecording(!recording);
-        }}
-        className="rounded-btn border border-line px-2.5 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2"
-      >
-        {recording ? "取消" : "重新录入"}
-      </button>
+    <div className="flex w-full flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <span className="min-w-24 flex-1 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-center text-xs text-ink">
+          {recording ? "按下新快捷键…" : current || (kind === "quick" ? "Alt+Q" : "Alt+Space")}
+        </span>
+        <button
+          onClick={() => {
+            setError(null);
+            setRecording(!recording);
+          }}
+          className="rounded-btn border border-line px-2.5 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2"
+        >
+          {recording ? "取消" : "重新录入"}
+        </button>
+      </div>
+      {kind === "quick" && (
+        <button
+          onClick={toggleEnabled}
+          className={`self-start rounded-btn px-2 py-0.5 text-[11px] transition-colors ${
+            enabled
+              ? "bg-accent text-accent-fg hover:opacity-90"
+              : "border border-line text-ink-2 hover:bg-panel-2"
+          }`}
+        >
+          {enabled ? "划词已启用" : "划词已停用"}
+        </button>
+      )}
       {error && <p className="mt-1 text-xs text-danger">{error}</p>}
     </div>
   );
@@ -1906,6 +3313,19 @@ function GeneralTab() {
             <ShortcutRecorder />
           </div>
         </div>
+
+        <div className="cf-form-row items-start">
+          <div className="flex-1">
+            <p className="text-sm font-medium text-ink">划词助手快捷键</p>
+            <p className="mt-0.5 text-xs text-ink-2">
+              在任意程序里选中文本后按此快捷键：自动复制取词、唤起窗口并给出翻译 /
+              解释 / 总结等动作。管理员权限（UAC 提升）的窗口无法取词，这是 Windows 限制。
+            </p>
+          </div>
+          <div className="flex w-44 shrink-0 flex-col gap-1">
+            <ShortcutRecorder kind="quick" />
+          </div>
+        </div>
       </SettingsSection>
 
       <SettingsSection title="窗口行为" description="控制窗口的显隐与位置记忆">
@@ -1934,6 +3354,14 @@ function GeneralTab() {
       <PresetSection />
 
       <MemorySection />
+
+      <WebSearchSection />
+
+      <KnowledgeSection />
+
+      <McpSection />
+
+      <BackupSection />
 
       <ProxySection />
 

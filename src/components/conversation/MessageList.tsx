@@ -1,19 +1,28 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { isPrinting, subscribePrinting } from "../../lib/print";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
   Bookmark,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Copy,
   FileText,
   GitBranch,
   Globe,
+  Pencil,
   RefreshCw,
+  Square,
   Wrench,
 } from "lucide-react";
-import type { Message, SearchResult, ToolCallStep } from "../../types";
-import { useChatStore } from "../../stores/chat-store";
+import type { Message, MessageVersion, SearchResult, ToolCallStep } from "../../types";
+import { formatChars, splitAttachments } from "../../lib/attachments";
+import {
+  selectStreaming,
+  streamRequestIdForMessage,
+  useChatStore,
+} from "../../stores/chat-store";
 import { useHistoryStore } from "../../services/history-store";
 import { createMemory } from "../../services/memory-api";
 import { useProvidersStore } from "../../stores/providers-store";
@@ -88,35 +97,97 @@ function Dropdown({
   );
 }
 
+/**
+ * One rendered row of the list: a single message, or the answers of a
+ * multi-model turn (P1-6) that share one prompt and render side by side.
+ */
+type ListRow =
+  | { kind: "single"; id: string; message: Message }
+  | { kind: "group"; id: string; messages: Message[] };
+
+/** The messages a row contains (used for search-hit lookup). */
+function messagesOf(row: ListRow): Message[] {
+  return row.kind === "single" ? [row.message] : row.messages;
+}
+
+/** Group consecutive assistant replies (2+) under their prompt into one row. */
+function groupRows(messages: Message[]): ListRow[] {
+  const rows: ListRow[] = [];
+  let i = 0;
+  while (i < messages.length) {
+    const message = messages[i];
+    if (message.role !== "user") {
+      rows.push({ kind: "single", id: message.id, message });
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    while (j < messages.length && messages[j].role === "assistant") j += 1;
+    const assistants = messages.slice(i + 1, j);
+    rows.push({ kind: "single", id: message.id, message });
+    if (assistants.length === 1) {
+      rows.push({ kind: "single", id: assistants[0].id, message: assistants[0] });
+    } else if (assistants.length > 1) {
+      rows.push({ kind: "group", id: `group-${assistants[0].id}`, messages: assistants });
+    }
+    i = j;
+  }
+  return rows;
+}
+
 export function MessageList() {
-  const storedMessages = useChatStore((s) => s.messages);
-  const streamingMessage = useChatStore((s) => s.streamingMessage);
-  const messages = streamingMessage ? [...storedMessages, streamingMessage] : storedMessages;
+  const messages = useChatStore((s) => s.messages);
+  // Printing expands the virtual list so every message reaches the paper.
+  const printing = useSyncExternalStore(subscribePrinting, isPrinting);
   const activeId = useHistoryStore((s) => s.activeId);
-  const streaming = useChatStore(
-    (s) => s.streamingRequestId !== null || s.streamingMessageId !== null,
-  );
+  const streaming = useChatStore(selectStreaming);
   const listRef = useRef<VirtuosoHandle>(null);
   const previousLength = useRef(messages.length);
   const [activeTurn, setActiveTurn] = useState(0);
+  const focusMessageId = useChatStore((s) => s.focusMessageId);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const handledFocus = useRef<string | null>(null);
+
+  const rows = useMemo(() => groupRows(messages), [messages]);
   const turnIndexes = useMemo(
-    () => messages.flatMap((message, index) => (message.role === "user" ? [index] : [])),
-    [messages],
+    () => rows.flatMap((row, index) => (row.kind === "single" && row.message.role === "user" ? [index] : [])),
+    [rows],
   );
 
   // A new prompt must always land at the latest turn, even if the user had
   // browsed older messages before sending it.
   useEffect(() => {
-    if (messages.length > previousLength.current) {
-      listRef.current?.scrollToIndex({ index: messages.length - 1, align: "end", behavior: "smooth" });
+    if (rows.length > previousLength.current) {
+      listRef.current?.scrollToIndex({ index: rows.length - 1, align: "end", behavior: "smooth" });
     }
-    previousLength.current = messages.length;
-  }, [messages.length]);
+    previousLength.current = rows.length;
+  }, [rows.length]);
 
   useEffect(() => {
-    previousLength.current = messages.length;
+    previousLength.current = rows.length;
     setActiveTurn(Math.max(0, turnIndexes.length - 1));
   }, [activeId]);
+
+  // Reveal a message requested by the sidebar's search results (P0-2):
+  // scroll it into view once and flash a highlight so the user spots it.
+  useEffect(() => {
+    if (!focusMessageId || handledFocus.current === focusMessageId) return;
+    const index = rows.findIndex((row) =>
+      messagesOf(row).some((m) => m.id === focusMessageId),
+    );
+    if (index < 0) return;
+    handledFocus.current = focusMessageId;
+    setHighlightId(focusMessageId);
+    const frame = window.requestAnimationFrame(() => {
+      listRef.current?.scrollToIndex({ index, align: "center", behavior: "smooth" });
+      useChatStore.getState().clearFocusMessage();
+    });
+    const timer = window.setTimeout(() => setHighlightId(null), 2200);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [focusMessageId, rows]);
 
   if (messages.length === 0) {
     return <EmptyState />;
@@ -130,19 +201,23 @@ export function MessageList() {
   };
 
   return (
-    <div className="relative flex min-h-0 flex-1">
+    // `data-export-root` marks the pane that image export snapshots; the
+    // print stylesheet keeps only this subtree visible (P1-11.2 / P1-11.3).
+    <div className="cf-print-area relative flex min-h-0 flex-1" data-export-root>
       <Virtuoso
         ref={listRef}
         // Re-mount on conversation switch so the list starts at the newest
         // message (bottom) instead of the top.
         key={activeId ?? "new"}
-        data={messages}
-        computeItemKey={(_index, message) => message.id}
-        initialTopMostItemIndex={Math.max(0, messages.length - 1)}
+        data={rows}
+        computeItemKey={(_index, row) => row.id}
+        initialTopMostItemIndex={Math.max(0, rows.length - 1)}
         style={{ height: "100%" }}
         className="flex-1"
         followOutput={"smooth"}
-        increaseViewportBy={{ top: 200, bottom: 200 }}
+        // While printing, every row must exist in the DOM (the list is
+        // virtualised), so the viewport is widened to the whole conversation.
+        increaseViewportBy={printing ? { top: 200_000, bottom: 200_000 } : { top: 200, bottom: 200 }}
         rangeChanged={({ startIndex, endIndex }) => {
           let visibleTurn = -1;
           for (let turn = turnIndexes.length - 1; turn >= 0; turn--) {
@@ -155,9 +230,29 @@ export function MessageList() {
             setActiveTurn(visibleTurn);
           }
         }}
-        itemContent={(_index, message) => (
-          <div className="px-3 pb-5">
-            <MessageItem message={message} streaming={streaming} />
+        itemContent={(_index, row) => (
+          <div
+            className={`px-3 pb-5 transition-colors duration-500 ${
+              messagesOf(row).some((m) => m.id === highlightId)
+                ? "rounded-input bg-[color-mix(in_srgb,var(--cf-accent)_10%,transparent)]"
+                : ""
+            }`}
+          >
+            {row.kind === "single" ? (
+              <MessageItem message={row.message} streaming={streaming} />
+            ) : (
+              // Multi-model answers to one prompt, side by side (P1-6).
+              <div
+                className="grid gap-3"
+                style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}
+              >
+                {row.messages.map((m) => (
+                  <div key={m.id} className="min-w-0">
+                    <MessageItem message={m} streaming={streaming} />
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       />
@@ -165,7 +260,7 @@ export function MessageList() {
         <nav aria-label="对话轮次索引" className="cf-turn-index">
           {turnIndexes.map((messageIndex, turn) => (
             <button
-              key={messages[messageIndex]?.id}
+              key={rows[messageIndex]?.id}
               type="button"
               title={`跳转到第 ${turn + 1} 轮对话`}
               aria-label={`跳转到第 ${turn + 1} 轮对话`}
@@ -267,31 +362,7 @@ const MessageItem = memo(function MessageItem({
   streaming: boolean;
 }) {
   if (message.role === "user") {
-    return (
-      <div className="group flex justify-end gap-2">
-        <div className="max-w-[85%]">
-          {message.images && message.images.length > 0 && (
-            <div className="mb-1 flex flex-wrap justify-end gap-1.5">
-              {message.images.map((img, idx) => (
-                <img
-                  key={idx}
-                  src={img}
-                  alt={`图片 ${idx + 1}`}
-                  className="h-20 w-20 rounded-btn border border-line object-cover"
-                />
-              ))}
-            </div>
-          )}
-          {message.content.length > 0 && (
-            <div className="select-text whitespace-pre-wrap rounded-input rounded-br-md bg-[var(--cf-user-bubble)] px-3 py-2 text-sm leading-6">
-              {message.content}
-            </div>
-          )}
-          <UserMessageActions content={message.content} messageId={message.id} />
-        </div>
-        <UserAvatar />
-      </div>
-    );
+    return <UserMessage message={message} streaming={streaming} />;
   }
 
   const isStreamingThis = message.status === "streaming" && streaming;
@@ -304,7 +375,7 @@ const MessageItem = memo(function MessageItem({
     message.content.trim().length <= 2 && (message.reasoning?.trim().length ?? 0) > 0;
 
   return (
-    <div className="group flex gap-2">
+    <div className="group flex gap-2" data-message-id={message.id}>
       <AiAvatar />
       <div className="min-w-0 flex-1">
         {message.reasoning && (
@@ -321,8 +392,19 @@ const MessageItem = memo(function MessageItem({
         {message.sources && message.sources.length > 0 && (
           <SourcesBlock sources={message.sources} />
         )}
+
+        {/* Local knowledge base hint (P1-9) */}
+        {message.kbHits != null && message.kbHits > 0 && (
+          <div
+            className="mb-1 flex items-center gap-1.5 py-0.5 text-[11px] text-ink-2"
+            title={message.kbTitles?.join("\n")}
+          >
+            <Bookmark size={11} className="text-accent" />
+            已参考知识库 {message.kbHits} 条
+          </div>
+        )}
         {message.toolCalls && message.toolCalls.length > 0 && (
-          <ToolCallsBlock toolCalls={message.toolCalls} />
+          <ToolCallsBlock toolCalls={message.toolCalls} messageId={message.id} />
         )}
 
         {message.content.length > 0 && (
@@ -360,14 +442,16 @@ const MessageItem = memo(function MessageItem({
             {message.retryable && (
               <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                 <button
-                  onClick={() => useChatStore.getState().retryLast()}
+                  onClick={() => void useChatStore.getState().regenerate(message.id)}
                   className="inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-0.5 text-xs text-ink transition-colors hover:bg-panel-2"
                 >
                   <RefreshCw size={11} /> 重试
                 </button>
                 {message.toolCalls && message.toolCalls.length > 0 && (
                   <button
-                    onClick={() => useChatStore.getState().retryLast({ disableTools: true })}
+                    onClick={() =>
+                      void useChatStore.getState().regenerate(message.id, { disableTools: true })
+                    }
                     className="inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-0.5 text-xs text-ink transition-colors hover:bg-panel-2"
                     title="关闭 Agent 工具后重新提问，常用于工具调用失败时的恢复"
                   >
@@ -383,6 +467,23 @@ const MessageItem = memo(function MessageItem({
           <p className="mt-1 text-xs text-ink-2">已停止生成</p>
         )}
 
+        {/* Per-column stop: a multi-model turn runs several streams at once,
+            so each one can be cancelled on its own. */}
+        {isStreamingThis && (
+          <button
+            onClick={() => {
+              const requestId = streamRequestIdForMessage(
+                useChatStore.getState(),
+                message.id,
+              );
+              if (requestId) useChatStore.getState().stopStream(requestId);
+            }}
+            className="mt-1.5 flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+          >
+            <Square size={10} /> 停止
+          </button>
+        )}
+
         {(message.status === "done" || message.status === "cancelled") &&
           message.content.length > 0 && (
             <MessageActions
@@ -393,6 +494,14 @@ const MessageItem = memo(function MessageItem({
               messageId={message.id}
             />
           )}
+
+        {message.versions && message.versions.length > 1 && (
+          <VersionSwitcher
+            messageId={message.id}
+            versions={message.versions}
+            activeVersion={message.activeVersion ?? 0}
+          />
+        )}
       </div>
     </div>
   );
@@ -445,12 +554,20 @@ function SourcesBlock({ sources }: { sources: SearchResult[] }) {
   );
 }
 
-function ToolCallsBlock({ toolCalls }: { toolCalls: ToolCallStep[] }) {
+function ToolCallsBlock({
+  toolCalls,
+  messageId,
+}: {
+  toolCalls: ToolCallStep[];
+  messageId: string;
+}) {
   const [open, setOpen] = useState(false);
   const running = toolCalls.some((call) => call.status === "running");
   const pending = toolCalls.some((call) => call.status === "pending");
   const doneCount = toolCalls.filter((call) => call.status === "done").length;
-  const requestId = useChatStore((s) => s.streamingRequestId);
+  // The verdict must reach the stream that produced this call, so resolve the
+  // request id from the owning message instead of assuming a single stream.
+  const requestId = useChatStore((s) => streamRequestIdForMessage(s, messageId));
 
   // Auto-expand while a tool call is awaiting approval so the allow/reject
   // buttons are immediately visible instead of hidden behind the toggle.
@@ -682,12 +799,30 @@ function ReasoningBlock({ text, defaultOpen = false }: { text: string; defaultOp
   );
 }
 
-function UserMessageActions({ content, messageId }: { content: string; messageId: string }) {
+/**
+ * User bubble with hover actions and inline editing (P0-1).  Saving an edit
+ * appends a new version and re-runs the turn's reply; the previous prompt
+ * stays reachable through the version switcher.
+ */
+const UserMessage = memo(function UserMessage({
+  message,
+  streaming,
+}: {
+  message: Message;
+  streaming: boolean;
+}) {
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
+  const [saving, setSaving] = useState(false);
+  const [showAttachmentText, setShowAttachmentText] = useState(false);
+  // Attachment blocks live inside the content (P1-8); split them out so the
+  // bubble stays compact.
+  const { blocks: attachmentBlocks, prompt: userPrompt } = splitAttachments(message.content);
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(content);
+      await navigator.clipboard.writeText(message.content);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -695,22 +830,202 @@ function UserMessageActions({ content, messageId }: { content: string; messageId
     }
   };
 
+  const startEdit = () => {
+    setDraft(message.content);
+    setEditing(true);
+  };
+
+  const save = async () => {
+    const next = draft.trim();
+    if (!next) return;
+    if (next === message.content) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      await useChatStore.getState().editMessage(message.id, next);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const iconBtn =
+    "grid h-5 w-5 place-items-center rounded-md text-ink-2 opacity-0 transition-opacity hover:bg-panel-2 hover:text-ink group-hover:opacity-100 disabled:opacity-30 disabled:hover:bg-transparent";
+
   return (
-    <div className="mt-0.5 flex justify-end">
+    <div className="group flex justify-end gap-2" data-message-id={message.id}>
+      <div className="min-w-0 max-w-[85%]">
+        {message.images && message.images.length > 0 && (
+          <div className="mb-1 flex flex-wrap justify-end gap-1.5">
+            {message.images.map((img, idx) => (
+              <img
+                key={idx}
+                src={img}
+                alt={`图片 ${idx + 1}`}
+                className="h-20 w-20 rounded-btn border border-line object-cover"
+              />
+            ))}
+          </div>
+        )}
+
+        {editing ? (
+          <div className="rounded-input border border-line bg-panel-2 p-2">
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              rows={Math.min(10, Math.max(2, draft.split("\n").length))}
+              autoFocus
+              spellCheck={false}
+              className="w-full resize-none bg-transparent text-sm leading-6 text-ink outline-none"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setEditing(false);
+                } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  void save();
+                }
+              }}
+            />
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <span className="mr-auto text-[10px] text-ink-2">
+                保存后自动重新生成回复（Ctrl+Enter 保存）
+              </span>
+              <button
+                onClick={() => setEditing(false)}
+                className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-ink-2 transition-colors hover:bg-panel"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => void save()}
+                disabled={saving || !draft.trim()}
+                className="rounded-btn bg-accent px-2.5 py-0.5 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                {saving ? "保存中…" : "保存"}
+              </button>
+            </div>
+          </div>
+        ) : attachmentBlocks.length > 0 ? (
+          // Document attachments (P1-8): the text is part of the content, but
+          // the bubble shows a chip + the prompt, with the text on demand.
+          <div className="flex flex-col items-end gap-1">
+            {attachmentBlocks.map((block, idx) => (
+              <button
+                key={`${block.name}-${idx}`}
+                type="button"
+                onClick={() => setShowAttachmentText((v) => !v)}
+                title={showAttachmentText ? "收起附件内容" : "查看附件内容"}
+                className="flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel"
+              >
+                <FileText size={11} className="shrink-0 text-ink-2" />
+                <span className="max-w-[12rem] truncate">{block.name}</span>
+                <span className="shrink-0 text-ink-2">{formatChars(block.text.length)}</span>
+              </button>
+            ))}
+            {userPrompt.length > 0 && (
+              <div className="select-text whitespace-pre-wrap rounded-input rounded-br-md bg-[var(--cf-user-bubble)] px-3 py-2 text-sm leading-6">
+                {userPrompt}
+              </div>
+            )}
+            {showAttachmentText && (
+              <pre className="max-h-64 w-full select-text overflow-auto whitespace-pre-wrap rounded-input border border-line bg-panel-2 px-3 py-2 text-[11px] leading-5 text-ink-2">
+                {attachmentBlocks.map((block) => block.text).join("\n\n")}
+              </pre>
+            )}
+          </div>
+        ) : (
+          message.content.length > 0 && (
+            <div className="select-text whitespace-pre-wrap rounded-input rounded-br-md bg-[var(--cf-user-bubble)] px-3 py-2 text-sm leading-6">
+              {message.content}
+            </div>
+          )
+        )}
+
+        {!editing && (
+          <div className="mt-0.5 flex justify-end">
+            <button className={iconBtn} title="复制消息" onClick={() => void copy()}>
+              {copied ? <Check size={11} className="text-success" /> : <Copy size={11} />}
+            </button>
+            <button
+              className={iconBtn}
+              title="编辑消息（保存后重新生成回复）"
+              onClick={startEdit}
+              disabled={streaming}
+            >
+              <Pencil size={11} />
+            </button>
+            <button
+              className={iconBtn}
+              title="从这里继续（创建分支）"
+              onClick={() => useChatStore.getState().branchFrom(message.id)}
+            >
+              <GitBranch size={11} />
+            </button>
+          </div>
+        )}
+
+        {message.versions && message.versions.length > 1 && (
+          <div className="flex justify-end">
+            <VersionSwitcher
+              messageId={message.id}
+              versions={message.versions}
+              activeVersion={message.activeVersion ?? 0}
+            />
+          </div>
+        )}
+      </div>
+      <UserAvatar />
+    </div>
+  );
+});
+
+/** `‹ n/m ›` control for messages that carry more than one version. */
+function VersionSwitcher({
+  messageId,
+  versions,
+  activeVersion,
+}: {
+  messageId: string;
+  versions: MessageVersion[];
+  activeVersion: number;
+}) {
+  const streaming = useChatStore(selectStreaming);
+  const total = versions.length;
+  const current = Math.min(Math.max(activeVersion, 0), total - 1);
+
+  const go = (index: number) => {
+    if (streaming || index < 0 || index >= total || index === current) return;
+    void useChatStore.getState().switchMessageVersion(messageId, index);
+  };
+
+  const btn =
+    "grid h-4 w-4 place-items-center rounded text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent";
+
+  return (
+    <div className="mt-1 flex items-center gap-0.5 text-[10px] text-ink-2" title="切换历史版本">
       <button
-        className="grid h-5 w-5 place-items-center rounded-md text-ink-2 opacity-0 transition-opacity hover:bg-panel-2 hover:text-ink group-hover:opacity-100"
-        title="复制消息"
-        onClick={() => void copy()}
+        className={btn}
+        onClick={() => go(current - 1)}
+        disabled={streaming || current === 0}
+        title="上一个版本"
       >
-        {copied ? <Check size={11} className="text-success" /> : <Copy size={11} />}
+        <ChevronLeft size={11} />
       </button>
+      <span className="tabular-nums">
+        {current + 1}/{total}
+      </span>
       <button
-        className="grid h-5 w-5 place-items-center rounded-md text-ink-2 opacity-0 transition-opacity hover:bg-panel-2 hover:text-ink group-hover:opacity-100"
-        title="从这里继续（创建分支）"
-        onClick={() => useChatStore.getState().branchFrom(messageId)}
+        className={btn}
+        onClick={() => go(current + 1)}
+        disabled={streaming || current === total - 1}
+        title="下一个版本"
       >
-        <GitBranch size={11} />
+        <ChevronRight size={11} />
       </button>
+      <span className="ml-0.5 opacity-70">{current === total - 1 ? "最新" : "历史"}</span>
     </div>
   );
 }
@@ -806,7 +1121,11 @@ function MessageActions({
             <FileText size={12} />
           )}
         </button>
-        <button className={btn} title="重新生成" onClick={() => useChatStore.getState().retryLast()}>
+        <button
+          className={btn}
+          title="重新生成（当前回答会保留为历史版本）"
+          onClick={() => void useChatStore.getState().regenerate(messageId)}
+        >
           <RefreshCw size={12} />
         </button>
         <button className={btn} title="记住这条（保存为长期记忆）" onClick={openMemo}>

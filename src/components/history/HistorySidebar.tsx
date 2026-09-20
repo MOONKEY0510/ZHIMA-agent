@@ -1,22 +1,34 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, CheckSquare, FileText, Pencil, Plus, Search, Square, Trash2, X, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Check, CheckSquare, FileText, MessageSquare, Pencil, Pin, PinOff, Plus, Search, Square, Trash2, X, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useHistoryStore } from "../../services/history-store";
-import { setConversationSystemPrompt } from "../../services/history-api";
-import { useChatStore } from "../../stores/chat-store";
+import {
+  searchMessages,
+  setConversationSystemPrompt,
+  type MessageHit,
+} from "../../services/history-api";
+import { selectStreaming, useChatStore } from "../../stores/chat-store";
+import { sortedAssistants, useAssistantsStore } from "../../stores/assistants-store";
 import { relativeTime } from "../../lib/time";
+
+/** Minimum query length before the backend full-text search is consulted. */
+const MIN_SEARCH_CHARS = 2;
 
 /**
  * Conversation history sidebar for the full conversation mode (plan §3.2):
- * search, switch, rename, delete, batch select & batch delete. Switching is
- * blocked while generating.
+ * full-text message search, title filter, switch, rename, delete, batch
+ * select & batch delete. Switching is blocked while generating.
  */
 export function HistorySidebar() {
   const conversations = useHistoryStore((s) => s.conversations);
   const activeId = useHistoryStore((s) => s.activeId);
   const remove = useHistoryStore((s) => s.remove);
   const rename = useHistoryStore((s) => s.rename);
+  const setPinned = useHistoryStore((s) => s.setPinned);
   const loadConversation = useChatStore((s) => s.loadConversation);
   const clearConversation = useChatStore((s) => s.clearConversation);
+  const assistants = useAssistantsStore((s) => s.assistants);
+  const assistantId = useAssistantsStore((s) => s.activeId);
+  const setAssistant = useAssistantsStore((s) => s.setActive);
 
   const [query, setQuery] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -53,7 +65,13 @@ export function HistorySidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const streaming = useChatStore((s) => s.streamingRequestId !== null);
+  const streaming = useChatStore(selectStreaming);
+
+  // Full-text search over message content (debounced).
+  const [hits, setHits] = useState<MessageHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const trimmedQuery = query.trim();
+  const searchActive = trimmedQuery.length >= MIN_SEARCH_CHARS;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -61,6 +79,41 @@ export function HistorySidebar() {
       ? conversations.filter((c) => c.title.toLowerCase().includes(q))
       : conversations;
   }, [conversations, query]);
+
+  useEffect(() => {
+    if (!searchActive) {
+      setHits([]);
+      setSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      searchMessages(trimmedQuery, 30)
+        .then((results) => {
+          if (!cancelled) setHits(results);
+        })
+        .catch(() => {
+          if (!cancelled) setHits([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [trimmedQuery, searchActive]);
+
+  /** Open a hit: load its conversation (if needed) and reveal the message. */
+  const openHit = async (hit: MessageHit) => {
+    if (streaming) return;
+    if (hit.conversationId !== activeId) {
+      await loadConversation(hit.conversationId);
+    }
+    useChatStore.getState().focusMessage(hit.messageId);
+  };
 
   useEffect(() => {
     if (!activeId || collapsed) return;
@@ -118,7 +171,7 @@ export function HistorySidebar() {
 
   return (
     <aside
-      className={`flex shrink-0 flex-col border-r border-line bg-panel-2 transition-all duration-200 ease-out ${
+      className={`cf-print-hide flex shrink-0 flex-col border-r border-line bg-panel-2 transition-all duration-200 ease-out ${
         collapsed ? "w-10 items-center" : "w-56"
       }`}
     >
@@ -141,13 +194,48 @@ export function HistorySidebar() {
         </div>
       ) : (
         <>
-          <div className="flex items-center gap-2 px-3 pb-2 pt-3">
+          {/* Assistant picker (P1-7): binds the next new conversation. Hidden
+              while batch-selecting to keep the list uncluttered. */}
+          {!batchMode && assistants.length > 0 && (
+            <div className="flex items-center gap-1 overflow-x-auto px-3 pb-1.5 pt-3">
+              <button
+                type="button"
+                onClick={() => setAssistant(null)}
+                title="不使用助手：跟随全局默认提示词与模型"
+                className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                  assistantId === null
+                    ? "border-transparent bg-accent font-medium text-accent-fg"
+                    : "border-line text-ink-2 hover:bg-panel hover:text-ink"
+                }`}
+              >
+                默认
+              </button>
+              {sortedAssistants(assistants).map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => setAssistant(a.id)}
+                  title={a.description ?? a.name}
+                  className={`flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                    assistantId === a.id
+                      ? "border-transparent bg-accent font-medium text-accent-fg"
+                      : "border-line text-ink-2 hover:bg-panel hover:text-ink"
+                  }`}
+                >
+                  {a.icon && <span aria-hidden="true">{a.icon}</span>}
+                  <span className="max-w-[5.5rem] truncate">{a.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className={`flex items-center gap-2 px-3 pb-2 ${batchMode || assistants.length === 0 ? "pt-3" : ""}`}>
             <div className="flex flex-1 items-center gap-1.5 rounded-btn border border-line bg-panel px-2 py-1">
               <Search size={12} className="shrink-0 text-ink-2" />
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="搜索会话…"
+                placeholder="搜索会话或消息内容…"
                 className="w-full bg-transparent text-xs text-ink outline-none placeholder:text-ink-2"
               />
             </div>
@@ -226,20 +314,63 @@ export function HistorySidebar() {
       )}
 
       <div ref={listRef} className="flex-1 overflow-y-auto px-2 pb-2">
+        {/* Full-text hits over message content (P0-2) */}
+        {searchActive && !batchMode && (
+          <div className="mb-1">
+            <p className="px-2 pb-1 pt-2 text-[10px] uppercase tracking-wide text-ink-2">
+              消息内容 {searching ? "· 搜索中…" : `· ${hits.length}`}
+            </p>
+            {!searching && hits.length === 0 && (
+              <p className="px-2 py-2 text-[11px] text-ink-2">没有匹配的消息</p>
+            )}
+            {hits.map((hit) => (
+              <button
+                key={hit.messageId}
+                type="button"
+                onClick={() => void openHit(hit)}
+                disabled={streaming}
+                title={hit.conversationTitle}
+                className="mb-0.5 block w-full rounded-btn px-2 py-1.5 text-left transition-colors hover:bg-panel disabled:opacity-50"
+              >
+                <span className="flex items-center gap-1.5">
+                  <MessageSquare size={10} className="shrink-0 text-ink-2" />
+                  <span className="truncate text-[10px] text-ink-2">
+                    {hit.conversationTitle || "新会话"}
+                  </span>
+                  <span className="ml-auto shrink-0 text-[10px] text-ink-2">
+                    {relativeTime(hit.createdAt)}
+                  </span>
+                </span>
+                <span className="mt-0.5 line-clamp-2 block text-[11px] leading-4 text-ink">
+                  {hit.snippet}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {searchActive && !batchMode && filtered.length > 0 && (
+          <p className="px-2 pb-1 pt-1 text-[10px] uppercase tracking-wide text-ink-2">会话</p>
+        )}
+
         {filtered.length === 0 && (
           <p className="px-2 py-6 text-center text-xs text-ink-2">
             {conversations.length === 0 ? "暂无会话记录" : "没有匹配的会话"}
           </p>
         )}
 
-        {filtered.map((c) => {
+        {filtered.map((c, index) => {
           const active = c.id === activeId;
           const renaming = renamingId === c.id;
           const isSelected = selected.has(c.id);
+          // Pinned conversations come first; a thin rule separates the two
+          // groups once the list leaves them behind (P1-11.1).
+          const startsUnpinned = !c.pinned && index > 0 && filtered[index - 1].pinned;
 
           return (
+            <Fragment key={c.id}>
+              {startsUnpinned && <div className="mx-2 my-1 border-t border-line" />}
             <div
-              key={c.id}
               data-conversation-id={c.id}
               onClick={() => {
                 if (batchMode) {
@@ -309,8 +440,25 @@ export function HistorySidebar() {
                     >
                       {c.title || "新会话"}
                     </p>
+                    {c.pinned && !batchMode && (
+                      <Pin
+                        size={10}
+                        className="shrink-0 text-accent group-hover:hidden"
+                        aria-label="已置顶"
+                      />
+                    )}
                     {!batchMode && (
                       <span className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void setPinned(c.id, !c.pinned);
+                          }}
+                          title={c.pinned ? "取消置顶" : "置顶会话"}
+                          className="grid h-5 w-5 place-items-center rounded text-ink-2 hover:text-ink"
+                        >
+                          {c.pinned ? <PinOff size={11} /> : <Pin size={11} />}
+                        </button>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -364,6 +512,7 @@ export function HistorySidebar() {
                 </div>
               )}
             </div>
+            </Fragment>
           );
         })}
       </div>

@@ -2,6 +2,7 @@ mod agent;
 mod api;
 mod commands;
 mod errors;
+mod mcp;
 mod models;
 mod state;
 mod storage;
@@ -27,8 +28,15 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                .with_handler(|app, shortcut, event| {
+                    if event.state != tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        return;
+                    }
+                    // Selected-text key captures the selection; the wake key
+                    // toggles the window (P1-5).
+                    if window::shortcuts::is_quick_action(app, shortcut) {
+                        window::quick_action::trigger(app);
+                    } else {
                         window::manager::toggle(app);
                     }
                 })
@@ -37,6 +45,7 @@ pub fn run() {
         .manage(state::AppState::new())
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat_send,
+            commands::chat::chat_send_multi,
             commands::chat::chat_cancel,
             commands::chat::chat_approve_tool,
             commands::chat::describe_image,
@@ -48,6 +57,8 @@ pub fn run() {
             commands::settings::app_info,
             commands::settings::get_shortcut,
             commands::settings::set_shortcut,
+            commands::settings::get_quick_action,
+            commands::settings::set_quick_action,
             commands::providers::get_providers_state,
             commands::providers::upsert_provider,
             commands::providers::delete_provider,
@@ -67,11 +78,41 @@ pub fn run() {
             commands::providers::save_window_position,
             commands::providers::get_remember_window_position,
             commands::providers::set_proxy,
+            commands::assistants::list_assistants,
+            commands::assistants::upsert_assistant,
+            commands::assistants::delete_assistant,
+            commands::assistants::reset_builtin_assistant,
+            commands::knowledge::get_knowledge_config,
+            commands::knowledge::set_knowledge_config,
+            commands::knowledge::list_kb_documents,
+            commands::knowledge::delete_kb_document,
+            commands::knowledge::add_kb_file,
+            commands::knowledge::add_kb_url,
+            commands::knowledge::add_kb_text,
+            commands::knowledge::search_kb,
+            commands::mcp::list_mcp_servers,
+            commands::mcp::upsert_mcp_server,
+            commands::mcp::delete_mcp_server,
+            commands::mcp::test_mcp_server,
+            commands::mcp::set_mcp_server_enabled,
+            commands::mcp::parse_mcp_json,
+            commands::document::parse_document_preview,
+            commands::backup::export_data,
+            commands::backup::preview_backup,
+            commands::backup::import_data,
+            commands::web_search::get_web_search_config,
+            commands::web_search::set_web_search_config,
+            commands::web_search::set_web_search_api_key,
+            commands::web_search::test_web_search,
             commands::tools::list_tools,
             commands::tools::set_tool_policy,
             commands::tools::read_clipboard_text,
             commands::tools::write_clipboard_text,
             commands::window::finish_hide,
+            commands::history::search_messages,
+            commands::history::edit_message,
+            commands::history::start_message_version,
+            commands::history::activate_message_version,
             commands::history::list_conversations,
             commands::history::get_conversation,
             commands::history::create_conversation,
@@ -81,6 +122,7 @@ pub fn run() {
             commands::history::rename_conversation,
             commands::history::set_conversation_system_prompt,
             commands::history::delete_conversation,
+            commands::history::set_conversation_pinned,
             commands::history::clear_all_history,
             commands::memory::list_memories,
             commands::memory::create_memory,
@@ -137,8 +179,33 @@ pub fn run() {
                 window::manager::force_rounded_corners(&w);
             }
 
+            // Warm the MCP tool list in the background (P1-10).  Tools are
+            // offered from this cached snapshot, so the first chat request
+            // never waits for a server process to boot.  A slow tick then
+            // reaps sessions that have been idle for a while.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let config = handle.state::<storage::config::ConfigStore>();
+                let state = handle.state::<state::AppState>();
+                commands::mcp::refresh_from_config(&config, &state).await;
+
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+                loop {
+                    ticker.tick().await;
+                    state.mcp.reap_idle();
+                }
+            });
+
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Zhima");
+        .build(tauri::generate_context!())
+        .expect("error while building Zhima")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Kill every MCP child process so nothing outlives the app.
+                if let Some(state) = app_handle.try_state::<state::AppState>() {
+                    state.mcp.shutdown_all();
+                }
+            }
+        });
 }

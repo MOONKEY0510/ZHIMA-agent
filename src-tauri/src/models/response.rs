@@ -27,6 +27,14 @@ pub enum ChatEvent {
         request_id: String,
         results: Vec<SearchResult>,
     },
+    /// Fired when local knowledge-base passages were injected into the prompt,
+    /// so the UI can show "参考了知识库 n 条" (P1-9).
+    KbUsed {
+        request_id: String,
+        count: usize,
+        /// Document titles of the injected passages (for the tooltip).
+        titles: Vec<String>,
+    },
     /// Fired when the agent loop starts executing a tool call.
     ToolStart {
         request_id: String,

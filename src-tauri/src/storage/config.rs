@@ -135,6 +135,105 @@ pub struct ProvidersConfig {
     /// Per-tool usage policy. Keys are tool names; absent means `Allow`.
     #[serde(default)]
     pub tool_policies: HashMap<String, ToolPolicy>,
+    /// Web-search engine choice (P0-3); API keys live in the credential
+    /// manager, never in this file.
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
+    /// Local knowledge base retrieval (P1-9).
+    #[serde(default)]
+    pub knowledge: KnowledgeConfig,
+    /// External MCP tool servers (P1-10).
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
+    /// Selected-text hotkey (P1-5); `None` = `Alt+Q`.
+    #[serde(default)]
+    pub quick_action_shortcut: Option<String>,
+    /// Whether the selected-text hotkey is active (P1-5).
+    #[serde(default = "kb_default_auto_inject")]
+    pub quick_action_enabled: bool,
+}
+
+/// One MCP server launched as a child process (P1-10).
+///
+/// `env` values are stored in plain text: the UI warns about it, and secrets
+/// should go through the command's own credential mechanisms where possible.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerConfig {
+    pub id: String,
+    pub name: String,
+    /// Executable to launch, e.g. `npx` / `uvx` / an absolute path.
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default = "kb_default_auto_inject")]
+    pub enabled: bool,
+}
+
+impl McpServerConfig {
+    /// `npx -y @modelcontextprotocol/server-filesystem C:\docs`
+    pub fn command_line(&self) -> String {
+        std::iter::once(self.command.clone())
+            .chain(self.args.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// Knowledge-base retrieval settings (P1-9).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeConfig {
+    /// Inject the best-matching passages into the prompt on every turn.
+    #[serde(default = "kb_default_auto_inject")]
+    pub auto_inject: bool,
+    /// How many passages to inject (1-8).
+    #[serde(default = "kb_default_top_k")]
+    pub max_chunks: u32,
+}
+
+impl Default for KnowledgeConfig {
+    fn default() -> Self {
+        Self {
+            auto_inject: true,
+            max_chunks: kb_default_top_k(),
+        }
+    }
+}
+
+fn kb_default_auto_inject() -> bool {
+    true
+}
+
+fn kb_default_top_k() -> u32 {
+    crate::agent::knowledge::DEFAULT_TOP_K as u32
+}
+
+/// Web-search engine selection (P0-3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSearchConfig {
+    /// `duckduckgo` (default, key-less) | `tavily` | `bocha` | `searxng`.
+    #[serde(default = "default_search_engine")]
+    pub engine: String,
+    /// Base URL of a self-hosted SearXNG instance (JSON output enabled).
+    #[serde(default)]
+    pub searxng_base_url: Option<String>,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            engine: default_search_engine(),
+            searxng_base_url: None,
+        }
+    }
+}
+
+fn default_search_engine() -> String {
+    "duckduckgo".into()
 }
 
 pub struct ConfigStore {
@@ -278,6 +377,17 @@ mod tests {
             proxy_url: None,
             use_system_proxy: false,
             tool_policies: std::collections::HashMap::new(),
+            web_search: WebSearchConfig {
+                engine: "tavily".into(),
+                searxng_base_url: None,
+            },
+            knowledge: KnowledgeConfig {
+                auto_inject: false,
+                max_chunks: 5,
+            },
+            mcp_servers: Vec::new(),
+            quick_action_shortcut: Some("Alt+Q".into()),
+            quick_action_enabled: true,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: ProvidersConfig = serde_json::from_str(&json).unwrap();
@@ -285,6 +395,15 @@ mod tests {
         assert_eq!(back.providers[0].models[0].model_key, "m1");
         assert_eq!(back.generation.temperature, Some(0.7));
         assert!(back.generation.max_tokens.is_none());
+        assert_eq!(back.web_search.engine, "tavily");
+    }
+
+    #[test]
+    fn web_search_config_defaults_to_duckduckgo() {
+        // Configs written before P0-3 must still load with the free engine.
+        let cfg: ProvidersConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(cfg.web_search.engine, "duckduckgo");
+        assert!(cfg.web_search.searxng_base_url.is_none());
     }
 
     #[test]

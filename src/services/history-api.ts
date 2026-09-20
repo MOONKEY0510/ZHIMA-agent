@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { AttachmentMeta, MessageStatus, MessageVersion } from "../types";
 
 /** Typed wrappers around the conversation history commands. */
 
@@ -8,6 +9,10 @@ export interface Conversation {
   providerId: string | null;
   modelKey: string | null;
   systemPrompt: string | null;
+  /** Assistant this conversation is bound to (null = global default). */
+  assistantId: string | null;
+  /** Pinned conversations sort above the recency list (P1-11.1). */
+  pinned: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -23,7 +28,77 @@ export interface StoredMessage {
   toolCalls?: string | null;
   modelName?: string | null;
   durationMs?: number | null;
+  /** Serialized JSON array of every version of this message's content. */
+  versionsJson?: string | null;
+  /** Index of the version mirrored by the row fields above. */
+  activeVersion?: number;
+  /** Serialized JSON array of `{ name, chars }` for attached documents. */
+  attachmentsJson?: string | null;
   createdAt: number;
+}
+
+/** Parse persisted attachment metadata, tolerating absent/corrupted payloads. */
+export function parseAttachmentsJson(raw?: string | null): AttachmentMeta[] | undefined {
+  if (!raw || !raw.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as AttachmentMeta[];
+    if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
+    return parsed
+      .filter((entry) => entry && typeof entry.name === "string")
+      .map((entry) => ({ name: entry.name, chars: Number(entry.chars) || 0 }));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Parse a persisted version stack, tolerating absent/corrupted payloads. */
+export function parseVersionsJson(raw?: string | null): MessageVersion[] | undefined {
+  if (!raw || !raw.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as MessageVersion[];
+    if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
+    return parsed.map((v) => ({
+      content: v.content ?? "",
+      reasoning: v.reasoning ?? undefined,
+      modelName: v.modelName ?? undefined,
+      durationMs: v.durationMs ?? undefined,
+      status: v.status as MessageStatus | undefined,
+      createdAt: v.createdAt ?? 0,
+    }));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Edit a user message: appends the new content as a new version. */
+export function editMessage(id: string, content: string): Promise<StoredMessage> {
+  return invoke<StoredMessage>("edit_message", { id, content });
+}
+
+/** Archive the current answer and open a blank version for regeneration. */
+export function startMessageVersion(id: string): Promise<StoredMessage> {
+  return invoke<StoredMessage>("start_message_version", { id });
+}
+
+/** Switch which version of a message is active. */
+export function activateMessageVersion(id: string, index: number): Promise<StoredMessage> {
+  return invoke<StoredMessage>("activate_message_version", { id, index });
+}
+
+/** One full-text search hit across all conversations. */
+export interface MessageHit {
+  messageId: string;
+  conversationId: string;
+  conversationTitle: string;
+  role: string;
+  /** Excerpt with 「」 markers around the matched phrase. */
+  snippet: string;
+  createdAt: number;
+}
+
+/** Full-text search over message content (queries of 1-2 chars use LIKE). */
+export function searchMessages(query: string, limit = 50): Promise<MessageHit[]> {
+  return invoke<MessageHit[]>("search_messages", { query, limit });
 }
 
 export interface ConversationDetail {
@@ -82,6 +157,11 @@ export function setConversationSystemPrompt(
 
 export function deleteConversation(id: string): Promise<void> {
   return invoke("delete_conversation", { id });
+}
+
+/** Pin or unpin a conversation. */
+export function setConversationPinned(id: string, pinned: boolean): Promise<void> {
+  return invoke("set_conversation_pinned", { id, pinned });
 }
 
 export function clearAllHistory(): Promise<void> {

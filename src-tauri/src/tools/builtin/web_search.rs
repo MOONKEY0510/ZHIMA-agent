@@ -1,11 +1,12 @@
-//! `web_search` — DuckDuckGo search as a tool (reuses the existing adapter).
+//! `web_search` — web search as a tool, using the engine configured in the
+//! settings (DuckDuckGo by default; Tavily / Bocha / SearXNG optional — P0-3).
 
 use serde_json::{json, Value};
 
 use crate::api::web_search;
 
 use super::ToolDefinition;
-use crate::tools::registry::DataAccess;
+use crate::tools::registry::{DataAccess, ToolContext};
 
 pub fn definition() -> ToolDefinition {
     ToolDefinition {
@@ -35,7 +36,11 @@ pub fn definition() -> ToolDefinition {
     }
 }
 
-pub async fn run(client: &reqwest::Client, args: &Value) -> Result<Value, String> {
+pub async fn run(
+    client: &reqwest::Client,
+    ctx: &ToolContext<'_>,
+    args: &Value,
+) -> Result<Value, String> {
     let query = args
         .get("query")
         .and_then(|v| v.as_str())
@@ -51,9 +56,10 @@ pub async fn run(client: &reqwest::Client, args: &Value) -> Result<Value, String
         .unwrap_or(5)
         .clamp(1, 10) as usize;
 
-    let results = web_search::search(client, &query, max).await?;
+    let results = web_search::search(client, ctx.web_search, &query, max).await?;
     Ok(json!({
         "query": query,
+        "engine": ctx.web_search.engine.id(),
         "results": results,
         "count": results.len(),
     }))

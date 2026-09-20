@@ -46,6 +46,8 @@ pub struct AppState {
     pub tool_approvals: Arc<Mutex<HashMap<String, oneshot::Sender<ApprovalVerdict>>>>,
     /// Tools approved for the rest of this process ("本次会话允许").
     pub session_tool_approvals: Arc<Mutex<HashSet<String>>>,
+    /// MCP client: child processes of the configured servers (P1-10).
+    pub mcp: crate::mcp::McpManager,
 }
 
 impl AppState {
@@ -55,6 +57,7 @@ impl AppState {
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             tool_approvals: Arc::new(Mutex::new(HashMap::new())),
             session_tool_approvals: Arc::new(Mutex::new(HashSet::new())),
+            mcp: crate::mcp::McpManager::new(),
         }
     }
 

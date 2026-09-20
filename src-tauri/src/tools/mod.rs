@@ -6,6 +6,7 @@
 //! everything sensitive stays on the Rust side.
 
 pub mod builtin;
+pub mod document_parse;
 pub mod registry;
 pub mod safe_http;
 

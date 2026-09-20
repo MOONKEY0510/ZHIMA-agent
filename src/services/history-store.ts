@@ -20,6 +20,15 @@ interface HistoryState {
   setHistoryEnabled: (value: boolean) => Promise<void>;
   rename: (id: string, title: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
+  setPinned: (id: string, pinned: boolean) => Promise<void>;
+}
+
+/** Pinned first, then most recent — mirrors the backend ordering. */
+function sortConversations(list: Conversation[]): Conversation[] {
+  return [...list].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return b.updatedAt - a.updatedAt;
+  });
 }
 
 export const useHistoryStore = create<HistoryState>((set, get) => ({
@@ -33,7 +42,7 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     set({ historyEnabled: enabled });
     if (enabled) {
       const conversations = await api.listConversations();
-      set({ conversations });
+      set({ conversations: sortConversations(conversations) });
     }
     set({ loaded: true });
   },
@@ -41,7 +50,7 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
   refreshList: async () => {
     if (!get().historyEnabled) return;
     const conversations = await api.listConversations();
-    set({ conversations });
+    set({ conversations: sortConversations(conversations) });
   },
 
   setActive: (id) => set({ activeId: id }),
@@ -58,6 +67,15 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     set((state) => ({
       conversations: state.conversations.map((c) =>
         c.id === id ? { ...c, title } : c,
+      ),
+    }));
+  },
+
+  setPinned: async (id, pinned) => {
+    await api.setConversationPinned(id, pinned);
+    set((state) => ({
+      conversations: sortConversations(
+        state.conversations.map((c) => (c.id === id ? { ...c, pinned } : c)),
       ),
     }));
   },

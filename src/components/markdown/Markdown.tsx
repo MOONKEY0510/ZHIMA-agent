@@ -2,6 +2,7 @@ import {
   Children,
   isValidElement,
   memo,
+  useEffect,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
@@ -13,6 +14,14 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check, ChevronDown, Copy } from "lucide-react";
+import type { PluggableList } from "unified";
+import {
+  hasMathSyntax,
+  loadMathPlugins,
+  mathPlugins,
+  normalizeDisplayMath,
+  type MathPlugins,
+} from "./math";
 
 /**
  * Markdown rendering with GFM tables, syntax highlighting and safe links.
@@ -21,12 +30,22 @@ import { Check, ChevronDown, Copy } from "lucide-react";
  * message content (plan §6). External links are validated and handed to the
  * system browser instead of the webview. Highlighting uses lowlight's common
  * language bundle; unknown languages fall back to plain code.
+ *
+ * Formulas (P1-11.4) are handled by KaTeX, loaded lazily: the plugins and
+ * their ~1 MB stylesheet only join the render once a message looks like math.
  */
 export const Markdown = memo(function Markdown({ content }: { content: string }) {
+  const math = useMathSupport(content);
+
+  const remarkPlugins: PluggableList = math ? [remarkGfm, math.remarkMath] : [remarkGfm];
+  const rehypePlugins: PluggableList = math
+    ? [[rehypeHighlight, { detect: false }], ...math.rehypeKatex]
+    : [[rehypeHighlight, { detect: false }]];
+
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[[rehypeHighlight, { detect: false }]]}
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={rehypePlugins}
       components={{
         pre(props) {
           return <PreBlock>{props.children}</PreBlock>;
@@ -36,10 +55,29 @@ export const Markdown = memo(function Markdown({ content }: { content: string })
         },
       }}
     >
-      {content}
+      {math ? normalizeDisplayMath(content) : content}
     </ReactMarkdown>
   );
 });
+
+/** Load the math chunk on demand and re-render once it is available. */
+function useMathSupport(content: string): MathPlugins | null {
+  const needed = hasMathSyntax(content);
+  const [plugins, setPlugins] = useState<MathPlugins | null>(() => mathPlugins());
+
+  useEffect(() => {
+    if (!needed || plugins) return;
+    let cancelled = false;
+    void loadMathPlugins().then((value) => {
+      if (!cancelled) setPlugins(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [needed, plugins]);
+
+  return plugins;
+}
 
 /** Find a `language-xxx` class anywhere inside the rendered code element. */
 function extractLanguage(node: ReactNode): string {

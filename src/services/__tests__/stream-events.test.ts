@@ -29,16 +29,10 @@ function drainAllFrames(maxFrames = 200): number {
 }
 
 function startStreaming() {
+  // Since P1-6 a stream always fills a message that already sits in the list.
   useChatStore.setState({
-    messages: [],
-    streamingRequestId: "req-1",
-    streamingMessageId: "msg-1",
-    streamingMessage: {
-      id: "msg-1",
-      role: "assistant",
-      content: "",
-      status: "streaming",
-    },
+    messages: [{ id: "msg-1", role: "assistant", content: "", status: "streaming" }],
+    streams: { "req-1": { messageId: "msg-1", startedAt: Date.now() } },
   });
 }
 
@@ -69,13 +63,13 @@ describe("DeltaBuffer incremental rendering", () => {
     buffer.handle(finish());
 
     // Nothing applied yet — deltas are held for the frame loop.
-    expect(useChatStore.getState().streamingMessage?.content).toBe("");
+    expect(useChatStore.getState().messages[0]?.content).toBe("");
 
     const frames = drainAllFrames();
 
     // Finished only after every buffered character reached the store.
     const state = useChatStore.getState();
-    expect(state.streamingMessage).toBeNull();
+    expect(state.streams).toEqual({});
     expect(state.messages[0]).toMatchObject({ content: longText, status: "done" });
     expect(frames).toBeGreaterThan(1);
   });

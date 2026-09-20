@@ -1,10 +1,16 @@
+pub mod assistants;
 pub mod avatar;
+pub mod backup;
 pub mod chat;
 pub mod diagnostics;
+pub mod document;
 pub mod history;
 pub mod imagegen;
+pub mod knowledge;
+pub mod mcp;
 pub mod memory;
 pub mod providers;
 pub mod settings;
 pub mod tools;
+pub mod web_search;
 pub mod window;

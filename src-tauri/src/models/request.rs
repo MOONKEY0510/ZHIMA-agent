@@ -68,6 +68,43 @@ pub struct ChatSendRequest {
     pub conversation_id: Option<String>,
 }
 
+/// One model target of a multi-model turn (P1-6).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiTarget {
+    pub provider_id: String,
+    #[serde(default)]
+    pub model_key: String,
+}
+
+/// Payload of the `chat_send_multi` command: one turn fanned out to 1–4 models
+/// so their answers can be compared side by side.
+///
+/// `request_ids` must carry one frontend-generated id per target (same order),
+/// which removes the race where early stream events arrive before the
+/// frontend has registered the mapping.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSendMultiRequest {
+    pub targets: Vec<MultiTarget>,
+    #[serde(default)]
+    pub request_ids: Vec<String>,
+    pub messages: Vec<ChatMessage>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    /// Runs one shared web search whose context is injected into every target.
+    #[serde(default)]
+    pub web_search: bool,
+    #[serde(default)]
+    pub enable_tools: bool,
+    #[serde(default = "default_true")]
+    pub enable_thinking: bool,
+    #[serde(default = "default_thinking_effort")]
+    pub thinking_effort: String,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+}
+
 /// Payload for the `describe_image` command: send one image to a vision
 /// model and get back a text description (non-streaming).
 #[derive(Debug, Deserialize)]

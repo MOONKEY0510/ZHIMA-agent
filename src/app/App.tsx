@@ -9,6 +9,7 @@ import { ImageHistorySidebar } from "../components/history/ImageHistorySidebar";
 const SettingsPanel = lazy(() => import("../features/settings/SettingsPanel").then((m) => ({ default: m.SettingsPanel })));
 const ImageGenView = lazy(() => import("../features/imagegen/ImageGenView").then((m) => ({ default: m.ImageGenView })));
 const UpdateBanner = lazy(() => import("../components/updater/UpdateBanner").then((m) => ({ default: m.UpdateBanner })));
+import { useAssistantsStore } from "../stores/assistants-store";
 import { useChatStore } from "../stores/chat-store";
 import { useSettingsStore } from "../stores/settings-store";
 import { useProvidersStore } from "../stores/providers-store";
@@ -155,6 +156,7 @@ export default function App() {
     void useProvidersStore.getState().load();
     void useHistoryStore.getState().load();
     void useImageGenStore.getState().load();
+    void useAssistantsStore.getState().load();
     void startStreamListener();
     return () => stopStreamListener();
   }, []);
@@ -217,7 +219,7 @@ export default function App() {
       const justShown = Date.now() - lastShownAt.current < 600;
       if (
         settings.hideOnBlur &&
-        state.streamingRequestId === null &&
+        Object.keys(state.streams).length === 0 &&
         !justShown
       ) {
         requestHide();

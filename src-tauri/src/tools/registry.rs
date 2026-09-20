@@ -36,6 +36,14 @@ pub struct ToolDefinition {
     pub network_access: bool,
 }
 
+/// Runtime context handed to tool implementations: values resolved from the
+/// user's settings rather than from the tool call itself (P0-3).
+pub struct ToolContext<'a> {
+    pub web_search: &'a crate::api::web_search::WebSearchSettings,
+    /// Database handle for tools that read local stores (knowledge base).
+    pub db: &'a crate::storage::database::Database,
+}
+
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: Vec<ToolDefinition>,
@@ -93,9 +101,21 @@ impl ToolRegistry {
             .find(|t| normalize_name(&t.name) == wanted)
     }
 
+    /// Append dynamically discovered tools (MCP servers, P1-10).
+    pub fn extend(&mut self, extra: Vec<ToolDefinition>) {
+        for definition in extra {
+            // A server may expose a tool whose qualified name collides with a
+            // builtin; builtins win, the extra definition is dropped.
+            if !self.tools.iter().any(|t| t.name == definition.name) {
+                self.tools.push(definition);
+            }
+        }
+    }
+
     pub async fn execute(
         &self,
         client: &reqwest::Client,
+        ctx: &ToolContext<'_>,
         name: &str,
         args: Value,
     ) -> Result<Value, String> {
@@ -108,7 +128,7 @@ impl ToolRegistry {
         validate_args(&definition.parameters, &args)?;
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(definition.timeout_ms),
-            builtin::execute(client, name, args),
+            builtin::execute(client, ctx, name, args),
         )
         .await
         .map_err(|_| format!("工具执行超时: {name}"))??;

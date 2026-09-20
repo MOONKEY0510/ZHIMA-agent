@@ -7,7 +7,7 @@
 
 use tauri::State;
 
-use crate::storage::database::{Conversation, Database, Message};
+use crate::storage::database::{Conversation, Database, Message, MessageHit};
 
 /// Sidebar payload: recent conversations, newest first.
 #[tauri::command]
@@ -116,6 +116,16 @@ pub fn delete_conversation(db: State<'_, Database>, id: String) -> Result<(), St
     db.delete_conversation(&id)
 }
 
+/// Pin or unpin a conversation (P1-11.1); pinned rows sort first.
+#[tauri::command]
+pub fn set_conversation_pinned(
+    db: State<'_, Database>,
+    id: String,
+    pinned: bool,
+) -> Result<(), String> {
+    db.set_conversation_pinned(&id, pinned)
+}
+
 /// Set (or clear, when `system_prompt` is empty/null) the system prompt for a
 /// single conversation.  This takes effect on the next chat turn in that
 /// conversation.
@@ -134,4 +144,49 @@ pub fn set_conversation_system_prompt(
 #[tauri::command]
 pub fn clear_all_history(db: State<'_, Database>) -> Result<(), String> {
     db.clear_all()
+}
+
+/* ---------------- message versions (v11) ---------------- */
+
+/// Edit a user message: appends the new content as a version and makes it
+/// active, keeping every earlier version for switching.  Returns the updated
+/// row so the frontend can mirror the version stack.
+#[tauri::command]
+pub fn edit_message(
+    db: State<'_, Database>,
+    id: String,
+    content: String,
+) -> Result<Message, String> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Err("消息内容不能为空".into());
+    }
+    db.edit_message(&id, content)
+}
+
+/// Archive the current answer and open a blank "streaming" version, used
+/// before regenerating an assistant reply in place.
+#[tauri::command]
+pub fn start_message_version(db: State<'_, Database>, id: String) -> Result<Message, String> {
+    db.start_message_version(&id)
+}
+
+/// Switch the active version of a message (0-based index into the stack).
+#[tauri::command]
+pub fn activate_message_version(
+    db: State<'_, Database>,
+    id: String,
+    index: i64,
+) -> Result<Message, String> {
+    db.activate_message_version(&id, index)
+}
+
+/// Full-text search over message content across all conversations (P0-2).
+#[tauri::command]
+pub fn search_messages(
+    db: State<'_, Database>,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<MessageHit>, String> {
+    db.search_messages(&query, limit.unwrap_or(50))
 }

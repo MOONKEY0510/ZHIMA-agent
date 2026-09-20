@@ -82,6 +82,10 @@ export class DeltaBuffer {
         store.setSearchResults(event.requestId, event.results);
         break;
 
+      case "kb_used":
+        store.markKbUsed(event.requestId, event.count, event.titles);
+        break;
+
       case "tool_start":
         store.startToolCall(event.requestId, event.callId, event.name, event.arguments);
         break;

@@ -39,3 +39,44 @@ pub fn set_shortcut(
     })?;
     Ok(value)
 }
+
+/// Selected-text hotkey settings (P1-5).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickActionView {
+    pub enabled: bool,
+    pub shortcut: String,
+}
+
+#[tauri::command]
+pub fn get_quick_action(config: State<'_, ConfigStore>) -> QuickActionView {
+    config.read(|c| QuickActionView {
+        enabled: c.quick_action_enabled,
+        shortcut: c
+            .quick_action_shortcut
+            .clone()
+            .unwrap_or_else(|| shortcuts::DEFAULT_QUICK_ACTION_SHORTCUT.to_string()),
+    })
+}
+
+/// Validate, (re)register and persist the selected-text hotkey.
+#[tauri::command]
+pub fn set_quick_action(
+    app: AppHandle,
+    config: State<'_, ConfigStore>,
+    enabled: bool,
+    value: String,
+) -> Result<QuickActionView, String> {
+    let value = value.trim().to_string();
+    shortcuts::parse_shortcut(&value)?;
+    shortcuts::register_quick_action(&app, enabled, &value)?;
+    config.update(|c| {
+        c.quick_action_enabled = enabled;
+        c.quick_action_shortcut = Some(value.clone());
+        Ok(())
+    })?;
+    Ok(QuickActionView {
+        enabled,
+        shortcut: value,
+    })
+}

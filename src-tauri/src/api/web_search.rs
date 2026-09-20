@@ -1,14 +1,20 @@
-//! DuckDuckGo web search adapter (plan §11 - optional web search).
+//! Web search adapters (plan §11, extended in P0-3).
 //!
-//! Uses the DuckDuckGo HTML endpoint (`https://html.duckduckgo.com/html/`)
-//! which requires no API key and returns parseable HTML search results.
-//! Results are extracted via regex and returned as a list of [`SearchResult`].
+//! The default engine is DuckDuckGo's HTML endpoint
+//! (`https://html.duckduckgo.com/html/`), which needs no API key.  Users can
+//! switch to Tavily, Bocha or a self-hosted SearXNG instance in the settings;
+//! those adapters live in [`super::search_engines`].  Every engine returns the
+//! same [`SearchResult`] list.
 
 use regex::Regex;
 use serde::Serialize;
 use urlencoding::encode as url_encode;
 
 use crate::errors::read_body_capped;
+use crate::storage::config::ConfigStore;
+use crate::storage::secrets;
+
+use super::search_engines;
 
 const MAX_SEARCH_RESPONSE_BYTES: usize = 512 * 1024;
 
@@ -20,11 +26,143 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
+/// Which backend serves web searches (P0-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    DuckDuckGo,
+    Tavily,
+    Bocha,
+    Searxng,
+}
+
+impl Engine {
+    /// Parse an engine id, falling back to the key-less default engine.
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "tavily" => Self::Tavily,
+            "bocha" => Self::Bocha,
+            "searxng" => Self::Searxng,
+            _ => Self::DuckDuckGo,
+        }
+    }
+
+    /// Stable id used in the config file and the credential manager.
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::DuckDuckGo => "duckduckgo",
+            Self::Tavily => "tavily",
+            Self::Bocha => "bocha",
+            Self::Searxng => "searxng",
+        }
+    }
+
+    /// Whether this engine needs an API key stored in the credential manager.
+    pub fn needs_api_key(&self) -> bool {
+        matches!(self, Self::Tavily | Self::Bocha)
+    }
+
+    /// Human-readable name for error messages.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::DuckDuckGo => "DuckDuckGo",
+            Self::Tavily => "Tavily",
+            Self::Bocha => "博查",
+            Self::Searxng => "SearXNG",
+        }
+    }
+}
+
+/// Resolved runtime settings for web search: the engine choice comes from
+/// `providers.json`, the API key from the Windows Credential Manager.
+#[derive(Debug, Clone)]
+pub struct WebSearchSettings {
+    pub engine: Engine,
+    pub searxng_base_url: Option<String>,
+    pub api_key: Option<String>,
+}
+
+impl WebSearchSettings {
+    /// Resolve settings from the config store + credential manager.
+    pub fn resolve(config: &ConfigStore) -> Self {
+        let cfg = config.read(|c| c.web_search.clone());
+        let engine = Engine::parse(&cfg.engine);
+        let api_key = if engine.needs_api_key() {
+            secrets::get_web_search_key(engine.id()).unwrap_or(None)
+        } else {
+            None
+        };
+        Self {
+            engine,
+            searxng_base_url: cfg.searxng_base_url,
+            api_key,
+        }
+    }
+
+    /// Whether the current engine is ready to run (key / instance present).
+    pub fn ready(&self) -> bool {
+        match self.engine {
+            Engine::DuckDuckGo => true,
+            Engine::Tavily | Engine::Bocha => self
+                .api_key
+                .as_deref()
+                .is_some_and(|k| !k.trim().is_empty()),
+            Engine::Searxng => self
+                .searxng_base_url
+                .as_deref()
+                .is_some_and(|u| !u.trim().is_empty()),
+        }
+    }
+}
+
+/// Run a search with the configured engine.
+pub async fn search(
+    client: &reqwest::Client,
+    settings: &WebSearchSettings,
+    query: &str,
+    max_results: usize,
+) -> Result<Vec<SearchResult>, String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err("搜索关键词为空".into());
+    }
+
+    match settings.engine {
+        Engine::DuckDuckGo => search_duckduckgo(client, trimmed, max_results).await,
+        Engine::Tavily => {
+            let key = require_key(settings, settings.engine)?;
+            search_engines::tavily(client, key, trimmed, max_results).await
+        }
+        Engine::Bocha => {
+            let key = require_key(settings, settings.engine)?;
+            search_engines::bocha(client, key, trimmed, max_results).await
+        }
+        Engine::Searxng => {
+            let base = settings.searxng_base_url.as_deref().unwrap_or_default();
+            search_engines::searxng(client, base, trimmed, max_results).await
+        }
+    }
+}
+
+/// Read the API key for an engine, with a settings hint when it is missing.
+fn require_key(settings: &WebSearchSettings, engine: Engine) -> Result<&str, String> {
+    settings
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "未配置 {} 的 API Key，请在「设置 → 联网搜索」中填写，或改回 DuckDuckGo",
+                engine.label()
+            )
+        })
+}
+
 /// Perform a DuckDuckGo search and return up to `max_results` results.
 ///
 /// The `query` is URL-encoded automatically. Returns an error string suitable
 /// for display if the request fails or no results are found.
-pub async fn search(
+pub async fn search_duckduckgo(
     client: &reqwest::Client,
     query: &str,
     max_results: usize,

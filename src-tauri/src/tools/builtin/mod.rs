@@ -3,8 +3,10 @@
 pub mod calculator;
 pub mod capture_screen;
 pub mod clipboard;
+pub mod document;
 pub mod fetch_webpage;
 pub mod file;
+pub mod knowledge;
 pub mod open_resource;
 pub mod pdf;
 pub mod time;
@@ -23,21 +25,30 @@ pub fn definitions() -> Vec<ToolDefinition> {
         fetch_webpage::definition(),
         file::definition(),
         pdf::definition(),
+        document::definition(),
+        knowledge::definition(),
         capture_screen::definition(),
         open_resource::definition(),
     ]
 }
 
-pub async fn execute(client: &reqwest::Client, name: &str, args: Value) -> Result<Value, String> {
+pub async fn execute(
+    client: &reqwest::Client,
+    ctx: &super::registry::ToolContext<'_>,
+    name: &str,
+    args: Value,
+) -> Result<Value, String> {
     match name {
         "get_current_time" => time::run(&args),
         "calculate" => calculator::run(&args),
         "read_clipboard" => clipboard::run(&args).await,
         "write_clipboard" => clipboard::write(&args).await,
-        "web_search" => web_search::run(client, &args).await,
+        "web_search" => web_search::run(client, ctx, &args).await,
         "fetch_webpage" => fetch_webpage::run(client, &args).await,
         "select_and_read_text_file" => file::run().await,
         "read_pdf" => pdf::run().await,
+        "read_document" => document::run().await,
+        "search_knowledge" => knowledge::run(ctx, &args).await,
         "capture_screen" => capture_screen::run(&args).await,
         "open_resource" => open_resource::run(&args).await,
         _ => Err(format!("未知工具: {name}")),

@@ -30,6 +30,7 @@ export type ChatStreamEvent =
   | { type: "start"; seq: number; requestId: string }
   | { type: "search_start"; seq: number; requestId: string; query: string }
   | { type: "search_end"; seq: number; requestId: string; results: SearchResult[] }
+  | { type: "kb_used"; seq: number; requestId: string; count: number; titles: string[] }
   | {
       type: "tool_start";
       seq: number;
@@ -92,6 +93,26 @@ export type Role = "user" | "assistant";
 
 export type MessageStatus = "streaming" | "done" | "error" | "cancelled";
 
+/** Metadata of a document attached to a prompt (P1-8). */
+export interface AttachmentMeta {
+  name: string;
+  chars: number;
+}
+
+/**
+ * One entry inside a message's version stack.  The stack holds every version
+ * of the message content (oldest first) and is what the `‹ n/m ›` switcher
+ * walks through; `Message.activeVersion` points at the visible entry.
+ */
+export interface MessageVersion {
+  content: string;
+  reasoning?: string;
+  modelName?: string;
+  durationMs?: number;
+  status?: MessageStatus;
+  createdAt: number;
+}
+
 export interface Message {
   id: string;
   role: Role;
@@ -117,6 +138,19 @@ export interface Message {
   searchingQuery?: string;
   /** Tool calls executed during this assistant turn (agent loop). */
   toolCalls?: ToolCallStep[];
+  /** Version stack of this message's content (created by edit / regenerate). */
+  versions?: MessageVersion[];
+  /** Index of the active version inside `versions`. */
+  activeVersion?: number;
+  /**
+   * Documents attached to this prompt (P1-8).  Their text is part of
+   * `content`; this is the metadata used for the badge.
+   */
+  attachments?: AttachmentMeta[];
+  /** Knowledge-base passages injected into this turn (P1-9). */
+  kbHits?: number;
+  /** Titles of those passages (tooltip of the hint chip). */
+  kbTitles?: string[];
 }
 
 export interface ModelEntry {

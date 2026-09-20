@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Download, ImageIcon, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Settings, X, Palette, Minus } from "lucide-react";
-import { useChatStore } from "../../stores/chat-store";
+import { selectStreaming, useChatStore } from "../../stores/chat-store";
 import { useWindowStore } from "../../stores/window-store";
 import { useSettingsStore } from "../../stores/settings-store";
 import { minimizeWindow, requestHide } from "../../lib/window";
 import { exportMessagesToMarkdown } from "../../lib/export";
+import { exportNodeAsImage } from "../../lib/export-image";
+import { printConversation, withExpandedList } from "../../lib/print";
 import { ModelPicker } from "../model-picker/ModelPicker";
 import type { ThemeMode } from "../../types";
 
@@ -31,12 +33,41 @@ export function TitleBar() {
   const switchToImage = useWindowStore((s) => s.switchToImage);
   const switchToChat = useWindowStore((s) => s.switchToChat);
   const clearConversation = useChatStore((s) => s.clearConversation);
-  const streaming = useChatStore((s) => s.streamingRequestId !== null);
+  const streaming = useChatStore(selectStreaming);
   const clearImageGen = () => {
     window.dispatchEvent(new CustomEvent("imagegen-new"));
   };
 
   const messages = useChatStore((s) => s.messages);
+
+  // Export menu state (P1-11): Markdown, PNG snapshot, print-to-PDF.
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const exportRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!exportOpen) return;
+    const onDocClick = (event: MouseEvent) => {
+      if (!exportRef.current?.contains(event.target as Node)) setExportOpen(false);
+    };
+    window.addEventListener("mousedown", onDocClick);
+    return () => window.removeEventListener("mousedown", onDocClick);
+  }, [exportOpen]);
+
+  const runExport = async (action: () => void | Promise<unknown>) => {
+    setExportOpen(false);
+    setExportError(null);
+    setExportBusy(true);
+    try {
+      await action();
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+      window.setTimeout(() => setExportError(null), 6000);
+    } finally {
+      setExportBusy(false);
+    }
+  };
 
   const exportChat = async () => {
     const done = messages.filter((m) => m.content.length > 0);
@@ -44,12 +75,22 @@ export function TitleBar() {
     await exportMessagesToMarkdown(done);
   };
 
+  /** Snapshot the message pane (every message rendered, not just visible). */
+  const exportImage = async () => {
+    const node = document.querySelector<HTMLElement>("[data-export-root]");
+    if (!node) throw new Error("找不到对话内容区域");
+    await withExpandedList(() => exportNodeAsImage(node));
+  };
+
   const isMainView = view === "chat" || view === "image";
   const btn =
     "grid h-6 w-6 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink";
+  const menuItemCls =
+    "block w-full px-2.5 py-1.5 text-left text-xs text-ink transition-colors hover:bg-panel-2";
 
   return (
-    <div className="relative z-50 flex h-9 shrink-0 items-center justify-between pl-3 pr-2">
+    // Print stylesheet hides this bar so only the conversation reaches paper.
+    <div className="cf-print-hide relative z-50 flex h-9 shrink-0 items-center justify-between pl-3 pr-2">
       <div data-tauri-drag-region aria-hidden="true" className="absolute inset-0" />
       <div className="relative z-10">
         {view === "settings" ? (
@@ -94,15 +135,45 @@ export function TitleBar() {
           </button>
         )}
 
-        {/* Export conversation to Markdown */}
+        {/* Export menu: Markdown / PNG / PDF (P1-11) */}
         {view === "chat" && messages.some((m) => m.content.length > 0) && (
-          <button
-            className={btn}
-            title="导出对话为 Markdown"
-            onClick={() => void exportChat()}
-          >
-            <Download size={13} />
-          </button>
+          <div className="relative" ref={exportRef}>
+            <button
+              className={btn}
+              title={exportBusy ? "正在导出…" : "导出对话"}
+              disabled={streaming || exportBusy}
+              onClick={() => setExportOpen((v) => !v)}
+            >
+              <Download size={13} className={exportBusy ? "animate-pulse" : undefined} />
+            </button>
+            {exportOpen && (
+              <div className="absolute right-0 top-7 z-30 w-44 overflow-hidden rounded-btn border border-line bg-panel py-1 shadow-lg">
+                <button
+                  className={menuItemCls}
+                  onClick={() => void runExport(() => exportChat())}
+                >
+                  导出为 Markdown
+                </button>
+                <button
+                  className={menuItemCls}
+                  onClick={() => void runExport(exportImage)}
+                >
+                  导出为图片（PNG）
+                </button>
+                <button
+                  className={menuItemCls}
+                  onClick={() => void runExport(() => printConversation())}
+                >
+                  打印 / 另存为 PDF
+                </button>
+              </div>
+            )}
+            {exportError && (
+              <p className="absolute right-0 top-7 z-30 mt-24 w-56 rounded-btn border border-line bg-panel px-2 py-1 text-[11px] text-danger shadow-lg">
+                {exportError}
+              </p>
+            )}
+          </div>
         )}
 
         <ThemeButton />

@@ -137,3 +137,17 @@ export function getShortcut(): Promise<string> {
 export function setShortcut(value: string): Promise<string> {
   return invoke<string>("set_shortcut", { value });
 }
+
+/** Selected-text hotkey settings (P1-5). */
+export interface QuickActionView {
+  enabled: boolean;
+  shortcut: string;
+}
+
+export function getQuickAction(): Promise<QuickActionView> {
+  return invoke<QuickActionView>("get_quick_action");
+}
+
+export function setQuickAction(enabled: boolean, value: string): Promise<QuickActionView> {
+  return invoke<QuickActionView>("set_quick_action", { enabled, value });
+}

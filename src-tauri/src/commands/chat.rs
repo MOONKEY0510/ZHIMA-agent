@@ -25,7 +25,7 @@ use crate::api::text_tool_calls::{
 };
 use crate::api::web_search;
 use crate::errors::{brief, read_body_capped};
-use crate::models::request::{ChatSendRequest, DescribeImageRequest};
+use crate::models::request::{ChatSendMultiRequest, ChatSendRequest, DescribeImageRequest};
 use crate::models::response::{ChatEvent, SequencedChatEvent};
 use crate::state::AppState;
 use crate::storage::database::Database;
@@ -44,14 +44,14 @@ const MAX_MESSAGE_IMAGES: usize = 4;
 /// Upper bound on a single image data URL's length.
 const MAX_IMAGE_DATA_URL_BYTES: usize = 20 * 1024 * 1024; // 20 MB
 
-/// Validate the chat request payload before any network or storage work, so
-/// an oversized or malformed frontend payload cannot cause unbounded
-/// allocation or be forwarded to the provider.
-fn validate_chat_request(request: &ChatSendRequest) -> Result<(), String> {
-    if request.messages.len() > MAX_CHAT_MESSAGES {
+/// Validate the chat payload before any network or storage work, so an
+/// oversized or malformed frontend payload cannot cause unbounded allocation
+/// or be forwarded to the provider.
+fn validate_messages(messages: &[crate::models::request::ChatMessage]) -> Result<(), String> {
+    if messages.len() > MAX_CHAT_MESSAGES {
         return Err(format!("消息数量过多（最多 {} 条）", MAX_CHAT_MESSAGES));
     }
-    for msg in &request.messages {
+    for msg in messages {
         if msg.content.chars().count() > MAX_MESSAGE_CHARS {
             return Err(format!("单条消息过长（最多 {} 字符）", MAX_MESSAGE_CHARS));
         }
@@ -167,31 +167,97 @@ fn new_request_id() -> String {
     format!("req-{millis:x}-{seq:x}")
 }
 
-#[tauri::command]
-pub async fn chat_send(
-    window: Window,
-    state: State<'_, AppState>,
-    config: State<'_, ConfigStore>,
-    db: State<'_, Database>,
-    request: ChatSendRequest,
-) -> Result<String, String> {
-    if request.messages.is_empty() {
-        return Err("消息为空".into());
-    }
-    validate_chat_request(&request)?;
+/// Maximum number of models one turn may fan out to (P1-6).
+const MAX_MULTI_TARGETS: usize = 4;
 
-    // Load the rolling conversation summary (if any) so long-conversation
-    // context survives the 40-message frontend window (agent/context.rs).
-    let session_summary = match &request.conversation_id {
+/// Resolved connection details for one model target.
+struct ResolvedTarget {
+    url: String,
+    api_key: String,
+    model: String,
+    temperature: Option<f32>,
+    max_tokens: Option<u32>,
+}
+
+/// Resolve provider + API key + model + generation prefs for one target.
+fn resolve_target(
+    config: &ConfigStore,
+    provider_id: &str,
+    model_key: &str,
+) -> Result<ResolvedTarget, String> {
+    config.read(|cfg| {
+        let provider = cfg
+            .providers
+            .iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| "服务商不存在，请先在设置中添加".to_string())?;
+
+        let api_key = secrets::get_api_key(&provider.id)?
+            .ok_or_else(|| "该服务商尚未配置 API Key，请在设置中补充".to_string())?;
+
+        let model = if model_key.trim().is_empty() {
+            cfg.default_model_key
+                .clone()
+                .filter(|m| !m.trim().is_empty())
+                .ok_or_else(|| "请先选择一个模型".to_string())?
+        } else {
+            model_key.trim().to_string()
+        };
+
+        let url = chat_completions_url(&provider.base_url)?;
+        Ok(ResolvedTarget {
+            url,
+            api_key,
+            model,
+            temperature: cfg.generation.temperature,
+            max_tokens: cfg.generation.max_tokens,
+        })
+    })
+}
+
+/// Everything a stream needs that is identical across the targets of a turn.
+#[derive(Clone)]
+struct TurnContext {
+    messages: Vec<crate::models::request::ChatMessage>,
+    system_prompt: Option<String>,
+    search_query: Option<String>,
+    enable_tools: bool,
+    enable_thinking: bool,
+    thinking_effort: String,
+    session_summary: Option<String>,
+    conversation_id: Option<String>,
+    memory_block: String,
+    tool_policies: std::collections::HashMap<String, crate::storage::config::ToolPolicy>,
+    /// Retrieved knowledge-base passages, already formatted (P1-9).
+    kb_block: Option<String>,
+    kb_hits: usize,
+    kb_titles: Vec<String>,
+}
+
+/// Gather the shared side of one turn: rolling summary, long-term memories,
+/// the web-search query and the generation flags.
+#[allow(clippy::too_many_arguments)]
+fn build_turn_context(
+    config: &ConfigStore,
+    db: &Database,
+    messages: &[crate::models::request::ChatMessage],
+    system_prompt: Option<String>,
+    web_search: bool,
+    enable_tools: bool,
+    enable_thinking: bool,
+    thinking_effort: &str,
+    conversation_id: Option<String>,
+) -> TurnContext {
+    // Rolling summary so long-conversation context survives the frontend's
+    // 40-message window (agent/context.rs).
+    let session_summary = match &conversation_id {
         Some(cid) => db.get_summary(cid).ok().flatten().map(|s| s.summary),
         None => None,
     };
 
-    // Load the user's long-term memories (most-used first, bounded) and
-    // render them into the prompt.  This runs on the sync side of the
-    // command; the rendered block is passed into run_stream.
+    // Long-term memories (most-used first, bounded), rendered into the prompt.
     let memory_block = {
-        let memories = crate::agent::memory::load_for_prompt(&db);
+        let memories = crate::agent::memory::load_for_prompt(db);
         // Track usage so the most relevant memories surface first.
         for m in &memories {
             let _ = db.record_memory_use(&m.id);
@@ -199,40 +265,109 @@ pub async fn chat_send(
         crate::agent::memory::format_memories(&memories)
     };
 
-    // Resolve everything sensitive on the Rust side: the frontend never
-    // touches Base URL credentials or keys.
-    type ResolvedProvider = (String, String, String, Option<f32>, Option<u32>);
-    let resolved: Result<ResolvedProvider, String> = config.read(|cfg| {
-        let provider = cfg
-            .providers
+    // Search query = the last non-empty user message.
+    let search_query = if web_search {
+        messages
             .iter()
-            .find(|p| p.id == request.provider_id)
-            .ok_or_else(|| "服务商不存在，请先在设置中添加".to_string())?;
+            .rev()
+            .find(|m| m.role == "user" && !m.content.trim().is_empty())
+            .map(|m| m.content.trim().to_string())
+    } else {
+        None
+    };
 
-        let api_key = secrets::get_api_key(&provider.id)?
-            .ok_or_else(|| "该服务商尚未配置 API Key，请在设置中补充".to_string())?;
+    let (kb_block, kb_hits, kb_titles) = retrieve_knowledge(config, db, messages);
 
-        let model = if request.model_key.trim().is_empty() {
-            cfg.default_model_key
-                .clone()
-                .filter(|m| !m.trim().is_empty())
-                .ok_or_else(|| "请先选择一个模型".to_string())?
-        } else {
-            request.model_key.trim().to_string()
-        };
+    TurnContext {
+        messages: messages.to_vec(),
+        system_prompt,
+        search_query,
+        enable_tools,
+        enable_thinking,
+        thinking_effort: match thinking_effort {
+            "low" | "medium" | "high" | "max" => thinking_effort.to_string(),
+            _ => "medium".to_string(),
+        },
+        session_summary,
+        conversation_id,
+        memory_block,
+        tool_policies: config.read(|cfg| cfg.tool_policies.clone()),
+        kb_block,
+        kb_hits,
+        kb_titles,
+    }
+}
 
-        let url = chat_completions_url(&provider.base_url)?;
-        Ok((
-            url,
-            api_key,
-            model,
-            cfg.generation.temperature,
-            cfg.generation.max_tokens,
-        ))
-    });
-    let (url, api_key, model, temperature, max_tokens) = resolved?;
+/// Retrieve the best knowledge-base passages for this turn (P1-9).
+///
+/// Returns the formatted prompt block, the hit count and the source titles.
+/// Any failure degrades to "no knowledge" — a broken index must never block a
+/// chat request.
+fn retrieve_knowledge(
+    config: &ConfigStore,
+    db: &Database,
+    messages: &[crate::models::request::ChatMessage],
+) -> (Option<String>, usize, Vec<String>) {
+    let knowledge = config.read(|cfg| cfg.knowledge.clone());
+    if !knowledge.auto_inject {
+        return (None, 0, Vec::new());
+    }
+    let query = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user" && !m.content.trim().is_empty())
+        .map(|m| m.content.trim().to_string());
+    let Some(query) = query else {
+        return (None, 0, Vec::new());
+    };
 
-    let request_id = request.request_id.clone().unwrap_or_else(new_request_id);
+    let hits = match db.kb_search(&query, knowledge.max_chunks as usize) {
+        Ok(hits) => hits,
+        Err(err) => {
+            eprintln!("知识库检索失败: {err}");
+            return (None, 0, Vec::new());
+        }
+    };
+    if hits.is_empty() {
+        return (None, 0, Vec::new());
+    }
+
+    let excerpts: Vec<crate::agent::knowledge::KbExcerpt<'_>> = hits
+        .iter()
+        .map(|hit| crate::agent::knowledge::KbExcerpt {
+            title: &hit.title,
+            snippet: &hit.snippet,
+        })
+        .collect();
+    let block = crate::agent::knowledge::format_kb_context(&excerpts);
+    let titles: Vec<String> = hits.iter().map(|hit| hit.title.clone()).collect::<Vec<_>>();
+    (Some(block), hits.len(), titles)
+}
+
+/// Validate a multi-model turn before any work happens.
+fn validate_multi_request(request: &ChatSendMultiRequest) -> Result<(), String> {
+    if request.targets.is_empty() || request.targets.len() > MAX_MULTI_TARGETS {
+        return Err(format!("对比模型数量需在 1-{MAX_MULTI_TARGETS} 之间"));
+    }
+    if request.request_ids.len() != request.targets.len() {
+        return Err("请求 ID 数量与模型数量不一致".into());
+    }
+    Ok(())
+}
+
+/// Register a cancellation token and spawn one stream for `target`.
+///
+/// `event_seq` is created by the caller so a command can emit turn-level
+/// events (the shared web search) on the same per-request sequence that the
+/// stream continues afterwards.
+fn spawn_stream(
+    window: Window,
+    state: &AppState,
+    request_id: String,
+    event_seq: std::sync::Arc<AtomicU64>,
+    target: ResolvedTarget,
+    ctx: TurnContext,
+) -> Result<String, String> {
     if request_id.len() > 128
         || !request_id
             .bytes()
@@ -240,6 +375,7 @@ pub async fn chat_send(
     {
         return Err("request_id 格式无效".into());
     }
+
     let token = CancellationToken::new();
     {
         let mut cancellations = state.cancellations.lock().unwrap();
@@ -253,60 +389,189 @@ pub async fn chat_send(
     let cancellations = state.cancellations.clone();
     let tool_approvals = state.tool_approvals.clone();
     let session_tool_approvals = state.session_tool_approvals.clone();
-
-    // Extract the search query from the last user message (if web search is on).
-    let search_query = if request.web_search {
-        request
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == "user" && !m.content.trim().is_empty())
-            .map(|m| m.content.trim().to_string())
-    } else {
-        None
-    };
-
-    let system_prompt = request.system_prompt.clone();
-    let messages = request.messages.clone();
-    let enable_tools = request.enable_tools;
-    let enable_thinking = request.enable_thinking;
-    let thinking_effort = match request.thinking_effort.as_str() {
-        "low" | "medium" | "high" | "max" => request.thinking_effort.clone(),
-        _ => "medium".to_string(),
-    };
-    let conversation_id = request.conversation_id.clone();
-    let tool_policies = config.read(|cfg| cfg.tool_policies.clone());
     let rid = request_id.clone();
 
     tauri::async_runtime::spawn(async move {
         run_stream(
             window,
             rid.clone(),
+            event_seq,
             token,
-            client.clone(),
-            url.clone(),
-            api_key.clone(),
-            model.clone(),
-            messages,
-            system_prompt,
-            search_query,
-            enable_tools,
-            enable_thinking,
-            thinking_effort,
+            client,
+            target.url,
+            target.api_key,
+            target.model,
+            ctx.messages,
+            ctx.system_prompt,
+            ctx.search_query,
+            ctx.enable_tools,
+            ctx.enable_thinking,
+            ctx.thinking_effort,
             tool_approvals,
             session_tool_approvals,
-            temperature,
-            max_tokens,
-            session_summary,
-            conversation_id,
-            memory_block,
-            tool_policies,
+            target.temperature,
+            target.max_tokens,
+            ctx.session_summary,
+            ctx.conversation_id,
+            ctx.memory_block,
+            ctx.tool_policies,
+            ctx.kb_block,
+            ctx.kb_hits,
+            ctx.kb_titles,
         )
         .await;
         cancellations.lock().unwrap().remove(&rid);
     });
 
     Ok(request_id)
+}
+
+#[tauri::command]
+pub async fn chat_send(
+    window: Window,
+    state: State<'_, AppState>,
+    config: State<'_, ConfigStore>,
+    db: State<'_, Database>,
+    request: ChatSendRequest,
+) -> Result<String, String> {
+    if request.messages.is_empty() {
+        return Err("消息为空".into());
+    }
+    validate_messages(&request.messages)?;
+
+    let ctx = build_turn_context(
+        &config,
+        &db,
+        &request.messages,
+        request.system_prompt.clone(),
+        request.web_search,
+        request.enable_tools,
+        request.enable_thinking,
+        &request.thinking_effort,
+        request.conversation_id.clone(),
+    );
+    let target = resolve_target(&config, &request.provider_id, &request.model_key)?;
+
+    spawn_stream(
+        window,
+        &state,
+        request.request_id.clone().unwrap_or_else(new_request_id),
+        std::sync::Arc::new(AtomicU64::new(0)),
+        target,
+        ctx,
+    )
+}
+
+/// Fan one turn out to up to [`MAX_MULTI_TARGETS`] models so the answers can
+/// be compared side by side (P1-6).
+///
+/// Differences from `chat_send`:
+/// - the agent loop is forced **off** (per-tool approvals would interleave
+///   across columns);
+/// - the web search runs **once** and its context is shared by every target;
+/// - every target is resolved before anything is spawned, so a bad selection
+///   fails the whole turn instead of leaving half of the columns running.
+#[tauri::command]
+pub async fn chat_send_multi(
+    window: Window,
+    state: State<'_, AppState>,
+    config: State<'_, ConfigStore>,
+    db: State<'_, Database>,
+    request: ChatSendMultiRequest,
+) -> Result<Vec<String>, String> {
+    validate_multi_request(&request)?;
+    validate_messages(&request.messages)?;
+
+    // Resolve all targets first: fail fast, spawn nothing.
+    let mut resolved = Vec::with_capacity(request.targets.len());
+    for target in &request.targets {
+        resolved.push(resolve_target(
+            &config,
+            &target.provider_id,
+            &target.model_key,
+        )?);
+    }
+
+    // The agent loop stays off while comparing models: per-tool approvals
+    // would interleave across columns.  With a single target the caller's
+    // choice is honoured, so this path also serves a plain send.
+    let tools_enabled = request.enable_tools && resolved.len() == 1;
+    let mut ctx = build_turn_context(
+        &config,
+        &db,
+        &request.messages,
+        request.system_prompt.clone(),
+        request.web_search,
+        tools_enabled,
+        request.enable_thinking,
+        &request.thinking_effort,
+        request.conversation_id.clone(),
+    );
+
+    // One shared web search for the whole turn.
+    let mut event_seqs: Vec<std::sync::Arc<AtomicU64>> = (0..resolved.len())
+        .map(|_| std::sync::Arc::new(AtomicU64::new(0)))
+        .collect();
+    if let Some(query) = ctx.search_query.clone() {
+        if let Some(first_seq) = event_seqs.first() {
+            let first_rid = request
+                .request_ids
+                .first()
+                .cloned()
+                .unwrap_or_else(new_request_id);
+            let emit = |event: ChatEvent| {
+                let seq = first_seq.fetch_add(1, Ordering::Relaxed);
+                let _ = window.emit(EVENT_CHANNEL, &SequencedChatEvent { seq, event });
+            };
+            emit(ChatEvent::SearchStart {
+                request_id: first_rid.clone(),
+                query: query.clone(),
+            });
+
+            let settings = {
+                let cfg = window.state::<ConfigStore>();
+                crate::api::web_search::WebSearchSettings::resolve(&cfg)
+            };
+            let client = state.http.lock().unwrap().clone();
+            let results = web_search::search(&client, &settings, &query, 5)
+                .await
+                .unwrap_or_default();
+            emit(ChatEvent::SearchEnd {
+                request_id: first_rid,
+                results: results.clone(),
+            });
+
+            if !results.is_empty() {
+                let search_ctx = web_search::format_search_context(&query, &results);
+                ctx.system_prompt = Some(match ctx.system_prompt.take() {
+                    Some(sp) if !sp.trim().is_empty() => format!("{sp}\n\n{search_ctx}"),
+                    _ => search_ctx,
+                });
+            }
+        }
+    }
+    // The search (if any) is already folded into the system prompt; letting
+    // each stream re-run it would query the engine once per column.
+    ctx.search_query = None;
+
+    let mut ids = Vec::with_capacity(resolved.len());
+    for (index, target) in resolved.into_iter().enumerate() {
+        let request_id = request
+            .request_ids
+            .get(index)
+            .cloned()
+            .unwrap_or_else(new_request_id);
+        let seq = event_seqs.remove(0);
+        ids.push(spawn_stream(
+            window.clone(),
+            &state,
+            request_id,
+            seq,
+            target,
+            ctx.clone(),
+        )?);
+    }
+    Ok(ids)
 }
 
 #[tauri::command]
@@ -563,6 +828,7 @@ fn truncate_to_budget(text: String, budget: &mut usize) -> String {
 async fn run_stream(
     window: Window,
     request_id: String,
+    event_seq: std::sync::Arc<AtomicU64>,
     token: CancellationToken,
     client: reqwest::Client,
     url: String,
@@ -589,8 +855,18 @@ async fn run_stream(
     conversation_id: Option<String>,
     memory_block: String,
     tool_policies: std::collections::HashMap<String, crate::storage::config::ToolPolicy>,
+    kb_block: Option<String>,
+    kb_hits: usize,
+    kb_titles: Vec<String>,
 ) {
-    let event_seq = AtomicU64::new(0);
+    // Web-search engine and key, resolved once per request (P0-3).  Changing
+    // the engine mid-request therefore applies from the next request onwards.
+    let web_search_settings = {
+        let config = window.state::<ConfigStore>();
+        crate::api::web_search::WebSearchSettings::resolve(&config)
+    };
+    // Local stores for tools that read them (knowledge base search).
+    let db_handle = window.state::<Database>();
 
     // ---- Debug trace --------------------------------------------------------
     // Appends raw SSE payloads and emitted events to `chat-debug.log` in the
@@ -741,6 +1017,22 @@ async fn run_stream(
         return;
     }
 
+    // ---- Local knowledge base (P1-9) ---------------------------------------
+    // Best-matching passages go into the prompt as reference material.  The
+    // retrieval already happened on the sync side (build_turn_context) so the
+    // count is known before the first request.
+    if let Some(block) = kb_block.filter(|b| !b.trim().is_empty()) {
+        emit(ChatEvent::KbUsed {
+            request_id: request_id.clone(),
+            count: kb_hits,
+            titles: kb_titles,
+        });
+        effective_system_prompt = Some(match effective_system_prompt {
+            Some(sp) if !sp.trim().is_empty() => format!("{sp}\n\n{block}"),
+            _ => block,
+        });
+    }
+
     if let Some(query) = &search_query {
         // Emit search start so the frontend shows "正在搜索…".
         emit(ChatEvent::SearchStart {
@@ -748,7 +1040,7 @@ async fn run_stream(
             query: query.clone(),
         });
 
-        match web_search::search(&client, query, 5).await {
+        match web_search::search(&client, &web_search_settings, query, 5).await {
             Ok(results) if !results.is_empty() => {
                 // Emit search end with results so the frontend can show sources.
                 emit(ChatEvent::SearchEnd {
@@ -793,7 +1085,20 @@ async fn run_stream(
     // Per-tool policies: disabled tools are never offered to the model and
     // "confirm" tools are forced through the approval gate even if the builtin
     // definition would have been allowed automatically.
-    let registry = crate::tools::ToolRegistry::builtin();
+    // Built-ins plus tools discovered from the user's MCP servers (P1-10).
+    // The list is a cached snapshot, so a request never blocks on spawning a
+    // server: `list_mcp_servers` / config changes refresh it.
+    let app_state = window.state::<AppState>();
+    let config_handle = window.state::<ConfigStore>();
+    let mcp_tools = app_state.mcp.cached_tools();
+    let mcp_servers = config_handle.read(|cfg| cfg.mcp_servers.clone());
+    let mut registry = crate::tools::ToolRegistry::builtin();
+    registry.extend(
+        mcp_tools
+            .iter()
+            .map(crate::mcp::to_tool_definition)
+            .collect(),
+    );
     let tools: Option<Vec<Value>> = if enable_tools {
         Some(registry.to_openai_tools_filtered(|def| {
             tool_policies.get(&def.name).copied().unwrap_or_default()
@@ -1281,7 +1586,20 @@ async fn run_stream(
                 });
 
                 tool_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let result = registry.execute(&client, &canonical, args).await;
+                let tool_ctx = crate::tools::registry::ToolContext {
+                    web_search: &web_search_settings,
+                    db: &db_handle,
+                };
+                let result = match mcp_tools.iter().find(|t| t.qualified == canonical) {
+                    // MCP tool: forward to the server process (P1-10).
+                    Some(info) => {
+                        app_state
+                            .mcp
+                            .call(&mcp_servers, &info.server_id, &info.tool_name, args.clone())
+                            .await
+                    }
+                    None => registry.execute(&client, &tool_ctx, &canonical, args).await,
+                };
                 let content = match result {
                     Ok(v) => {
                         // Mark the context as sensitive when a local-sensitive
@@ -1597,7 +1915,7 @@ mod tests {
             request_id: None,
             conversation_id: None,
         };
-        assert!(validate_chat_request(&req).is_ok());
+        assert!(validate_messages(&req.messages).is_ok());
     }
 
     #[test]
@@ -1618,14 +1936,72 @@ mod tests {
             request_id: None,
             conversation_id: None,
         };
-        assert!(validate_chat_request(&req).is_err());
+        assert!(validate_messages(&req.messages).is_err());
 
         req.messages[0].content = "ok".into();
         req.messages[0].images = vec!["data:image/png;base64,AAAA".into(); MAX_MESSAGE_IMAGES + 1];
-        assert!(validate_chat_request(&req).is_err());
+        assert!(validate_messages(&req.messages).is_err());
 
         req.messages[0].images = vec!["x".repeat(MAX_IMAGE_DATA_URL_BYTES + 1)];
-        assert!(validate_chat_request(&req).is_err());
+        assert!(validate_messages(&req.messages).is_err());
+    }
+
+    /// P1-6: a multi-model turn is bounded and needs one request id per target.
+    #[test]
+    fn validate_multi_request_checks_bounds_and_id_count() {
+        fn base() -> ChatSendMultiRequest {
+            ChatSendMultiRequest {
+                targets: vec![crate::models::request::MultiTarget {
+                    provider_id: "p1".into(),
+                    model_key: "m1".into(),
+                }],
+                request_ids: vec!["req-1".into()],
+                messages: vec![crate::models::request::ChatMessage {
+                    role: "user".into(),
+                    content: "你好".into(),
+                    images: vec![],
+                }],
+                system_prompt: None,
+                web_search: false,
+                enable_tools: false,
+                enable_thinking: true,
+                thinking_effort: "medium".into(),
+                conversation_id: None,
+            }
+        }
+
+        assert!(validate_multi_request(&base()).is_ok());
+
+        // More targets than the cap.
+        let mut too_many = base();
+        too_many.targets = (0..MAX_MULTI_TARGETS + 1)
+            .map(|i| crate::models::request::MultiTarget {
+                provider_id: format!("p{i}"),
+                model_key: "m".into(),
+            })
+            .collect();
+        too_many.request_ids = (0..MAX_MULTI_TARGETS + 1)
+            .map(|i| format!("req-{i}"))
+            .collect();
+        assert!(validate_multi_request(&too_many).is_err());
+
+        // Missing / extra request ids.
+        let mut mismatch = base();
+        mismatch.request_ids = vec!["req-1".into(), "req-2".into()];
+        assert!(validate_multi_request(&mismatch).is_err());
+
+        let mut extra = base();
+        extra.targets.push(crate::models::request::MultiTarget {
+            provider_id: "p2".into(),
+            model_key: "m2".into(),
+        });
+        assert!(validate_multi_request(&extra).is_err());
+
+        // No target at all.
+        let mut empty = base();
+        empty.targets.clear();
+        empty.request_ids.clear();
+        assert!(validate_multi_request(&empty).is_err());
     }
 
     #[test]

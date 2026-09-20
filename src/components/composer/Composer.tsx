@@ -12,13 +12,16 @@ import {
   FileType,
   Globe,
   Link as LinkIcon,
+  Loader2,
   MonitorUp,
   Square,
   Paperclip,
+  Sparkles,
   Wrench,
   X,
 } from "lucide-react";
-import { useChatStore } from "../../stores/chat-store";
+import { selectStreaming, useChatStore } from "../../stores/chat-store";
+import { useProvidersStore } from "../../stores/providers-store";
 import { useWindowStore } from "../../stores/window-store";
 import {
   useSettingsStore,
@@ -26,7 +29,9 @@ import {
   type ThinkingEffort,
 } from "../../stores/settings-store";
 import { requestHide } from "../../lib/window";
+import { buildAttachmentBlocks, formatChars } from "../../lib/attachments";
 import { listTools, readClipboardText, type ToolInfo } from "../../services/tools-api";
+import { parseDocumentPreview, pickDocument } from "../../services/document-api";
 import { open } from "@tauri-apps/plugin-dialog";
 
 /** Quick clipboard actions: prepend an instruction, keep the original text. */
@@ -48,6 +53,22 @@ const FILE_ACTIONS: { id: string; label: string; instruction: string }[] = [
   { id: "report", label: "生成报告", instruction: "请基于以下文件内容生成一份结构化报告（背景、要点、结论）：" },
 ];
 
+/** Actions offered for text captured by the selected-text hotkey (P1-5). */
+const QUICK_ACTIONS: { id: string; label: string; instruction: string }[] = [
+  {
+    id: "translate",
+    label: "翻译",
+    instruction: "请将以下内容翻译成简体中文（若原文已经是中文则翻译成英文），保留原有格式：",
+  },
+  { id: "explain", label: "解释", instruction: "请解释以下内容的含义，必要时补充背景：" },
+  { id: "summarize", label: "总结", instruction: "请用要点总结以下内容：" },
+  { id: "polish", label: "润色", instruction: "请润色以下内容，使其更通顺专业，不改变原意：" },
+  { id: "reply", label: "起草回复", instruction: "请基于以下内容起草一段得体的回复：" },
+];
+
+/** Selected text longer than this is truncated in the prompt. */
+const MAX_SELECTION_CHARS = 12000;
+
 const MAX_INPUT_HEIGHT = 152;
 const MAX_IMAGES = 4;
 const THINKING_EFFORT_OPTIONS: { value: ThinkingEffort; label: string; hint: string }[] = [
@@ -67,6 +88,8 @@ export function Composer() {
   const [clipboardOpen, setClipboardOpen] = useState(false);
   const [clipboardBusy, setClipboardBusy] = useState(false);
   const [clipboardHint, setClipboardHint] = useState<string | null>(null);
+  // Text captured by the selected-text hotkey, awaiting an action (P1-5).
+  const [selection, setSelection] = useState<string | null>(null);
   const defaultEnableTools = useSettingsStore((s) => s.defaultEnableTools);
   const [enableTools, setEnableTools] = useState(defaultEnableTools);
   const enableToolsRef = useRef(defaultEnableTools);
@@ -97,8 +120,20 @@ export function Composer() {
   }, [defaultThinkingEffort]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const streaming = useChatStore((s) => s.streamingRequestId !== null);
+  const streaming = useChatStore(selectStreaming);
   const send = useChatStore((s) => s.send);
+  const sendMulti = useChatStore((s) => s.sendMulti);
+  const compareTargets = useChatStore((s) => s.compareTargets);
+  const setCompareTargets = useChatStore((s) => s.setCompareTargets);
+  const comparing = compareTargets.length >= 2;
+  const providers = useProvidersStore((s) => s.providers);
+  const compareLabel = compareTargets
+    .map((t) => {
+      const provider = providers.find((p) => p.id === t.providerId);
+      const model = provider?.models.find((m) => m.modelKey === t.modelKey);
+      return model?.displayName || t.modelKey;
+    })
+    .join(" · ");
   const stop = useChatStore((s) => s.stop);
   const view = useWindowStore((s) => s.view);
   const presets = useSettingsStore((s) => s.presets);
@@ -133,6 +168,12 @@ export function Composer() {
     el.style.height = `${Math.min(el.scrollHeight, MAX_INPUT_HEIGHT)}px`;
   }, [text]);
 
+  // Parsed document attachments (P1-8): their extracted text is folded into
+  // the prompt, so only the metadata travels with the message.
+  const [docs, setDocs] = useState<{ name: string; chars: number; text: string }[]>([]);
+  const [docBusy, setDocBusy] = useState(false);
+  const [docNotice, setDocNotice] = useState<{ ok: boolean; text: string } | null>(null);
+
   const addImages = useCallback((files: FileList | File[]) => {
     const arr = Array.from(files).filter((f) => f.type.startsWith("image/"));
     for (const file of arr) {
@@ -153,6 +194,84 @@ export function Composer() {
     setImages((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  /* ---------------- selected-text hotkey (P1-5) ---------------- */
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const offAction = await listen<string>("quick-action", (event) => {
+        setSelection(event.payload);
+        setClipboardHint(null);
+        setClipboardOpen(false);
+      });
+      const offError = await listen<string>("quick-action-error", (event) => {
+        setSelection(null);
+        setClipboardHint(event.payload);
+      });
+      dispose = () => {
+        offAction();
+        offError();
+      };
+    })();
+    return () => dispose?.();
+  }, []);
+
+  /**
+   * Prefill the composer with an action applied to the captured selection.
+   * The user reviews and presses Enter — nothing is sent automatically, and
+   * the reply is written back to the clipboard so it can replace the text
+   * they selected.
+   */
+  const runSelectionAction = (action: { label: string; instruction: string }) => {
+    if (!selection) return;
+    const wrapped =
+      selection.length > MAX_SELECTION_CHARS
+        ? `${selection.slice(0, MAX_SELECTION_CHARS)}…`
+        : selection;
+    setText(`${action.instruction}\n\n${wrapped}`);
+    setSelection(null);
+    useChatStore.getState().armClipboardWriteback(action.label);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    });
+  };
+
+  /** Pick a document, parse it on the Rust side and stage it for sending. */
+  const addDocument = async () => {
+    setDocNotice(null);
+    try {
+      const path = await pickDocument();
+      if (!path) return;
+      setDocBusy(true);
+      const preview = await parseDocumentPreview(path);
+      setDocs((prev) => [
+        ...prev.filter((doc) => doc.name !== preview.name),
+        { name: preview.name, chars: preview.chars, text: preview.text },
+      ]);
+      if (preview.truncated) {
+        setDocNotice({
+          ok: true,
+          text: `${preview.name} 共 ${formatChars(preview.totalChars)}，本次仅取前 ${formatChars(
+            preview.chars,
+          )}；需要全文可让模型用 read_document 工具按需读取。`,
+        });
+      }
+    } catch (err) {
+      setDocNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setDocBusy(false);
+    }
+  };
+
+  const removeDocument = (idx: number) => {
+    setDocs((prev) => prev.filter((_, i) => i !== idx));
+  };
+
   // Paste image support.
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const files = e.clipboardData.files;
@@ -167,23 +286,58 @@ export function Composer() {
 
   const submit = useCallback(() => {
     const value = text.trim();
-    if ((!value && images.length === 0) || streaming) return;
+    if ((!value && images.length === 0 && docs.length === 0) || streaming) return;
+
+    // Fold staged documents into the prompt as 【附件：…】 blocks (P1-8).
+    const attachmentText = docs.length > 0 ? buildAttachmentBlocks(docs) : "";
+    const content = attachmentText
+      ? value
+        ? `${attachmentText}\n\n${value}`
+        : attachmentText
+      : value;
+    const attachmentMeta = docs.map((doc) => ({ name: doc.name, chars: doc.chars }));
+
     setText("");
     setImages([]);
+    setDocs([]);
+    setDocNotice(null);
     setWebSearch(false); // Reset after send (one-shot toggle like ChatGPT).
     setEnableTools(defaultEnableTools);
     const imgs = images;
     // Read the live toggle state via ref so the callback never captures a
     // stale value (bug fix: toggling tools then sending used the old value).
+    if (comparing) {
+      // Multi-model comparison (P1-6): text only, no agent tools.
+      void sendMulti(
+        content,
+        compareTargets,
+        webSearch,
+        enableThinkingRef.current,
+        thinkingEffortRef.current,
+      );
+      return;
+    }
     void send(
-      value,
+      content,
       imgs.length > 0 ? imgs : undefined,
       webSearch,
       enableToolsRef.current,
       enableThinkingRef.current,
       thinkingEffortRef.current,
+      attachmentMeta.length > 0 ? attachmentMeta : undefined,
     );
-  }, [text, images, streaming, send, webSearch, defaultEnableTools]);
+  }, [
+    text,
+    images,
+    docs,
+    streaming,
+    send,
+    sendMulti,
+    comparing,
+    compareTargets,
+    webSearch,
+    defaultEnableTools,
+  ]);
 
   const applyPreset = useCallback((preset: PromptPreset) => {
     setText(preset.content + "\n");
@@ -291,10 +445,46 @@ export function Composer() {
     }
   };
 
-  const canSend = (text.trim().length > 0 || images.length > 0) && !streaming;
+  const canSend = (text.trim().length > 0 || images.length > 0 || docs.length > 0) && !streaming;
 
   return (
-    <div className="shrink-0 border-t border-line px-3 py-2.5">
+    <div className="cf-print-hide shrink-0 border-t border-line px-3 py-2.5">
+      {/* Selected text captured by the hotkey (P1-5) */}
+      {selection && (
+        <div className="mb-2 rounded-btn border border-line bg-panel-2 px-2.5 py-2">
+          <div className="flex items-center gap-1.5">
+            <Sparkles size={12} className="shrink-0 text-accent" />
+            <span className="text-[11px] text-ink">
+              已获取选中文本 · {selection.length} 字
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelection(null)}
+              title="关闭"
+              className="ml-auto grid h-4 w-4 place-items-center rounded text-ink-2 transition-colors hover:text-ink"
+            >
+              <X size={11} />
+            </button>
+          </div>
+          <p className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-ink-2">{selection}</p>
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {QUICK_ACTIONS.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                onClick={() => runSelectionAction(action)}
+                className="rounded-full border border-line px-2 py-0.5 text-[11px] text-ink transition-colors hover:bg-panel"
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-[10px] text-ink-2">
+            选择动作后会填入输入框（可直接编辑再发送），回答将写回剪贴板。
+          </p>
+        </div>
+      )}
+
       {/* Preset picker dropdown */}
       {showPresets && filteredPresets.length > 0 && (
         <div className="mb-1.5 overflow-hidden rounded-btn border border-line bg-panel shadow-lg">
@@ -326,6 +516,56 @@ export function Composer() {
         />
       )}
 
+      {/* Multi-model comparison targets (P1-6) */}
+      {comparing && (
+        <div className="mb-2 flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1">
+          <span className="shrink-0 text-[11px] text-ink-2">对比</span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-ink" title={compareLabel}>
+            {compareLabel}
+          </span>
+          <button
+            type="button"
+            onClick={() => setCompareTargets([])}
+            title="退出对比模式"
+            className="grid h-4 w-4 shrink-0 place-items-center rounded text-ink-2 transition-colors hover:bg-panel hover:text-ink"
+          >
+            <X size={11} />
+          </button>
+        </div>
+      )}
+
+      {/* Document attachments (P1-8) */}
+      {docs.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {docs.map((doc, idx) => (
+            <span
+              key={`${doc.name}-${idx}`}
+              className="flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1 text-[11px] text-ink"
+              title={doc.name}
+            >
+              <FileText size={11} className="shrink-0 text-ink-2" />
+              <span className="max-w-[11rem] truncate">{doc.name}</span>
+              <span className="shrink-0 text-ink-2">{formatChars(doc.chars)}</span>
+              <button
+                type="button"
+                onClick={() => removeDocument(idx)}
+                title="移除附件"
+                className="grid h-3.5 w-3.5 shrink-0 place-items-center rounded text-ink-2 transition-colors hover:text-danger"
+              >
+                <X size={10} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {docNotice && (
+        <p
+          className={`mb-2 text-[11px] ${docNotice.ok ? "text-ink-2" : "text-danger"}`}
+        >
+          {docNotice.text}
+        </p>
+      )}
+
       {/* Image previews */}
       {images.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
@@ -354,6 +594,7 @@ export function Composer() {
           accept="image/*"
           multiple
           className="hidden"
+          disabled={comparing}
           onChange={(e) => {
             if (e.target.files) addImages(e.target.files);
             e.target.value = "";
@@ -361,11 +602,25 @@ export function Composer() {
         />
         <button
           onClick={() => fileRef.current?.click()}
-          title="添加图片"
-          disabled={images.length >= MAX_IMAGES}
+          title={comparing ? "对比模式下不支持图片（请先退出对比）" : "添加图片"}
+          disabled={images.length >= MAX_IMAGES || comparing}
           className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel hover:text-ink disabled:opacity-30"
         >
           <Paperclip size={15} />
+        </button>
+        {/* Document attachment (P1-8): Word / Excel / PPT / PDF / text */}
+        <button
+          type="button"
+          onClick={() => void addDocument()}
+          title={
+            comparing
+              ? "对比模式下不支持文档附件（请先退出对比）"
+              : "添加文档（Word / Excel / PPT / PDF / 文本），内容会并入本次提问"
+          }
+          disabled={streaming || comparing || docBusy}
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel hover:text-ink disabled:opacity-30"
+        >
+          {docBusy ? <Loader2 size={15} className="animate-spin" /> : <FileText size={15} />}
         </button>
         {/* Thinking toggle and effort picker */}
         <div className="relative flex shrink-0 items-center gap-0.5">
@@ -503,8 +758,14 @@ export function Composer() {
         <div className="flex shrink-0 items-center gap-0.5">
           <button
             onClick={() => setEnableTools((value) => !value)}
-            disabled={streaming}
-            title={enableTools ? "关闭 Agent 工具" : "开启 Agent 工具"}
+            disabled={streaming || comparing}
+            title={
+              comparing
+                ? "对比模式下不启用 Agent 工具"
+                : enableTools
+                  ? "关闭 Agent 工具"
+                  : "开启 Agent 工具"
+            }
             aria-pressed={enableTools}
             className={`relative grid h-7 w-7 place-items-center rounded-md transition-colors disabled:opacity-30 ${
               enableTools ? "bg-accent text-accent-fg" : "text-ink-2 hover:bg-panel hover:text-ink"

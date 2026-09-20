@@ -490,3 +490,48 @@
     transition: none;
   }
 }
+
+/* --------------------------------------------------------------------- */
+/* Print / "save as PDF" export (P1-11.3)                                 */
+/* --------------------------------------------------------------------- */
+@media print {
+  /* Only the conversation pane reaches paper: the title bar, sidebar and
+     composer carry `cf-print-hide`. */
+  .cf-print-hide {
+    display: none !important;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* The message pane is a scroll container on screen; on paper it grows to
+     its full height so every message is included.  The list is expanded to
+     all rows before printing (see lib/print.ts). */
+  .cf-print-area,
+  .cf-print-area * {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+
+  .cf-print-area {
+    position: static !important;
+    height: auto !important;
+    width: 100% !important;
+    flex: none !important;
+  }
+
+  /* Avoid splitting a message across two pages. */
+  .cf-print-area [data-message-id] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .cf-print-area a {
+    color: inherit;
+    text-decoration: none;
+  }
+}
