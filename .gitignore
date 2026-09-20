@@ -9,3 +9,6 @@ Thumbs.db
 release/
 generated-images/
 docs/
+
+# 本地发布辅助脚本：依赖个人 GitHub 令牌、面向个人账号操作，不入库
+scripts/github-release.mjs
