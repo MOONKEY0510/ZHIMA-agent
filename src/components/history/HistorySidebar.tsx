@@ -9,6 +9,7 @@ import {
 import { selectStreaming, useChatStore } from "../../stores/chat-store";
 import { sortedAssistants, useAssistantsStore } from "../../stores/assistants-store";
 import { relativeTime } from "../../lib/time";
+import { AssistantIcon } from "../assistant/AssistantIcon";
 
 /** Minimum query length before the backend full-text search is consulted. */
 const MIN_SEARCH_CHARS = 2;
@@ -222,7 +223,7 @@ export function HistorySidebar() {
                       : "border-line text-ink-2 hover:bg-panel hover:text-ink"
                   }`}
                 >
-                  {a.icon && <span aria-hidden="true">{a.icon}</span>}
+                  <AssistantIcon icon={a.icon} size={12} className="shrink-0" />
                   <span className="max-w-[5.5rem] truncate">{a.name}</span>
                 </button>
               ))}

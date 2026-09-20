@@ -5,6 +5,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Activity,
+  BarChart3,
   Calculator,
   Check,
   ChevronDown,
@@ -99,8 +100,22 @@ import {
   type McpToolInfo,
   type McpView,
 } from "../../services/mcp-api";
+import { UsageTab } from "./UsageTab";
+import {
+  ASSISTANT_ICON_KEYS,
+  ASSISTANT_ICON_LABELS,
+  AssistantIcon,
+  isAssistantIconKey,
+} from "../../components/assistant/AssistantIcon";
 
-type SettingsTab = "models" | "appearance" | "tools" | "diagnostics" | "general" | "persona";
+type SettingsTab =
+  | "models"
+  | "appearance"
+  | "tools"
+  | "usage"
+  | "diagnostics"
+  | "general"
+  | "persona";
 
 /** Fully custom dropdown. The browser-native `<select>` popup cannot be
  *  styled consistently across platforms, so we render our own menu.
@@ -179,6 +194,7 @@ const TABS: { id: SettingsTab; label: string; icon: typeof SettingsIcon }[] = [
   { id: "appearance", label: "外观行为", icon: Palette },
   { id: "persona", label: "角色与提示词", icon: UserCircle },
   { id: "tools", label: "Agent 工具", icon: Bot },
+  { id: "usage", label: "用量统计", icon: BarChart3 },
   { id: "diagnostics", label: "诊断信息", icon: Activity },
   { id: "general", label: "通用", icon: Wrench },
 ];
@@ -250,6 +266,7 @@ export function SettingsPanel() {
           {tab === "appearance" && <AppearanceTab />}
           {tab === "persona" && <PersonaTab />}
           {tab === "tools" && <AgentToolsTab />}
+          {tab === "usage" && <UsageTab />}
           {tab === "diagnostics" && <DiagnosticsTab />}
           {tab === "general" && <GeneralTab />}
         </div>
@@ -1031,7 +1048,7 @@ function AssistantsSection() {
   const newDraft = (): AssistantView => ({
     id: "",
     name: "",
-    icon: "🤖",
+    icon: "sparkles",
     description: "",
     systemPrompt: "",
     providerId: null,
@@ -1084,7 +1101,9 @@ function AssistantsSection() {
               className={`cf-template-card w-full ${activeId === a.id ? "is-active" : ""}`}
             >
               <span className="flex items-center gap-1.5 text-xs text-ink">
-                <span aria-hidden="true">{a.icon || "🤖"}</span>
+                <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-accent/10 text-accent">
+                  <AssistantIcon icon={a.icon} size={13} />
+                </span>
                 <span className="truncate font-medium">{a.name}</span>
                 {activeId === a.id && <Check size={12} className="shrink-0 text-success" />}
               </span>
@@ -1186,7 +1205,7 @@ function AssistantForm({
   const providers = useProvidersStore((s) => s.providers);
 
   const [name, setName] = useState(initial.name);
-  const [icon, setIcon] = useState(initial.icon ?? "🤖");
+  const [icon, setIcon] = useState(initial.icon ?? "sparkles");
   const [description, setDescription] = useState(initial.description ?? "");
   const [prompt, setPrompt] = useState(initial.systemPrompt);
   const [providerId, setProviderId] = useState(initial.providerId ?? "");
@@ -1223,25 +1242,47 @@ function AssistantForm({
 
   return (
     <div className="space-y-3">
-      <div className="flex gap-2">
-        <div className="w-20 shrink-0">
-          <label className="mb-1 block text-xs text-ink-2">图标</label>
+      <div>
+        <label className="mb-1 block text-xs text-ink-2">图标</label>
+        <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 flex-wrap gap-1">
+            {ASSISTANT_ICON_KEYS.map((key) => {
+              const selected = icon === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  title={ASSISTANT_ICON_LABELS[key]}
+                  onClick={() => setIcon(key)}
+                  className={`grid h-7 w-7 place-items-center rounded-btn border transition-colors ${
+                    selected
+                      ? "border-accent bg-accent/10 text-accent"
+                      : "border-line text-ink-2 hover:bg-panel-2 hover:text-ink"
+                  }`}
+                >
+                  <AssistantIcon icon={key} size={15} />
+                </button>
+              );
+            })}
+          </div>
           <input
-            value={icon}
+            value={isAssistantIconKey(icon) ? "" : icon}
             onChange={(e) => setIcon(e.target.value)}
-            placeholder="🤖"
-            className={`${inputCls} text-center`}
+            placeholder="自定义"
+            title="也可以填入 emoji 或单个字符"
+            className={`${inputCls} w-16 shrink-0 text-center`}
           />
         </div>
-        <div className="min-w-0 flex-1">
-          <label className="mb-1 block text-xs text-ink-2">名称</label>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="例如：周报助手"
-            className={inputCls}
-          />
-        </div>
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs text-ink-2">名称</label>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="例如：周报助手"
+          className={inputCls}
+        />
       </div>
 
       <div>

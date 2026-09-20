@@ -28,6 +28,10 @@ export interface StoredMessage {
   toolCalls?: string | null;
   modelName?: string | null;
   durationMs?: number | null;
+  /** Prompt tokens reported by the provider (recorded since v17). */
+  inputTokens?: number | null;
+  /** Completion tokens reported by the provider (recorded since v17). */
+  outputTokens?: number | null;
   /** Serialized JSON array of every version of this message's content. */
   versionsJson?: string | null;
   /** Index of the version mirrored by the row fields above. */

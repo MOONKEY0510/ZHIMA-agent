@@ -58,8 +58,11 @@ export default function App() {
   const toastTimer = useRef<number | null>(null);
   const lastShownAt = useRef(0);
 
-  // Chat view is "expanded" as soon as a conversation exists or full mode is on.
-  const expandedNow = view === "settings" || fullMode || hasMessages;
+  // Chat view is "expanded" as soon as a conversation exists, full mode is on
+  // or a composer panel needs the extra room.
+  const composerPanelOpen = useWindowStore((s) => s.composerPanelOpen);
+  const expandedNow =
+    view === "settings" || fullMode || hasMessages || composerPanelOpen;
 
   /* --- Water transition ---------------------------------------------------
    * One spring drives the whole shell — opacity, drift, scale and blur move

@@ -124,6 +124,7 @@ pub fn run() {
             commands::history::delete_conversation,
             commands::history::set_conversation_pinned,
             commands::history::clear_all_history,
+            commands::usage::get_usage_stats,
             commands::memory::list_memories,
             commands::memory::create_memory,
             commands::memory::update_memory,

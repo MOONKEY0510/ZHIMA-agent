@@ -87,7 +87,7 @@ export async function syncWindowSize(expanded: boolean, full = false): Promise<v
     // Size read failed; fall through and set it anyway.
   }
 
-  await win.setSize(new LogicalSize(target.width, target.height));
+  await animateSize(win, target);
 }
 
 async function resolveSize(
@@ -116,4 +116,35 @@ async function resolveSize(
     };
   }
   return { width: WINDOW_WIDTH, height: Math.min(FALLBACK_EXPANDED_HEIGHT, maxHeight) };
+}
+
+/** Height-only changes glide; width changes apply in one go. */
+async function animateSize(
+  win: ReturnType<typeof getCurrentWindow>,
+  target: { width: number; height: number },
+): Promise<void> {
+  const from = (await win.innerSize()).toLogical(await win.scaleFactor());
+  if (Math.abs(from.width - target.width) >= 2) {
+    await win.setSize(new LogicalSize(target.width, target.height));
+    return;
+  }
+  const delta = Math.round(target.height - from.height);
+  if (Math.abs(delta) < 3) return;
+  // Frame-paced with an ease-out curve: one resize request per frame keeps
+  // the motion continuous, and the request is not awaited so IPC latency
+  // cannot stall the animation.
+  const duration = Math.min(240, 100 + Math.abs(delta) * 0.3);
+  const start = performance.now();
+  await new Promise<void>((resolve) => {
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      void win.setSize(
+        new LogicalSize(target.width, Math.round(from.height + delta * eased)),
+      );
+      if (t < 1) requestAnimationFrame(step);
+      else resolve();
+    };
+    requestAnimationFrame(step);
+  });
 }

@@ -199,6 +199,28 @@ const MIGRATIONS: &[&str] = &[
      END;",
     // v16 — pinned conversations sort above the recency list (P1-11.1).
     "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;",
+    // v17 — per-message token usage.  The v1 `usage_json` column was never
+    // written; dedicated integer columns keep the aggregate queries
+    // (`SUM` / `GROUP BY` over models and days) simple.  NULL for rows that
+    // predate usage recording or whose provider never reported it.
+    "ALTER TABLE messages ADD COLUMN input_tokens INTEGER;
+     ALTER TABLE messages ADD COLUMN output_tokens INTEGER;",
+    // v18 — built-in assistant icons become vector-icon keys resolved by the
+    // frontend (`AssistantIcon`).  Only rows still carrying the shipped emoji
+    // are rewritten, so a user's own icon choice is never clobbered; the
+    // emoji variants cover both the U+FE0F and bare forms.
+    "UPDATE assistants SET icon = 'sparkles'
+        WHERE id = 'assistant.builtin.default' AND icon = '💬';
+     UPDATE assistants SET icon = 'search'
+        WHERE id = 'assistant.builtin.researcher' AND icon = '🔍';
+     UPDATE assistants SET icon = 'pen-line'
+        WHERE id = 'assistant.builtin.writer' AND icon IN ('✍️', '✍');
+     UPDATE assistants SET icon = 'code'
+        WHERE id = 'assistant.builtin.coder' AND icon IN ('👨‍💻', '👨💻');
+     UPDATE assistants SET icon = 'languages'
+        WHERE id = 'assistant.builtin.translator' AND icon = '🌐';
+     UPDATE assistants SET icon = 'clipboard-list'
+        WHERE id = 'assistant.builtin.meeting' AND icon = '📋';",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,6 +313,13 @@ pub struct Message {
     /// (v14).  Only metadata — the extracted text lives inside `content`.
     #[serde(default)]
     pub attachments_json: Option<String>,
+    /// Prompt tokens reported by the provider (v17).  `None` when the
+    /// provider did not report usage or the row predates recording.
+    #[serde(default)]
+    pub input_tokens: Option<i64>,
+    /// Completion tokens reported by the provider (v17).
+    #[serde(default)]
+    pub output_tokens: Option<i64>,
     pub created_at: i64,
 }
 
@@ -305,6 +334,67 @@ pub struct MessageHit {
     /// Excerpt around the match, with 「」 markers on the matched phrase.
     pub snippet: String,
     pub created_at: i64,
+}
+
+/// Aggregated token usage for one model (v17).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsage {
+    /// Model display name as stored on the messages; `None` for rows that
+    /// never recorded one — the UI labels that bucket itself.
+    pub model_name: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    /// Finished assistant turns attributed to this model.
+    pub rounds: i64,
+    /// Mean wall-clock duration of those turns (ms); `None` without data.
+    pub avg_duration_ms: Option<i64>,
+    /// Timestamp (ms) of the most recent turn using this model.
+    pub last_used_at: Option<i64>,
+}
+
+/// Tokens consumed on one calendar day (local time), for the trend chart.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyUsage {
+    /// `YYYY-MM-DD` in the user's local time zone.
+    pub day: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub rounds: i64,
+}
+
+/// Tokens consumed by one model on one calendar day, for the per-model
+/// trend lines.  Only days with token data produce a row.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDailyUsage {
+    /// Model display name; `None` for the "unknown model" bucket.
+    pub model_name: Option<String>,
+    /// `YYYY-MM-DD` in the user's local time zone.
+    pub day: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+}
+
+/// Everything the usage panel needs, from one round of queries.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageStats {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    /// Finished assistant turns on record.
+    pub rounds: i64,
+    /// How many of those turns carry token numbers (providers may omit
+    /// usage, and rows saved before v17 have none).
+    pub rounds_with_usage: i64,
+    /// Longest span between the first and last message of a conversation
+    /// (ms); 0 when nothing is recorded.
+    pub longest_session_ms: i64,
+    pub models: Vec<ModelUsage>,
+    pub daily: Vec<DailyUsage>,
+    /// Per-model per-day totals over the last year (trend chart).
+    pub model_daily: Vec<ModelDailyUsage>,
 }
 
 /// One knowledge-base document (v15).
@@ -339,7 +429,7 @@ pub struct KbHit {
 /// expects.  Keep the two in sync.
 const MESSAGE_COLUMNS: &str = "id, conversation_id, role, content, status, reasoning, \
      tool_calls, model_name, duration_ms, versions_json, active_version, attachments_json, \
-     created_at";
+     input_tokens, output_tokens, created_at";
 
 /// Map one `messages` row selected with [`MESSAGE_COLUMNS`].
 fn map_message(r: &rusqlite::Row<'_>) -> SqlResult<Message> {
@@ -356,7 +446,9 @@ fn map_message(r: &rusqlite::Row<'_>) -> SqlResult<Message> {
         versions_json: r.get(9)?,
         active_version: r.get(10)?,
         attachments_json: r.get(11)?,
-        created_at: r.get(12)?,
+        input_tokens: r.get(12)?,
+        output_tokens: r.get(13)?,
+        created_at: r.get(14)?,
     })
 }
 
@@ -625,32 +717,98 @@ impl Database {
         Ok(db)
     }
 
-    /// Make sure every built-in assistant row exists.  `INSERT OR IGNORE`
-    /// keeps user edits intact; `reset_builtin_assistant` restores defaults.
+    /// Keep the built-in assistant rows in step with the shipped set:
+    ///
+    /// 1. built-ins that are no longer shipped are removed — but only when
+    ///    still untouched (an edited row is user data) — and their
+    ///    conversations fall back to the global default;
+    /// 2. missing built-ins are inserted;
+    /// 3. built-ins whose prompt still matches a previously shipped
+    ///    definition (see [`crate::storage::assistants::LEGACY_BUILTIN_PROMPTS`])
+    ///    are refreshed to the current definition, so the redesigned presets
+    ///    reach existing installs.  User edits are never touched.
+    ///
+    /// `reset_builtin_assistant` restores a single built-in on demand.
     fn seed_builtin_assistants(&self) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
+
+        // 1. Retire built-ins that left the set (untouched rows only).
+        for (id, legacy_prefix) in crate::storage::assistants::RETIRED_BUILTINS {
+            conn.execute(
+                "DELETE FROM assistants WHERE id = ?1 AND system_prompt LIKE ?2",
+                params![id, format!("{legacy_prefix}%")],
+            )
+            .map_err(|e| format!("下线旧内置助手失败：{e}"))?;
+            // Any conversation still bound to a removed assistant follows the
+            // global default again (the row may survive when it was edited).
+            conn.execute(
+                "UPDATE conversations SET assistant_id = NULL
+                  WHERE assistant_id = ?1
+                    AND NOT EXISTS (SELECT 1 FROM assistants WHERE id = ?1)",
+                params![id],
+            )
+            .map_err(|e| format!("解除会话绑定失败：{e}"))?;
+        }
+
+        // 2. / 3. Seed and upgrade.
         let now = now_ms();
         for a in crate::storage::assistants::builtin_assistants(now) {
-            conn.execute(
-                "INSERT OR IGNORE INTO assistants
-                    (id, name, icon, description, system_prompt, provider_id, model_key,
-                     tool_policies_json, sort_order, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
-                    a.id,
-                    a.name,
-                    a.icon,
-                    a.description,
-                    a.system_prompt,
-                    a.provider_id,
-                    a.model_key,
-                    a.tool_policies_json,
-                    a.sort_order,
-                    a.created_at,
-                    a.updated_at,
-                ],
-            )
-            .map_err(|e| format!("写入内置助手失败：{e}"))?;
+            let stored_prompt: Option<String> = conn
+                .query_row(
+                    "SELECT system_prompt FROM assistants WHERE id = ?1",
+                    params![a.id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| format!("读取内置助手失败：{e}"))?;
+
+            let Some(prompt) = stored_prompt else {
+                conn.execute(
+                    "INSERT OR IGNORE INTO assistants
+                        (id, name, icon, description, system_prompt, provider_id, model_key,
+                         tool_policies_json, sort_order, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![
+                        a.id,
+                        a.name,
+                        a.icon,
+                        a.description,
+                        a.system_prompt,
+                        a.provider_id,
+                        a.model_key,
+                        a.tool_policies_json,
+                        a.sort_order,
+                        a.created_at,
+                        a.updated_at,
+                    ],
+                )
+                .map_err(|e| format!("写入内置助手失败：{e}"))?;
+                continue;
+            };
+
+            let outdated = crate::storage::assistants::LEGACY_BUILTIN_PROMPTS
+                .iter()
+                .any(|(id, prefix)| *id == a.id && prompt.starts_with(prefix));
+            if outdated {
+                // The row still carries a previously shipped prompt: upgrade
+                // the definition while keeping the user's icon and model pin.
+                conn.execute(
+                    "UPDATE assistants
+                        SET name = ?2, description = ?3, system_prompt = ?4,
+                            tool_policies_json = ?5, sort_order = ?6, updated_at = ?7
+                      WHERE id = ?1",
+                    params![
+                        a.id,
+                        a.name,
+                        a.description,
+                        a.system_prompt,
+                        a.tool_policies_json,
+                        a.sort_order,
+                        now,
+                    ],
+                )
+                .map_err(|e| format!("升级内置助手失败：{e}"))?;
+            }
         }
         Ok(())
     }
@@ -827,8 +985,8 @@ impl Database {
 
         for msg in [user_message, assistant_message] {
             tx.execute(
-                "INSERT INTO messages (id, conversation_id, role, content, status, reasoning, tool_calls, model_name, duration_ms, attachments_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                "INSERT INTO messages (id, conversation_id, role, content, status, reasoning, tool_calls, model_name, duration_ms, attachments_json, input_tokens, output_tokens, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT(id) DO UPDATE SET
                      content = excluded.content,
                      status = excluded.status,
@@ -836,6 +994,8 @@ impl Database {
                      tool_calls = excluded.tool_calls,
                      model_name = excluded.model_name,
                      duration_ms = excluded.duration_ms,
+                     input_tokens = excluded.input_tokens,
+                     output_tokens = excluded.output_tokens,
                      attachments_json = COALESCE(excluded.attachments_json, attachments_json)",
                 params![
                     msg.id,
@@ -848,6 +1008,8 @@ impl Database {
                     msg.model_name,
                     msg.duration_ms,
                     msg.attachments_json,
+                    msg.input_tokens,
+                    msg.output_tokens,
                     msg.created_at,
                 ],
             )
@@ -994,8 +1156,8 @@ impl Database {
     pub fn save_message(&self, msg: &Message) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, status, reasoning, tool_calls, model_name, duration_ms, attachments_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO messages (id, conversation_id, role, content, status, reasoning, tool_calls, model_name, duration_ms, attachments_json, input_tokens, output_tokens, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(id) DO UPDATE SET
                  content = excluded.content,
                  status = excluded.status,
@@ -1003,7 +1165,9 @@ impl Database {
                  tool_calls = excluded.tool_calls,
                  model_name = excluded.model_name,
                  duration_ms = excluded.duration_ms,
-                 attachments_json = COALESCE(excluded.attachments_json, attachments_json)",
+                 attachments_json = COALESCE(excluded.attachments_json, attachments_json),
+                 input_tokens = excluded.input_tokens,
+                 output_tokens = excluded.output_tokens",
             params![
                 msg.id,
                 msg.conversation_id,
@@ -1015,6 +1179,8 @@ impl Database {
                 msg.model_name,
                 msg.duration_ms,
                 msg.attachments_json,
+                msg.input_tokens,
+                msg.output_tokens,
                 msg.created_at,
             ],
         )
@@ -1570,6 +1736,149 @@ impl Database {
         Ok(())
     }
 
+    /* ---------------- token usage (v17) ---------------- */
+
+    /// Aggregate per-model and per-day token usage.
+    ///
+    /// Only finished assistant turns count.  Rows saved before v17 (or from
+    /// providers that never report usage) have NULL token columns: they still
+    /// contribute to the round counts, so the UI can explain the gap.
+    pub fn usage_stats(&self) -> Result<UsageStats, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let (input_tokens, output_tokens, rounds, rounds_with_usage) = conn
+            .query_row(
+                "SELECT COALESCE(SUM(input_tokens), 0),
+                        COALESCE(SUM(output_tokens), 0),
+                        COUNT(*),
+                        COALESCE(SUM(
+                            CASE WHEN input_tokens IS NOT NULL OR output_tokens IS NOT NULL
+                                 THEN 1 ELSE 0 END
+                        ), 0)
+                 FROM messages
+                 WHERE role = 'assistant' AND status = 'done'",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .map_err(|e| format!("统计用量失败：{e}"))?;
+
+        let mut model_stmt = conn
+            .prepare(
+                "SELECT model_name,
+                        COALESCE(SUM(input_tokens), 0),
+                        COALESCE(SUM(output_tokens), 0),
+                        COUNT(*),
+                        CAST(AVG(duration_ms) AS INTEGER),
+                        MAX(created_at)
+                 FROM messages
+                 WHERE role = 'assistant' AND status = 'done'
+                 GROUP BY model_name
+                 ORDER BY SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) DESC,
+                          COUNT(*) DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let models = model_stmt
+            .query_map([], |r| {
+                Ok(ModelUsage {
+                    model_name: r.get(0)?,
+                    input_tokens: r.get(1)?,
+                    output_tokens: r.get(2)?,
+                    rounds: r.get(3)?,
+                    avg_duration_ms: r.get(4)?,
+                    last_used_at: r.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<SqlResult<Vec<_>>>()
+            .map_err(|e| format!("统计模型用量失败：{e}"))?;
+
+        let mut daily_stmt = conn
+            .prepare(
+                "SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime'),
+                        COALESCE(SUM(input_tokens), 0),
+                        COALESCE(SUM(output_tokens), 0),
+                        COUNT(*)
+                 FROM messages
+                 WHERE role = 'assistant' AND status = 'done'
+                 GROUP BY 1
+                 ORDER BY 1 ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let daily = daily_stmt
+            .query_map([], |r| {
+                Ok(DailyUsage {
+                    day: r.get(0)?,
+                    input_tokens: r.get(1)?,
+                    output_tokens: r.get(2)?,
+                    rounds: r.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<SqlResult<Vec<_>>>()
+            .map_err(|e| format!("统计每日用量失败：{e}"))?;
+
+        // Per-model per-day totals for the trend lines.  Bounded to one year:
+        // the heatmap and the widest trend window never look further back.
+        let year_ago = chrono::Utc::now().timestamp_millis() - 366 * 24 * 60 * 60 * 1000;
+        let mut model_daily_stmt = conn
+            .prepare(
+                "SELECT model_name,
+                        strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime'),
+                        COALESCE(SUM(input_tokens), 0),
+                        COALESCE(SUM(output_tokens), 0)
+                 FROM messages
+                 WHERE role = 'assistant' AND status = 'done'
+                   AND created_at >= ?1
+                   AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL)
+                 GROUP BY model_name, 2
+                 ORDER BY 2 ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let model_daily = model_daily_stmt
+            .query_map(params![year_ago], |r| {
+                Ok(ModelDailyUsage {
+                    model_name: r.get(0)?,
+                    day: r.get(1)?,
+                    input_tokens: r.get(2)?,
+                    output_tokens: r.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<SqlResult<Vec<_>>>()
+            .map_err(|e| format!("统计模型每日用量失败：{e}"))?;
+
+        // Longest conversation span (first → last message of one conversation).
+        let longest_session_ms = conn
+            .query_row(
+                "SELECT COALESCE(MAX(span), 0) FROM (
+                     SELECT MAX(created_at) - MIN(created_at) AS span
+                     FROM messages
+                     GROUP BY conversation_id
+                 )",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(|e| format!("统计会话时长失败：{e}"))?;
+
+        Ok(UsageStats {
+            input_tokens,
+            output_tokens,
+            rounds,
+            rounds_with_usage,
+            longest_session_ms,
+            models,
+            daily,
+            model_daily,
+        })
+    }
+
     /* ---------------- assistants (v13) ---------------- */
 
     /// All assistants: shipped ones first (by `sort_order`), then user ones.
@@ -1945,8 +2254,8 @@ impl Database {
                         "INSERT OR IGNORE INTO messages
                             (id, conversation_id, role, content, status, reasoning, tool_calls,
                              model_name, duration_ms, versions_json, active_version,
-                             attachments_json, created_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                             attachments_json, input_tokens, output_tokens, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                         params![
                             m.id,
                             // Trust the parent: never let a message point at
@@ -1962,6 +2271,8 @@ impl Database {
                             m.versions_json,
                             m.active_version,
                             m.attachments_json,
+                            m.input_tokens,
+                            m.output_tokens,
                             m.created_at,
                         ],
                     )
@@ -2101,6 +2412,8 @@ mod tests {
             versions_json: None,
             active_version: 0,
             attachments_json: None,
+            input_tokens: None,
+            output_tokens: None,
             created_at: at,
         }
     }
@@ -2339,7 +2652,120 @@ mod tests {
             .reset_builtin_assistant("assistant.builtin.default")
             .unwrap();
         assert_eq!(reset.name, "通用助手");
-        assert!(reset.system_prompt.contains("轻量可靠的桌面助手"));
+        assert!(reset.system_prompt.contains("通用、可靠的桌面助手"));
+        // Reset also restores the shipped vector icon key.
+        assert_eq!(reset.icon.as_deref(), Some("sparkles"));
+    }
+
+    #[test]
+    fn legacy_builtins_are_refreshed_or_retired() {
+        let db = Database::in_memory();
+        {
+            // A database from the previous release: the default assistant
+            // still carries the old shipped prompt, the writer was customised
+            // by the user, and the retired meeting assistant is still there.
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE assistants
+                    SET system_prompt = '你是一个轻量可靠的桌面助手，旧版提示词。'
+                  WHERE id = 'assistant.builtin.default'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE assistants
+                    SET name = '我的写作助手', system_prompt = '你是我的私人写作助手。'
+                  WHERE id = 'assistant.builtin.writer'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO assistants
+                    (id, name, icon, description, system_prompt, provider_id, model_key,
+                     tool_policies_json, sort_order, created_at, updated_at)
+                 VALUES ('assistant.builtin.meeting', '会议纪要', 'clipboard-list', '旧版',
+                         '你是一个高效的会议记录助手。整理为结构化纪要。', NULL, NULL, NULL, 5, 0, 0)",
+                [],
+            )
+            .unwrap();
+        }
+        db.create_conversation(&conv("c1", "t", 1)).unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE conversations SET assistant_id = 'assistant.builtin.meeting' WHERE id = 'c1'",
+                [],
+            )
+            .unwrap();
+        }
+
+        db.seed_builtin_assistants().unwrap();
+
+        // The untouched built-in was upgraded to the current definition…
+        let default = db
+            .get_assistant("assistant.builtin.default")
+            .unwrap()
+            .unwrap();
+        assert!(default.system_prompt.contains("通用、可靠的桌面助手"));
+
+        // …the customised one kept the user's edit…
+        let writer = db
+            .get_assistant("assistant.builtin.writer")
+            .unwrap()
+            .unwrap();
+        assert_eq!(writer.name, "我的写作助手");
+        assert_eq!(writer.system_prompt, "你是我的私人写作助手。");
+
+        // …the retired built-in is gone and its conversation fell back…
+        assert!(db
+            .get_assistant("assistant.builtin.meeting")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            db.get_conversation("c1").unwrap().unwrap().assistant_id,
+            None
+        );
+
+        // …and the new built-in was seeded.
+        assert!(db
+            .get_assistant("assistant.builtin.summarizer")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn migration_v18_normalizes_legacy_emoji_icons() {
+        let db = Database::in_memory();
+        {
+            // Simulate a database created before v18: the shipped emoji are
+            // still stored and `user_version` counts every already-applied
+            // migration (18 — one legacy entry carries no vN label).
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch(
+                "UPDATE assistants SET icon = '💬' WHERE id = 'assistant.builtin.default';
+                 UPDATE assistants SET icon = '✍️' WHERE id = 'assistant.builtin.writer';
+                 PRAGMA user_version = 18;",
+            )
+            .unwrap();
+        }
+        db.migrate().unwrap();
+
+        assert_eq!(
+            db.get_assistant("assistant.builtin.default")
+                .unwrap()
+                .unwrap()
+                .icon
+                .as_deref(),
+            Some("sparkles")
+        );
+        assert_eq!(
+            db.get_assistant("assistant.builtin.writer")
+                .unwrap()
+                .unwrap()
+                .icon
+                .as_deref(),
+            Some("pen-line")
+        );
     }
 
     #[test]
@@ -2419,6 +2845,192 @@ mod tests {
                 .as_deref(),
             Some("assistant.builtin.coder")
         );
+    }
+
+    /* ---------------- token usage (v17) ---------------- */
+
+    fn usage_msg(
+        id: &str,
+        model: Option<&str>,
+        input: Option<i64>,
+        output: Option<i64>,
+        status: &str,
+        at: i64,
+    ) -> Message {
+        Message {
+            model_name: model.map(str::to_string),
+            input_tokens: input,
+            output_tokens: output,
+            duration_ms: Some(1000),
+            ..msg(id, "c1", "assistant", "答案", status, at)
+        }
+    }
+
+    /// The local calendar day a millisecond timestamp falls on, matching the
+    /// `localtime` modifier used by the aggregate query.
+    fn local_day(ms: i64) -> String {
+        use chrono::TimeZone;
+        chrono::Local
+            .timestamp_millis_opt(ms)
+            .single()
+            .expect("valid timestamp")
+            .format("%Y-%m-%d")
+            .to_string()
+    }
+
+    #[test]
+    fn token_usage_round_trips_and_clears_on_resave() {
+        let db = Database::in_memory();
+        db.create_conversation(&conv("c1", "t", 1)).unwrap();
+        db.save_message(&usage_msg(
+            "a1",
+            Some("deepseek-chat"),
+            Some(120),
+            Some(45),
+            "done",
+            10,
+        ))
+        .unwrap();
+
+        let stored = db.list_messages("c1").unwrap();
+        assert_eq!(stored[0].input_tokens, Some(120));
+        assert_eq!(stored[0].output_tokens, Some(45));
+
+        // A regeneration starts with a blank row: re-saving without usage
+        // must clear the stale counters rather than keep the old numbers.
+        db.save_message(&usage_msg(
+            "a1",
+            Some("deepseek-chat"),
+            None,
+            None,
+            "streaming",
+            10,
+        ))
+        .unwrap();
+        let stored = db.list_messages("c1").unwrap();
+        assert_eq!(stored[0].input_tokens, None);
+        assert_eq!(stored[0].output_tokens, None);
+    }
+
+    #[test]
+    fn usage_stats_aggregate_per_model_and_day() {
+        let db = Database::in_memory();
+        db.create_conversation(&conv("c1", "t", 1)).unwrap();
+
+        // Relative to "now": the per-model daily rows are bounded to the last
+        // year, so fixed timestamps would fall out of the window over time.
+        let t1 = chrono::Utc::now().timestamp_millis() - 40 * 24 * 60 * 60 * 1000;
+        let t2 = t1 + 26 * 60 * 60 * 1000; // always a different calendar day
+
+        db.save_message(&usage_msg(
+            "a1",
+            Some("alpha"),
+            Some(100),
+            Some(40),
+            "done",
+            t1,
+        ))
+        .unwrap();
+        db.save_message(&usage_msg(
+            "a2",
+            Some("beta"),
+            Some(10),
+            Some(5),
+            "done",
+            t1,
+        ))
+        .unwrap();
+        // No model name: its own bucket (the UI labels it itself).
+        db.save_message(&usage_msg("a3", None, Some(7), Some(3), "done", t1))
+            .unwrap();
+        // A model with rounds but no token data still shows up.
+        db.save_message(&usage_msg("a4", Some("gamma"), None, None, "done", t1))
+            .unwrap();
+        // Different day, same model as a1.
+        db.save_message(&usage_msg(
+            "a5",
+            Some("alpha"),
+            Some(50),
+            Some(20),
+            "done",
+            t2,
+        ))
+        .unwrap();
+        // Failed turns are excluded entirely, even with token numbers.
+        db.save_message(&usage_msg(
+            "a6",
+            Some("beta"),
+            Some(999),
+            Some(999),
+            "error",
+            t2,
+        ))
+        .unwrap();
+
+        let stats = db.usage_stats().unwrap();
+        assert_eq!(stats.input_tokens, 167);
+        assert_eq!(stats.output_tokens, 68);
+        assert_eq!(stats.rounds, 5);
+        assert_eq!(stats.rounds_with_usage, 4);
+
+        // Ordered by total tokens: alpha (210) > beta (15) > unknown (10) > gamma (0).
+        let names: Vec<Option<&str>> = stats
+            .models
+            .iter()
+            .map(|m| m.model_name.as_deref())
+            .collect();
+        assert_eq!(
+            names,
+            vec![Some("alpha"), Some("beta"), None, Some("gamma")]
+        );
+        assert_eq!(stats.models[0].input_tokens, 150);
+        assert_eq!(stats.models[0].output_tokens, 60);
+        assert_eq!(stats.models[0].rounds, 2);
+        assert_eq!(stats.models[0].avg_duration_ms, Some(1000));
+        assert_eq!(stats.models[0].last_used_at, Some(t2));
+        assert_eq!(stats.models[3].rounds, 1);
+        assert_eq!(stats.models[3].input_tokens, 0);
+
+        // Two calendar days, ascending, with the per-day totals of the done rows.
+        assert_eq!(stats.daily.len(), 2);
+        assert_eq!(stats.daily[0].day, local_day(t1));
+        assert_eq!(stats.daily[0].input_tokens, 117);
+        assert_eq!(stats.daily[0].output_tokens, 48);
+        assert_eq!(stats.daily[0].rounds, 4);
+        assert_eq!(stats.daily[1].day, local_day(t2));
+        assert_eq!(stats.daily[1].input_tokens, 50);
+        assert_eq!(stats.daily[1].output_tokens, 20);
+        assert_eq!(stats.daily[1].rounds, 1);
+
+        // Per-model per-day rows power the trend lines: alpha on two days,
+        // beta and the unknown bucket on day one (gamma has no tokens)
+        // and the failed row never appears.
+        assert_eq!(stats.model_daily.len(), 4);
+        let alpha_late = stats
+            .model_daily
+            .iter()
+            .find(|row| row.model_name.as_deref() == Some("alpha") && row.day == local_day(t2))
+            .expect("alpha has a row on the second day");
+        assert_eq!(alpha_late.input_tokens, 50);
+        assert_eq!(alpha_late.output_tokens, 20);
+        assert!(!stats.model_daily.iter().any(|row| row.input_tokens >= 999));
+
+        // a1 and a5 share conversation c1, 26 hours apart.
+        assert_eq!(stats.longest_session_ms, t2 - t1);
+    }
+
+    #[test]
+    fn usage_stats_are_empty_without_finished_turns() {
+        let db = Database::in_memory();
+        db.create_conversation(&conv("c1", "t", 1)).unwrap();
+        db.save_message(&msg("u1", "c1", "user", "问题", "done", 10))
+            .unwrap();
+
+        let stats = db.usage_stats().unwrap();
+        assert_eq!(stats.rounds, 0);
+        assert_eq!(stats.input_tokens, 0);
+        assert!(stats.models.is_empty());
+        assert!(stats.daily.is_empty());
     }
 
     /* ---------------- knowledge base (v15) ---------------- */

@@ -30,6 +30,7 @@ import {
 } from "../../stores/settings-store";
 import { requestHide } from "../../lib/window";
 import { buildAttachmentBlocks, formatChars } from "../../lib/attachments";
+import { appendCapture, clampSelection } from "../../lib/selection-capture";
 import { listTools, readClipboardText, type ToolInfo } from "../../services/tools-api";
 import { parseDocumentPreview, pickDocument } from "../../services/document-api";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -66,10 +67,10 @@ const QUICK_ACTIONS: { id: string; label: string; instruction: string }[] = [
   { id: "reply", label: "起草回复", instruction: "请基于以下内容起草一段得体的回复：" },
 ];
 
-/** Selected text longer than this is truncated in the prompt. */
-const MAX_SELECTION_CHARS = 12000;
+/* Selection-capture helpers live in lib/selection-capture.ts (unit-tested). */
 
-const MAX_INPUT_HEIGHT = 152;
+/** Kept low enough that the input + toolbar always fit the floating window. */
+const MAX_INPUT_HEIGHT = 112;
 const MAX_IMAGES = 4;
 const THINKING_EFFORT_OPTIONS: { value: ThinkingEffort; label: string; hint: string }[] = [
   { value: "low", label: "低", hint: "更快响应" },
@@ -90,6 +91,10 @@ export function Composer() {
   const [clipboardHint, setClipboardHint] = useState<string | null>(null);
   // Text captured by the selected-text hotkey, awaiting an action (P1-5).
   const [selection, setSelection] = useState<string | null>(null);
+  // Where the last capture landed: the text that was already in the composer
+  // (`before`, empty for a fresh box) plus the capture itself.  An action
+  // click wraps just the capture, leaving a hand-typed draft alone.
+  const captureRef = useRef<{ before: string; captured: string } | null>(null);
   const defaultEnableTools = useSettingsStore((s) => s.defaultEnableTools);
   const [enableTools, setEnableTools] = useState(defaultEnableTools);
   const enableToolsRef = useRef(defaultEnableTools);
@@ -168,6 +173,13 @@ export function Composer() {
     el.style.height = `${Math.min(el.scrollHeight, MAX_INPUT_HEIGHT)}px`;
   }, [text]);
 
+  // The Agent-tools panel needs room above the composer: tell the window so
+  // it grows while the panel is open and shrinks back when it closes.
+  useEffect(() => {
+    useWindowStore.getState().setComposerPanelOpen(toolsOpen);
+    return () => useWindowStore.getState().setComposerPanelOpen(false);
+  }, [toolsOpen]);
+
   // Parsed document attachments (P1-8): their extracted text is folded into
   // the prompt, so only the metadata travels with the message.
   const [docs, setDocs] = useState<{ name: string; chars: number; text: string }[]>([]);
@@ -197,39 +209,78 @@ export function Composer() {
   /* ---------------- selected-text hotkey (P1-5) ---------------- */
 
   useEffect(() => {
-    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    let offAction: (() => void) | undefined;
+    let offError: (() => void) | undefined;
     void (async () => {
       const { listen } = await import("@tauri-apps/api/event");
-      const offAction = await listen<string>("quick-action", (event) => {
-        setSelection(event.payload);
+      const first = await listen<string>("quick-action", (event) => {
+        const captured = clampSelection(event.payload);
+        setSelection(captured);
         setClipboardHint(null);
         setClipboardOpen(false);
+        // Drop the captured text straight into the composer so it can be
+        // edited and sent immediately; the action chips stay available for
+        // the wrapped "translate / explain / …" flows.  Anything already in
+        // the box is kept and the capture follows after it, so a half-written
+        // prompt can be finished off with a fresh selection.
+        setText((current) => {
+          const next = appendCapture(current, captured);
+          // Everything before the capture is the user's own text (possibly
+          // empty): an action click rewrites only the captured part.
+          captureRef.current = { before: next.slice(0, next.length - captured.length), captured };
+          return next;
+        });
+        requestAnimationFrame(() => {
+          const el = textareaRef.current;
+          if (el) {
+            el.focus();
+            el.setSelectionRange(el.value.length, el.value.length);
+          }
+        });
       });
-      const offError = await listen<string>("quick-action-error", (event) => {
+      const second = await listen<string>("quick-action-error", (event) => {
         setSelection(null);
         setClipboardHint(event.payload);
       });
-      dispose = () => {
-        offAction();
-        offError();
-      };
+      // React may have torn the effect down while these were registering
+      // (StrictMode mount → unmount → remount in development): undo them
+      // instead of leaking a second listener that would handle every capture
+      // twice — the text would land in the composer twice.
+      if (cancelled) {
+        first();
+        second();
+        return;
+      }
+      offAction = first;
+      offError = second;
     })();
-    return () => dispose?.();
+    return () => {
+      cancelled = true;
+      offAction?.();
+      offError?.();
+    };
   }, []);
 
   /**
-   * Prefill the composer with an action applied to the captured selection.
-   * The user reviews and presses Enter — nothing is sent automatically, and
-   * the reply is written back to the clipboard so it can replace the text
-   * they selected.
+   * Apply an action to the captured selection.  When the composer still holds
+   * exactly what the capture produced, only the captured part is rewritten —
+   * a draft the user typed before capturing is preserved.  The user reviews
+   * and presses Enter; nothing is sent automatically, and the reply is
+   * written back to the clipboard so it can replace the selected text.
    */
   const runSelectionAction = (action: { label: string; instruction: string }) => {
     if (!selection) return;
-    const wrapped =
-      selection.length > MAX_SELECTION_CHARS
-        ? `${selection.slice(0, MAX_SELECTION_CHARS)}…`
-        : selection;
-    setText(`${action.instruction}\n\n${wrapped}`);
+    const wrapped = `${action.instruction}\n\n${clampSelection(selection)}`;
+    const capture = captureRef.current;
+    const captureIntact =
+      capture !== null && text === `${capture.before}${capture.captured}`;
+    if (captureIntact && capture) {
+      setText(`${capture.before}${wrapped}`);
+    } else {
+      setText(wrapped);
+    }
+    captureRef.current = null;
     setSelection(null);
     useChatStore.getState().armClipboardWriteback(action.label);
     requestAnimationFrame(() => {
@@ -448,40 +499,38 @@ export function Composer() {
   const canSend = (text.trim().length > 0 || images.length > 0 || docs.length > 0) && !streaming;
 
   return (
-    <div className="cf-print-hide shrink-0 border-t border-line px-3 py-2.5">
-      {/* Selected text captured by the hotkey (P1-5) */}
+    <div className="cf-print-hide relative shrink-0 border-t border-line px-3 py-2.5">
+      {/* Selected text captured by the hotkey (P1-5).  One compact row: the
+          text itself already sits in the input box below, so repeating it (or
+          a hint line) would only eat the little vertical space the floating
+          window has. */}
       {selection && (
-        <div className="mb-2 rounded-btn border border-line bg-panel-2 px-2.5 py-2">
-          <div className="flex items-center gap-1.5">
-            <Sparkles size={12} className="shrink-0 text-accent" />
-            <span className="text-[11px] text-ink">
-              已获取选中文本 · {selection.length} 字
-            </span>
+        <div
+          className="mb-2 flex flex-wrap items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5"
+          title="文字已追加到输入框，可直接编辑发送；选择动作会套用对应指令（回答将写回剪贴板）。"
+        >
+          <Sparkles size={12} className="shrink-0 text-accent" />
+          <span className="shrink-0 text-[11px] text-ink">
+            已获取选中文本 · {selection.length} 字
+          </span>
+          {QUICK_ACTIONS.map((action) => (
             <button
+              key={action.id}
               type="button"
-              onClick={() => setSelection(null)}
-              title="关闭"
-              className="ml-auto grid h-4 w-4 place-items-center rounded text-ink-2 transition-colors hover:text-ink"
+              onClick={() => runSelectionAction(action)}
+              className="rounded-full border border-line px-2 py-0.5 text-[11px] text-ink transition-colors hover:bg-panel"
             >
-              <X size={11} />
+              {action.label}
             </button>
-          </div>
-          <p className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-ink-2">{selection}</p>
-          <div className="mt-1.5 flex flex-wrap gap-1">
-            {QUICK_ACTIONS.map((action) => (
-              <button
-                key={action.id}
-                type="button"
-                onClick={() => runSelectionAction(action)}
-                className="rounded-full border border-line px-2 py-0.5 text-[11px] text-ink transition-colors hover:bg-panel"
-              >
-                {action.label}
-              </button>
-            ))}
-          </div>
-          <p className="mt-1 text-[10px] text-ink-2">
-            选择动作后会填入输入框（可直接编辑再发送），回答将写回剪贴板。
-          </p>
+          ))}
+          <button
+            type="button"
+            onClick={() => setSelection(null)}
+            title="关闭"
+            className="ml-auto grid h-4 w-4 shrink-0 place-items-center rounded text-ink-2 transition-colors hover:text-ink"
+          >
+            <X size={11} />
+          </button>
         </div>
       )}
 
@@ -507,13 +556,17 @@ export function Composer() {
         </div>
       )}
 
-      {/* Agent tools panel */}
+      {/* Agent tools panel: floats above the composer instead of pushing it,
+          so opening it can never squeeze the input (or its send button) out
+          of the small floating window. */}
       {toolsOpen && (
-        <ToolsPanel
-          enabled={enableTools}
-          onToggle={(v) => setEnableTools(v)}
-          onClose={() => setToolsOpen(false)}
-        />
+        <div className="absolute bottom-full left-0 right-0 z-30 mb-1.5 px-3">
+          <ToolsPanel
+            enabled={enableTools}
+            onToggle={(v) => setEnableTools(v)}
+            onClose={() => setToolsOpen(false)}
+          />
+        </div>
       )}
 
       {/* Multi-model comparison targets (P1-6) */}
@@ -587,7 +640,7 @@ export function Composer() {
         </div>
       )}
 
-      <div className="flex items-end gap-2 rounded-input border border-line bg-panel-2 px-3 py-2 focus-within:border-[var(--cf-text-2)]">
+      <div className="rounded-input border border-line bg-panel-2 px-3 py-2 focus-within:border-[var(--cf-text-2)]">
         <input
           ref={fileRef}
           type="file"
@@ -600,64 +653,60 @@ export function Composer() {
             e.target.value = "";
           }}
         />
-        <button
-          onClick={() => fileRef.current?.click()}
-          title={comparing ? "对比模式下不支持图片（请先退出对比）" : "添加图片"}
-          disabled={images.length >= MAX_IMAGES || comparing}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel hover:text-ink disabled:opacity-30"
-        >
-          <Paperclip size={15} />
-        </button>
-        {/* Document attachment (P1-8): Word / Excel / PPT / PDF / text */}
-        <button
-          type="button"
-          onClick={() => void addDocument()}
-          title={
-            comparing
-              ? "对比模式下不支持文档附件（请先退出对比）"
-              : "添加文档（Word / Excel / PPT / PDF / 文本），内容会并入本次提问"
-          }
-          disabled={streaming || comparing || docBusy}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel hover:text-ink disabled:opacity-30"
-        >
-          {docBusy ? <Loader2 size={15} className="animate-spin" /> : <FileText size={15} />}
-        </button>
-        {/* Thinking toggle and effort picker */}
-        <div className="relative flex shrink-0 items-center gap-0.5">
-          <button
-            onClick={() => {
-              const next = !enableThinking;
-              setEnableThinking(next);
-              if (!next) setThinkingMenuOpen(false);
-              void setDefaultEnableThinking(next);
-            }}
-            disabled={streaming}
-            title={
+        {/* Input on top, controls in a toolbar row below (web-app layout). */}
+        <textarea
+          ref={textareaRef}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={onKeyDown}
+          onPaste={onPaste}
+          rows={1}
+          placeholder="输入问题，Enter 发送，Shift+Enter 换行，Esc 隐藏"
+          className="max-h-[112px] w-full resize-none bg-transparent text-sm leading-5 text-ink outline-none placeholder:text-ink-2"
+        />
+        <div className="mt-1.5 flex items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            {/* Thinking toggle and effort picker */}
+            <div className="relative flex shrink-0 items-center">
+          <div
+            className={`flex h-7 shrink-0 items-center rounded-full border text-[11px] transition-colors ${
               enableThinking
-                ? `思考已开启：${THINKING_EFFORT_OPTIONS.find((o) => o.value === thinkingEffort)?.label}强度`
-                : "思考已关闭：模型只输出最终回答"
-            }
-            aria-pressed={enableThinking}
-            className={`grid h-7 w-7 place-items-center rounded-md transition-colors disabled:opacity-30 ${
-              enableThinking
-                ? "border border-accent bg-transparent text-accent"
-                : "text-ink-2 hover:bg-panel hover:text-ink"
+                ? "border-[color-mix(in_srgb,var(--cf-accent)_45%,transparent)] bg-accent/10 text-accent"
+                : "border-line text-ink-2 hover:bg-panel hover:text-ink"
             }`}
           >
-            <Brain size={15} />
-          </button>
-          <button
-            onClick={() => setThinkingMenuOpen((open) => !open)}
-            disabled={streaming || !enableThinking}
-            title="选择思考等级"
-            aria-label="选择思考等级"
-            aria-expanded={thinkingMenuOpen}
-            className={`grid h-7 w-4 place-items-center rounded-md transition-colors disabled:opacity-30 ${
-              enableThinking ? "text-accent hover:bg-panel" : "text-ink-2"
-            }`}
-          >
-            <ChevronUp size={13} className={thinkingMenuOpen ? "" : "rotate-180 transition-transform"} />
-          </button>
+            <button
+              type="button"
+              onClick={() => {
+                const next = !enableThinking;
+                setEnableThinking(next);
+                if (!next) setThinkingMenuOpen(false);
+                void setDefaultEnableThinking(next);
+              }}
+              disabled={streaming}
+              title={
+                enableThinking
+                  ? `思考已开启：${THINKING_EFFORT_OPTIONS.find((o) => o.value === thinkingEffort)?.label}强度`
+                  : "思考已关闭：模型只输出最终回答"
+              }
+              aria-pressed={enableThinking}
+              className="flex h-full items-center gap-1 rounded-l-full pl-2.5 pr-1 disabled:opacity-30"
+            >
+              <Brain size={13} />
+              深度思考
+            </button>
+            <button
+              type="button"
+              onClick={() => setThinkingMenuOpen((open) => !open)}
+              disabled={streaming || !enableThinking}
+              title="选择思考等级"
+              aria-label="选择思考等级"
+              aria-expanded={thinkingMenuOpen}
+              className="grid h-full w-5 place-items-center rounded-r-full pr-1.5 disabled:opacity-30"
+            >
+              <ChevronUp size={12} className={thinkingMenuOpen ? "" : "rotate-180 transition-transform"} />
+            </button>
+          </div>
           {thinkingMenuOpen && (
             <div className="absolute bottom-8 left-0 z-40 w-36 overflow-hidden rounded-btn border border-line bg-panel p-1 shadow-lg">
               <p className="px-2 py-1 text-[10px] font-medium text-ink-2">思考等级</p>
@@ -682,28 +731,42 @@ export function Composer() {
             </div>
           )}
         </div>
-        <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={onKeyDown}
-          onPaste={onPaste}
-          rows={1}
-          placeholder="输入问题，Enter 发送，Shift+Enter 换行，Esc 隐藏"
-          className="max-h-[152px] flex-1 resize-none bg-transparent text-sm leading-5 text-ink outline-none placeholder:text-ink-2"
-        />
         {/* Web search toggle */}
         <button
           onClick={() => setWebSearch(!webSearch)}
           disabled={streaming}
           title={webSearch ? "关闭联网搜索" : "开启联网搜索（回答前先搜索网络）"}
-          className={`grid h-7 w-7 shrink-0 place-items-center rounded-md transition-colors disabled:opacity-30 ${
+          aria-pressed={webSearch}
+          className={`flex h-7 shrink-0 items-center gap-1 rounded-full border px-2.5 text-[11px] transition-colors disabled:opacity-30 ${
             webSearch
-              ? "bg-accent text-accent-fg"
-              : "text-ink-2 hover:bg-panel hover:text-ink"
+              ? "border-[color-mix(in_srgb,var(--cf-accent)_45%,transparent)] bg-accent/10 text-accent"
+              : "border-line text-ink-2 hover:bg-panel hover:text-ink"
           }`}
         >
-          <Globe size={15} />
+          <Globe size={13} />
+          联网搜索
+        </button>
+        <button
+          onClick={() => fileRef.current?.click()}
+          title={comparing ? "对比模式下不支持图片（请先退出对比）" : "添加图片"}
+          disabled={images.length >= MAX_IMAGES || comparing}
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel hover:text-ink disabled:opacity-30"
+        >
+          <Paperclip size={15} />
+        </button>
+        {/* Document attachment (P1-8): Word / Excel / PPT / PDF / text */}
+        <button
+          type="button"
+          onClick={() => void addDocument()}
+          title={
+            comparing
+              ? "对比模式下不支持文档附件（请先退出对比）"
+              : "添加文档（Word / Excel / PPT / PDF / 文本），内容会并入本次提问"
+          }
+          disabled={streaming || comparing || docBusy}
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel hover:text-ink disabled:opacity-30"
+        >
+          {docBusy ? <Loader2 size={15} className="animate-spin" /> : <FileText size={15} />}
         </button>
         {/* Clipboard quick actions */}
         <div className="relative shrink-0">
@@ -754,8 +817,9 @@ export function Composer() {
             </div>
           )}
         </div>
-        {/* Agent tools toggle and details */}
-        <div className="flex shrink-0 items-center gap-0.5">
+          </div>
+          {/* Right side: agent tools + send */}
+          <div className="flex shrink-0 items-center gap-0.5">
           <button
             onClick={() => setEnableTools((value) => !value)}
             disabled={streaming || comparing}
@@ -787,8 +851,7 @@ export function Composer() {
           >
             <ChevronUp size={13} className={toolsOpen ? "" : "rotate-180 transition-transform"} />
           </button>
-        </div>
-        {streaming ? (
+          {streaming ? (
           <button
             onClick={stop}
             title="停止生成"
@@ -806,6 +869,8 @@ export function Composer() {
             <ArrowUp size={15} />
           </button>
         )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -863,7 +928,7 @@ export function ToolsPanel({
   const disabledCount = tools?.filter((t) => t.policy === "disabled").length ?? 0;
 
   return (
-    <div className="mb-1.5 max-h-72 overflow-y-auto rounded-btn border border-line bg-panel p-2 shadow-lg">
+    <div className="mb-1.5 max-h-[min(288px,58vh)] overflow-y-auto rounded-btn border border-line bg-panel p-2 shadow-lg">
       <div className="flex items-center justify-between gap-2">
         <p className="text-[11px] font-medium text-ink">Agent 工具</p>
         <div className="flex items-center gap-2">

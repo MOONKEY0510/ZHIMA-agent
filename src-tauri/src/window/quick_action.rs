@@ -16,27 +16,36 @@ use tauri::Emitter;
 const POLL_TIMEOUT: Duration = Duration::from_millis(800);
 const POLL_INTERVAL: Duration = Duration::from_millis(40);
 
-/// Hotkey entry point: wake the window, capture the selection in the
-/// background and emit the result.
-///
-/// The window is shown immediately (so the user sees feedback right away) and
-/// the captured text arrives as `quick-action` a moment later; failures come
-/// back as `quick-action-error`.
-pub fn trigger(app: &tauri::AppHandle) {
-    let Some(window) = crate::window::manager::main_window(app) else {
-        return;
-    };
-    crate::window::manager::show_and_focus(&window);
+/// How long we wait for the hotkey's modifier keys to be released before
+/// sending the simulated copy.
+const MODIFIER_RELEASE_TIMEOUT: Duration = Duration::from_millis(600);
 
+/// Hotkey entry point: capture the current selection, then wake the window
+/// with it.
+///
+/// Order matters: the simulated Ctrl+C below only reaches the window that
+/// currently owns the selection, so the assistant window must **not** be
+/// shown or focused until the copy has landed — otherwise the keystroke goes
+/// to our own (empty) input box and the capture always fails.  The capture
+/// usually finishes in a few dozen milliseconds, so the window still appears
+/// ~instantly; on failure it arrives after the poll timeout together with the
+/// `quick-action-error` hint.
+pub fn trigger(app: &tauri::AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let (event, payload) = match capture_selection() {
-            Ok(text) => ("quick-action", text),
-            Err(error) => ("quick-action-error", error),
-        };
-        if let Some(window) = crate::window::manager::main_window(&handle) {
+        let result = capture_selection();
+        let inner = handle.clone();
+        let _ = handle.run_on_main_thread(move || {
+            let Some(window) = crate::window::manager::main_window(&inner) else {
+                return;
+            };
+            crate::window::manager::show_and_focus(&window);
+            let (event, payload) = match result {
+                Ok(text) => ("quick-action", text),
+                Err(error) => ("quick-action-error", error),
+            };
             let _ = window.emit(event, payload);
-        }
+        });
     });
 }
 
@@ -45,6 +54,11 @@ pub fn trigger(app: &tauri::AppHandle) {
 pub fn capture_selection() -> Result<String, String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("无法访问剪贴板：{e}"))?;
     let previous = clipboard.get_text().ok();
+
+    // The hotkey fires while its modifiers are still physically held: an
+    // injected Ctrl+C would then be read as e.g. Ctrl+Alt+C, which no app
+    // treats as "copy".  Wait for the user to let go first.
+    wait_for_modifier_release(MODIFIER_RELEASE_TIMEOUT);
 
     send_copy()?;
 
@@ -77,6 +91,36 @@ fn restore(clipboard: &mut arboard::Clipboard, previous: Option<String>) {
         let _ = clipboard.set_text(text);
     }
 }
+
+/// Block until Alt / Shift / Win are no longer held (or `timeout` elapses).
+///
+/// Ctrl is deliberately not waited on: the copy chord needs it anyway.
+#[cfg(windows)]
+fn wait_for_modifier_release(timeout: Duration) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+    };
+
+    fn held(vk: i32) -> bool {
+        // High bit set = currently down.
+        unsafe { (GetAsyncKeyState(vk) as u16) & 0x8000 != 0 }
+    }
+
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let busy = held(VK_MENU.0 as i32)
+            || held(VK_SHIFT.0 as i32)
+            || held(VK_LWIN.0 as i32)
+            || held(VK_RWIN.0 as i32);
+        if !busy || std::time::Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+}
+
+#[cfg(not(windows))]
+fn wait_for_modifier_release(_timeout: Duration) {}
 
 #[cfg(windows)]
 fn send_copy() -> Result<(), String> {

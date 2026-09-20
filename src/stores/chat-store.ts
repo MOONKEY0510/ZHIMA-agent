@@ -367,6 +367,8 @@ function persistAssistantFinal(messageId: string | null, status: MessageStatus) 
       toolCalls,
       modelName: msg.modelName ?? null,
       durationMs: msg.durationMs ?? null,
+      inputTokens: msg.usage?.inputTokens ?? null,
+      outputTokens: msg.usage?.outputTokens ?? null,
       createdAt: Date.now(),
     })
     .catch((err) => console.error("保存会话消息失败:", err));
@@ -1154,7 +1156,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (history.historyEnabled && history.activeId) {
       try {
         const row = await historyApi.startMessageVersion(messageId);
-        archived = { ...applyStoredRow(target, row), modelName: modelLabel };
+        // The fresh attempt starts clean: stale token counters from the
+        // archived answer must not leak into the regenerated one.
+        archived = { ...applyStoredRow(target, row), modelName: modelLabel, usage: undefined };
       } catch (err) {
         console.error("归档消息版本失败:", err);
         return;
@@ -1172,6 +1176,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         reasoning: undefined,
         durationMs: undefined,
         error: undefined,
+        usage: undefined,
         status: "streaming",
         modelName: modelLabel,
         versions,
@@ -1317,6 +1322,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         toolCalls: parseToolCalls(m.toolCalls),
         modelName: m.modelName ?? undefined,
         durationMs: m.durationMs ?? undefined,
+        usage:
+          m.inputTokens != null || m.outputTokens != null
+            ? {
+                inputTokens: m.inputTokens ?? undefined,
+                outputTokens: m.outputTokens ?? undefined,
+              }
+            : undefined,
         versions: historyApi.parseVersionsJson(m.versionsJson),
         activeVersion: m.activeVersion ?? 0,
         attachments: historyApi.parseAttachmentsJson(m.attachmentsJson),
