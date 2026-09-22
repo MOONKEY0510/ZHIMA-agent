@@ -1,7 +1,7 @@
 # Zhima · 芝麻 — 桌面悬浮窗 AI 助手
 
 > 一个常驻桌面的 AI 助手：`Alt+Space` 唤出，问完即走；选中文字按 `Alt+Q`，直接翻译/解释/总结。
-> Windows · 安装包约 **4.9 MB** · 数据全在本地 · 可接任意 OpenAI 兼容模型（含国产模型与本地 Ollama）
+> Windows · 安装包约 **6.4 MB** · 数据全在本地 · 可接任意 OpenAI 兼容模型（含国产模型与本地 Ollama）
 
 ---
 
@@ -11,16 +11,16 @@
 
 - 它在你要用的时候出现（一个快捷键），不用的时候消失（失焦自动隐藏），**不需要切换到浏览器、也不需要打开一个大窗口**；
 - 它不绑定厂商：任何 OpenAI 兼容接口都能接 —— 国产模型、中转 API、自建服务、本地 Ollama 一视同仁；
-- 它把数据留在本机：会话、记忆、知识库、生成的图片都在本地 SQLite，API Key 在 Windows 凭据管理器。
+- 它把数据留在本机：会话、记忆、知识库、技能、生成的图片都在本地 SQLite，API Key 在 Windows 凭据管理器。
 
-一句话概括：**Cherry Studio 那类客户端的「日常问答 + 工具 + 知识库」能力，压进一个 4.9 MB、随唤随到的悬浮窗里。**
+一句话概括：**Cherry Studio 那类客户端的「日常问答 + 工具 + 知识库」能力，压进一个 6.4 MB、随唤随到的悬浮窗里。**
 
 ### 它和常见方案的区别
 
 | 对比对象 | 它的不同 |
 |---|---|
 | ChatGPT / 各家网页版 | 不用切窗口、不用登录第三方；模型自选；历史不出本机 |
-| Electron 类桌面客户端（Cherry Studio 等） | 体积 4.9 MB ↔ 100 MB+；专注「问答 + 工具」而非小程序/笔记/频道等全功能套件 |
+| Electron 类桌面客户端（Cherry Studio 等） | 体积 6.4 MB ↔ 100 MB+；专注「问答 + 工具」而非小程序/笔记/频道等全功能套件 |
 | 系统助手（Copilot 等） | 不绑定单一厂商，可换成任意模型或本地模型 |
 | IDE / 编辑器插件 | 不限于某个编辑器：任何程序里选中的文字都能取词（划词助手） |
 
@@ -35,12 +35,16 @@
 | 想知道哪个模型答得好 | 勾选 2 个以上模型 → **一问多答**，分栏对照 |
 | 需要外部能力 | 接入 **MCP** 工具服务器（官方 filesystem / fetch 等），让模型真正读写文件、访问网页 |
 | 找旧对话 | 侧栏搜索框输入关键词 → 直接搜**消息正文**（支持中文），点击命中直达该条消息 |
+| 讲清一个流程 | 直接说「画个流程图 / 时序图 / 架构图」→ 图表在对话内直接渲染，可全屏缩放、导出 SVG / PNG |
+| 有固定套路 | 把格式要求（周报模板 / 代码评审规范 / 文案风格）写成**技能**，命中关键词自动照做 |
+| 同时跑几件事 | 一个对话生成中可切走另开对话继续提问，后台并行输出，侧栏显示「生成中 / 已完成」 |
 
 ## 三、核心概念
 
 - **服务商 / 模型**：一个服务商 = 一个 OpenAI 兼容接口（Base URL + API Key）。常用厂商（DeepSeek / 智谱 / MiniMax / Kimi / 通义 / 硅基流动 / 火山方舟 / OpenAI / OpenRouter / 本地 Ollama）可一键预设；模型可拉取、收藏、设默认；另可单独指定视觉模型与兜底模型。
-- **悬浮窗 vs 完整模式**：`Alt+Space` 是快问快答的悬浮窗；点标题栏展开为完整模式，出现历史侧栏、全文搜索、多模型对比、轮次索引。
+- **悬浮窗 vs 完整模式**：`Alt+Space` 是快问快答的悬浮窗；点标题栏展开为完整模式，出现历史侧栏、全文搜索、多模型对比、轮次索引、多对话并行。
 - **助手（Assistant）**：把「角色提示词 + 指定模型 + 工具策略」存成一个助手，会话绑定它 —— 相当于可切换的专家人格。
+- **技能（Skill）**：把「有固定套路的做法」写成技能：常驻的只有名称与描述，命中触发词（或在输入框手动激活）才注入完整说明 —— 不白占上下文。设置 → 技能里管理，支持导入 `SKILL.md` / JSON / ZIP。
 - **Agent 工具与授权**：模型可调用 12 个内置工具（搜索、抓取网页、读写剪贴板、读文件/PDF/文档、检索知识库、截屏、计算、时间、打开资源）。敏感工具**执行前询问**，可选「仅这一次 / 本次会话 / 永久允许」；一旦运行过本地敏感工具，后续联网工具会再次确认（防数据外流）。
 - **MCP 工具服务器**：接入任意 stdio MCP 服务器，其工具自动出现在工具列表，默认每次调用都需确认。
 - **知识库**：导入文档/网页/文本 → 本地分块入库 → 提问时按相关度（BM25）检索并注入上下文，附「检索测试」面板可先验证召回。
@@ -55,26 +59,30 @@
 - **消息编辑与重新生成**：提问可编辑并重跑该轮回答；回答可原地重新生成，用 `‹ n/m ›` 在历史版本间切换，旧答案不丢
 - **一问多答**：多模型并行提问、分栏对照、逐列停止
 - **助手（Assistant）**：角色 + 模型 + 工具策略可保存复用
+- **对话级模型**：每个对话绑定自己的模型，选择器就在输入框工具栏
+- **多对话并行**：生成中可切换 / 新建对话，后台继续输出，侧栏显示「生成中 / 已完成」状态
 - **流式对话**：Rust 直连 + 健壮 SSE 解析（粘包 / 拆包 / UTF-8 跨块），思考过程展示与等级选择（低 / 中 / 高 / 最大）
 - **会话管理**：置顶 / 重命名 / 批量删除 / 轮次索引跳转
 - **跨会话全文搜索**：中文可搜的消息级搜索，点击直达
 
 ### 🔍 检索与知识
-- **联网搜索多引擎**：DuckDuckGo（默认免 Key）/ Tavily / 博查 / SearXNG，设置内切换，密钥进凭据管理器
+- **联网搜索多引擎**：DuckDuckGo（默认免 Key）/ Tavily / 博查 / SearXNG，设置内切换，密钥进凭据管理器；反爬验证自动识别并给出明确提示，各引擎附免费额度与注册引导
 - **网页抓取**：带 SSRF 防护的正文读取，结果以来源卡片展示
 - **本地知识库**：Word / Excel / PPT / PDF / 网页 / 文本入库，BM25 检索 + 自动注入 + 检索测试
 - **长期记忆**：用户确认式保存，频率注入，敏感内容拒绝
 
 ### 📎 输入与输出
-- **文档附件**：输入框直连 docx / xlsx / pptx / pdf / 文本，正文并入本次提问，历史保留徽标
+- **文档附件**：输入框 📎 统一入口读 docx / xlsx / pptx / pdf / 文本与图片，正文并入本次提问，历史保留徽标；文件可直接拖进窗口
+- **图表绘制**：说「画个流程图」即可 —— mermaid 图表在对话内渲染（流程图 / 时序图 / 状态图 / 类图 / ER 图 / 甘特图 / 饼图等），4 种风格（跟随主题 / 科技蓝 / 莫兰迪 / 手绘风），复杂图自动切换 ELK 布局，支持全屏缩放预览与 SVG / PNG 导出
 - **图片输入**：粘贴 / 选择图片交给视觉模型
 - **文生图工作台**：文生图 + 参考图生图，参数面板 + 画布 + 历史
 - **公式渲染**：`$...$` 与 `$$...$$`（KaTeX，命中公式才按需加载）
 - **导出**：Markdown / PNG 图片 / 打印另存为 PDF（长对话自动展开后导出）
-- **数据备份**：一键导出 / 导入会话、记忆、生成图片（**不含 API Key**），支持合并或替换
+- **数据备份**：一键导出 / 导入会话、记忆、技能、生成图片（**不含 API Key**），支持合并或替换
 
 ### 🛠 工具与自动化
 - **Agent 工具系统**：12 个内置工具 + 三级授权 + 数据流防泄漏，调用时间线可视化
+- **自定义技能**：常用套路写成技能（设置 → 技能），命中触发词自动生效，也可在输入框手动激活（本对话内保持）；支持导入 `SKILL.md` / JSON / ZIP，随数据备份迁移
 - **MCP 接入**：stdio MCP 服务器，工具自动发现、默认需确认
 - **划词助手**：`Alt+Q` 取词后文字**直接进入输入框**（已有草稿则追加），另提供翻译 / 解释 / 总结 / 润色 / 起草回复动作，回答可写回剪贴板
 
@@ -88,9 +96,9 @@
 
 | 维度 | 实现方式 |
 |---|---|
-| 4.9 MB 安装包 | Tauri 2 + 系统 WebView2，**不打包 Chromium** |
+| 6.4 MB 安装包 | Tauri 2 + 系统 WebView2，**不打包 Chromium** |
 | 小内存 / 快响应 | 网络请求、SSE 解析、工具执行、文档解析全在 Rust 侧 |
-| 首屏不拖慢 | 代码高亮、KaTeX、设置面板等按需分块加载 |
+| 首屏不拖慢 | 代码高亮、KaTeX、设置面板、mermaid 图表引擎（含 ELK 布局）等按需分块加载 |
 | 零外部依赖 | 检索用 SQLite FTS5 / BM25，**不引向量模型**；docx / xlsx / pptx 解析自行实现，新增依赖仅 `zip`（GBK 解码复用 reqwest 已有的 `encoding_rs`） |
 
 ## 六、适合谁
@@ -103,7 +111,7 @@
 
 | 层 | 技术 |
 |---|---|
-| 前端 | React 18 · TypeScript · Vite · Tailwind CSS · Zustand · react-virtuoso · KaTeX |
+| 前端 | React 18 · TypeScript · Vite · Tailwind CSS · Zustand · react-virtuoso · KaTeX · mermaid（ELK 布局） |
 | 后端 | Rust · Tauri 2 · reqwest · rusqlite (SQLite，含 FTS5) · keyring · zip / pdf-extract |
 | 关键机制 | SSE 流式解析 · FTS5 trigram 中文检索 · BM25 知识库 · MCP JSON-RPC · SendInput 取词 |
 | 动画 | react-spring（窗口"水浮现"入场 / 页面切换过渡） |
@@ -114,18 +122,18 @@
 src/                        React + TypeScript 前端
   app/                      入口组件
   components/               composer / conversation / history / markdown / model-picker / window-shell
-  features/settings/        设置面板（模型 / 外观 / 角色 / 工具 / 知识库 / MCP / 诊断 / 通用）
+  features/settings/        设置面板（模型 / 外观 / 角色 / 工具 / 技能 / 用量 / 诊断 / 通用）
   features/imagegen/        文生图工作台
-  lib/                      导出（Markdown / PNG）、打印、附件块、窗口与动效工具
-  services/                 流式事件桥接 + providers / history / assistants / backup / knowledge / mcp API
+  lib/                      导出（Markdown / PNG / 图表）、打印、附件块、窗口与动效工具 · mermaid 渲染主题
+  services/                 流式事件桥接 + providers / history / assistants / skills / backup / knowledge / mcp API
   stores/                   Zustand：chat / providers / settings / window / assistants / imagegen
   styles/                   设计令牌与全局样式（含打印样式）
 src-tauri/src/              Rust / Tauri 后端
-  agent/                    上下文预算 · 滚动摘要 · 长期记忆 · 知识库分块与提示词
+  agent/                    上下文预算 · 滚动摘要 · 长期记忆 · 知识库分块与提示词 · 技能注入
   api/                      OpenAI 适配器 · SSE 解析 · 联网搜索多引擎 · 安全 HTTP 抓取
-  commands/                 chat / history / providers / assistants / backup / knowledge / mcp / settings …
+  commands/                 chat / history / providers / assistants / skills / backup / knowledge / mcp / settings …
   mcp/                      MCP stdio 客户端（JSON-RPC + 会话池）
-  storage/                  providers.json 配置 · keyring 密钥 · SQLite 会话库（迁移 v1→v16）
+  storage/                  providers.json 配置 · keyring 密钥 · SQLite 会话库（迁移 v1→v19）
   tools/                    工具注册表 · 12 个内置工具 · 文档解析（docx/xlsx/pptx/pdf/文本）
   window/                   窗口管理 · 全局快捷键 · 托盘 · 划词取词
   models/                   请求 / 响应 / 配置数据结构
@@ -159,7 +167,7 @@ npm run check:rust                  # fmt --check + clippy -D warnings + cargo t
 npm run check                       # 两者一起跑
 ```
 
-当前基线：Rust **163** 个单测、前端 **101** 个测试全部通过。
+当前基线：Rust **204** 个单测、前端 **121** 个测试（13 个测试文件）全部通过。
 
 ## 🔒 隐私
 
