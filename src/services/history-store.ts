@@ -87,6 +87,12 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
       conversations: state.conversations.filter((c) => c.id !== id),
       activeId: state.activeId === id ? null : state.activeId,
     }));
+    // Drop the in-memory background snapshot and "finished" dot of the row.
+    useChatStore.setState((state) => {
+      const { [id]: _bg, ...backgroundMessages } = state.backgroundMessages;
+      const { [id]: _unread, ...unreadDone } = state.unreadDone;
+      return { backgroundMessages, unreadDone };
+    });
     // If the deleted conversation was the one currently displayed, reset the
     // chat view to a fresh empty state so the old messages don't linger.
     if (wasActive) {

@@ -349,7 +349,7 @@ export function ImageGenView() {
                 {modelLabel}
               </span>
               <button
-                onClick={openSettings}
+                onClick={() => openSettings()}
                 title="更换图像模型"
                 className="text-ink-2 transition-colors hover:text-ink"
               >

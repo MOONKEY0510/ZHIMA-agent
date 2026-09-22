@@ -15,7 +15,13 @@ interface WindowState {
    * it closes) instead of clipping the panel in the compact window.
    */
   composerPanelOpen: boolean;
-  openSettings: () => void;
+  /**
+   * Requested settings tab when the panel opens (e.g. `"skills"` from the
+   * composer).  `null` = the panel's default tab.
+   */
+  settingsTab: string | null;
+  /** Open the settings panel; `tab` jumps straight to a specific section. */
+  openSettings: (tab?: string) => void;
   closeSettings: () => void;
   switchToImage: () => void;
   switchToChat: () => void;
@@ -28,8 +34,9 @@ export const useWindowStore = create<WindowState>((set, get) => ({
   view: "chat",
   fullMode: false,
   composerPanelOpen: false,
+  settingsTab: null,
 
-  openSettings: () => set({ view: "settings" }),
+  openSettings: (tab) => set({ view: "settings", settingsTab: tab ?? null }),
   closeSettings: () => set({ view: "chat" }),
   // Image mode always starts in full mode so the generation-history sidebar
   // is visible immediately.

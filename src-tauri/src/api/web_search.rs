@@ -6,9 +6,10 @@
 //! those adapters live in [`super::search_engines`].  Every engine returns the
 //! same [`SearchResult`] list.
 
+use std::sync::OnceLock;
+
 use regex::Regex;
 use serde::Serialize;
-use urlencoding::encode as url_encode;
 
 use crate::errors::read_body_capped;
 use crate::storage::config::ConfigStore;
@@ -158,10 +159,16 @@ fn require_key(settings: &WebSearchSettings, engine: Engine) -> Result<&str, Str
         })
 }
 
+/// Browser-like User-Agent; DuckDuckGo rejects obvious bot clients.
+const DDG_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
 /// Perform a DuckDuckGo search and return up to `max_results` results.
 ///
-/// The `query` is URL-encoded automatically. Returns an error string suitable
-/// for display if the request fails or no results are found.
+/// DuckDuckGo throttles automated traffic: instead of an HTTP error it answers
+/// with `202 Accepted` and an "anomaly" challenge page. That page used to be
+/// parsed as a successful empty result, so the UI always reported 0 hits.
+/// We now detect it, retry once after a short pause, and surface a clear
+/// error with advice instead of a silent empty list.
 pub async fn search_duckduckgo(
     client: &reqwest::Client,
     query: &str,
@@ -172,74 +179,154 @@ pub async fn search_duckduckgo(
         return Err("搜索关键词为空".into());
     }
 
-    // DuckDuckGo HTML endpoint - no API key required.
-    let url = format!(
-        "https://html.duckduckgo.com/html/?q={}",
-        url_encode(trimmed)
-    );
+    let mut last_error = String::new();
+    for attempt in 0..2 {
+        if attempt > 0 {
+            // Rate-limit windows are short; a brief pause often lets the
+            // retry through without noticeably stalling the chat.
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        }
+        match duckduckgo_once(client, trimmed, max_results).await {
+            Ok(results) => return Ok(results),
+            Err(e) => last_error = e,
+        }
+    }
+    Err(last_error)
+}
 
+/// One DuckDuckGo request. `Ok(vec![])` means "genuinely no results"; a
+/// rate-limit / challenge page is reported as an error so the caller can
+/// retry or fall back instead of showing a false "0 results".
+async fn duckduckgo_once(
+    client: &reqwest::Client,
+    query: &str,
+    max_results: usize,
+) -> Result<Vec<SearchResult>, String> {
+    // POST form body is the most reliable call shape for the HTML endpoint.
     let resp = client
-        .get(&url)
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        )
+        .post("https://html.duckduckgo.com/html/")
+        .header("User-Agent", DDG_USER_AGENT)
         .header("Accept", "text/html,application/xhtml+xml")
         .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+        .header("Referer", "https://html.duckduckgo.com/")
+        .form(&[("q", query)])
         .send()
         .await
         .map_err(|e| format!("搜索请求失败: {}", crate::errors::brief(&e)))?;
 
     let status = resp.status();
-    if !status.is_success() {
-        return Err(format!("搜索引擎返回错误（HTTP {}）", status.as_u16()));
-    }
-
     let html = read_body_capped(resp, MAX_SEARCH_RESPONSE_BYTES)
         .await
         .map_err(|e| format!("读取搜索结果失败: {e}"))?;
 
-    Ok(parse_results(&html, max_results))
+    if !status.is_success() {
+        return Err(format!("搜索引擎返回错误（HTTP {}）", status.as_u16()));
+    }
+    // `202 Accepted` is DuckDuckGo's anomaly-challenge status; also guard on
+    // the page body in case the status ever changes.
+    if status == reqwest::StatusCode::ACCEPTED || is_anomaly_page(&html) {
+        return Err(
+            "DuckDuckGo 触发了反爬验证（请求过于频繁）。请稍后重试，或在「设置 → 联网搜索」中切换为 Tavily / 博查 / SearXNG"
+                .into(),
+        );
+    }
+
+    let results = parse_results(&html, max_results);
+    if results.is_empty() && !is_empty_result_page(&html) {
+        return Err(format!(
+            "未能从 DuckDuckGo 页面解析出结果（页面 {} 字节，页面结构可能已变化）",
+            html.len()
+        ));
+    }
+    Ok(results)
+}
+
+/// True when the response is DuckDuckGo's automated-traffic challenge page.
+fn is_anomaly_page(html: &str) -> bool {
+    let lower = html.to_lowercase();
+    lower.contains("anomaly") || lower.contains("bots use duckduckgo too")
+}
+
+/// True when DuckDuckGo positively reported that the query has no results.
+fn is_empty_result_page(html: &str) -> bool {
+    html.to_lowercase().contains("no results")
 }
 
 /// Parse DuckDuckGo HTML search results.
 ///
-/// The HTML structure has results with:
-/// - `<a class="result__a" href="...">Title</a>` - result link + title
-/// - `<a class="result__snippet">Snippet text</a>` - snippet
+/// The page contains `<a class="result__a" ...>Title</a>` links, each
+/// optionally followed by an `<a class="result__snippet" ...>Snippet</a>`
+/// excerpt inside the same result block.  Attributes are extracted by name
+/// because their order is not stable (`class` may precede or follow `href`).
+///
+/// Snippets are attached to the most recent result *in document order*, so
+/// a link without a snippet cannot shift every later snippet onto the wrong
+/// row (the old `zip`-based pairing dropped or misaligned rows).
 ///
 /// DuckDuckGo wraps URLs in a redirect like:
 /// `//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&rut=...`
 /// We extract and decode the `uddg` parameter.
 fn parse_results(html: &str, max_results: usize) -> Vec<SearchResult> {
-    // Match result links: <a ... class="result__a" ... href="URL">TITLE</a>
-    let link_re = Regex::new(r#"<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#)
-        .expect("invalid link regex");
+    let mut results: Vec<SearchResult> = Vec::new();
 
-    // Match snippets: <a ... class="result__snippet" ...>SNIPPET</a>
-    let snippet_re = Regex::new(r#"<a[^>]*class="result__snippet"[^>]*>(.*?)</a>"#)
-        .expect("invalid snippet regex");
+    for cap in anchor_re().captures_iter(html) {
+        let Some(attrs) = cap.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let inner = cap.get(2).map(|m| m.as_str()).unwrap_or("");
 
-    let snippet_iter = snippet_re.captures_iter(html);
-
-    let results: Vec<SearchResult> = link_re
-        .captures_iter(html)
-        .zip(snippet_iter)
-        .take(max_results)
-        .map(|(link_cap, snip_cap)| {
-            let raw_url = link_cap.get(1).map(|m| m.as_str()).unwrap_or("");
-            let title_html = link_cap.get(2).map(|m| m.as_str()).unwrap_or("");
-            let snippet_html = snip_cap.get(1).map(|m| m.as_str()).unwrap_or("");
-
-            SearchResult {
-                title: strip_html_tags(title_html),
-                url: decode_ddg_url(raw_url),
-                snippet: strip_html_tags(snippet_html),
+        if class_list_contains(attrs, "result__a") {
+            let Some(href) = href_re()
+                .captures(attrs)
+                .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+            else {
+                continue;
+            };
+            results.push(SearchResult {
+                title: strip_html_tags(inner),
+                url: decode_ddg_url(&href),
+                snippet: String::new(),
+            });
+        } else if class_list_contains(attrs, "result__snippet") {
+            // The first snippet after a result belongs to it; an element
+            // without href is still a valid snippet carrier.
+            if let Some(last) = results.last_mut() {
+                if last.snippet.is_empty() {
+                    last.snippet = strip_html_tags(inner);
+                }
             }
-        })
-        .collect();
+        }
+    }
 
+    results.truncate(max_results);
     results
+}
+
+/// Whether the tag's `class="..."` attribute contains `class_name` as an
+/// exact whitespace-separated token.
+fn class_list_contains(attrs: &str, class_name: &str) -> bool {
+    class_re().captures_iter(attrs).any(|cap| {
+        cap.get(1)
+            .is_some_and(|m| m.as_str().split_whitespace().any(|c| c == class_name))
+    })
+}
+
+/// `<a ...>` opening tags: captures the attribute string and inner HTML.
+fn anchor_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?s)<a\b([^>]*)>(.*?)</a>").expect("invalid anchor regex"))
+}
+
+/// `href="..."` / `href='...'` inside a tag's attribute string.
+fn href_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"\bhref\s*=\s*["']([^"']*)["']"#).expect("invalid href regex"))
+}
+
+/// `class="..."` / `class='...'` inside a tag's attribute string.
+fn class_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"\bclass\s*=\s*["']([^"']*)["']"#).expect("invalid class regex"))
 }
 
 /// Decode a DuckDuckGo redirect URL to extract the actual target URL.
@@ -266,28 +353,31 @@ fn decode_ddg_url(raw: &str) -> String {
 }
 
 /// Percent-decode a string (e.g. `https%3A%2F%2Fexample.com` -> `https://example.com`).
+///
+/// Decoding works on the byte level and re-assembles UTF-8 at the end, so
+/// multi-byte sequences (e.g. percent-encoded Chinese paths) survive.
 fn percent_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
+    let mut bytes: Vec<u8> = Vec::with_capacity(s.len());
+    let raw = s.as_bytes();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = hex_val(bytes[i + 1]);
-            let lo = hex_val(bytes[i + 2]);
+    while i < raw.len() {
+        if raw[i] == b'%' && i + 2 < raw.len() {
+            let hi = hex_val(raw[i + 1]);
+            let lo = hex_val(raw[i + 2]);
             if let (Some(h), Some(l)) = (hi, lo) {
-                result.push((h * 16 + l) as char);
+                bytes.push(h * 16 + l);
                 i += 3;
                 continue;
             }
         }
-        if bytes[i] == b'+' {
-            result.push(' ');
+        if raw[i] == b'+' {
+            bytes.push(b' ');
         } else {
-            result.push(bytes[i] as char);
+            bytes.push(raw[i]);
         }
         i += 1;
     }
-    result
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn hex_val(b: u8) -> Option<u8> {
@@ -311,13 +401,16 @@ fn strip_html_tags(html: &str) -> String {
     let tag_re = Regex::new(r"<[^>]+>").expect("invalid tag regex");
     text = tag_re.replace_all(&text, "").to_string();
 
-    // Decode common HTML entities.
-    text = text.replace("&amp;", "&");
+    // Decode common HTML entities. `&amp;` is decoded last so that
+    // double-escaped sequences such as `&amp;lt;` stay literal text instead
+    // of being decoded twice into `<`.
     text = text.replace("&lt;", "<");
     text = text.replace("&gt;", ">");
     text = text.replace("&quot;", "\"");
     text = text.replace("&#39;", "'");
+    text = text.replace("&#x27;", "'");
     text = text.replace("&nbsp;", " ");
+    text = text.replace("&amp;", "&");
 
     text.trim().to_string()
 }
@@ -380,6 +473,11 @@ mod tests {
     }
 
     #[test]
+    fn percent_decode_handles_utf8() {
+        assert_eq!(percent_decode("%E4%BD%A0%E5%A5%BD"), "你好");
+    }
+
+    #[test]
     fn strip_html_tags_removes_bold() {
         assert_eq!(strip_html_tags("<b>Hello</b> world"), "Hello world");
     }
@@ -390,6 +488,15 @@ mod tests {
             strip_html_tags("<span class=\"x\">text</span> &amp; more"),
             "text & more"
         );
+    }
+
+    #[test]
+    fn strip_html_tags_decodes_entities_once() {
+        assert_eq!(
+            strip_html_tags("you&#x27;re &amp;lt;ok&amp;gt;"),
+            "you're &lt;ok&gt;"
+        );
+        assert_eq!(strip_html_tags("a&nbsp;b"), "a b");
     }
 
     #[test]
@@ -429,6 +536,82 @@ mod tests {
         "#;
         let results = parse_results(html, 2);
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn parse_results_reads_real_ddg_markup() {
+        // Trimmed fixture copied verbatim from html.duckduckgo.com: redirect
+        // links with HTML-escaped query separators and <b> highlight tags.
+        let html = r#"
+        <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Frust-lang.org%2F&amp;rut=13d867c2d39a2cc9">Rust Programming Language</a>
+        <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Frust-lang.org%2F&amp;rut=13d867c2">A <b>language</b> empowering everyone to build reliable software.</a>
+        "#;
+        let results = parse_results(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust Programming Language");
+        assert_eq!(results[0].url, "https://rust-lang.org/");
+        assert_eq!(
+            results[0].snippet,
+            "A language empowering everyone to build reliable software."
+        );
+    }
+
+    #[test]
+    fn parse_results_handles_href_before_class() {
+        // Attribute order has flipped between DDG endpoints before; the
+        // parser must not depend on it.
+        let html = r#"
+        <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com" class="result__a">Example</a>
+        <a href="https://example.com" class="result__snippet">A snippet</a>
+        "#;
+        let results = parse_results(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://example.com");
+        assert_eq!(results[0].snippet, "A snippet");
+    }
+
+    #[test]
+    fn parse_results_keeps_links_without_snippet() {
+        // A link without a matching snippet must not truncate the list
+        // (the old `zip` dropped every result after the mismatch).
+        let html = r#"
+        <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.com">A</a>
+        <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fb.com">B</a>
+        <a class="result__snippet" href="https://b.com">snip B</a>
+        "#;
+        let results = parse_results(html, 5);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "A");
+        assert_eq!(results[0].snippet, "");
+        assert_eq!(results[1].title, "B");
+        assert_eq!(results[1].snippet, "snip B");
+    }
+
+    #[test]
+    fn class_matching_is_token_exact() {
+        let attrs = r#"class="results-wrap result__a" href="x""#;
+        assert!(class_list_contains(attrs, "result__a"));
+        assert!(!class_list_contains(attrs, "result__"));
+        assert!(!class_list_contains(attrs, "esult__a"));
+    }
+
+    #[test]
+    fn anomaly_page_detection() {
+        assert!(is_anomaly_page(
+            r#"<div class="anomaly-modal">Something went wrong.</div>"#
+        ));
+        assert!(is_anomaly_page(
+            "Unfortunately, bots use DuckDuckGo too. Please try again."
+        ));
+        assert!(!is_anomaly_page(r#"<a class="result__a">ok</a>"#));
+    }
+
+    #[test]
+    fn empty_result_page_detection() {
+        assert!(is_empty_result_page(
+            r#"<div class="no-results">No results.</div>"#
+        ));
+        assert!(!is_empty_result_page(r#"<a class="result__a">ok</a>"#));
     }
 
     #[test]

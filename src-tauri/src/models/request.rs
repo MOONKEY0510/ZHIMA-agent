@@ -66,6 +66,11 @@ pub struct ChatSendRequest {
     /// and regenerated after it finishes.
     #[serde(default)]
     pub conversation_id: Option<String>,
+    /// Skills the user activated manually in the composer.  Their full
+    /// instructions are injected regardless of trigger-word matching
+    /// (`agent::skills`); automatic matching still applies to the rest.
+    #[serde(default)]
+    pub skill_ids: Vec<String>,
 }
 
 /// One model target of a multi-model turn (P1-6).
@@ -103,6 +108,9 @@ pub struct ChatSendMultiRequest {
     pub thinking_effort: String,
     #[serde(default)]
     pub conversation_id: Option<String>,
+    /// Skills the user activated manually (see [`ChatSendRequest::skill_ids`]).
+    #[serde(default)]
+    pub skill_ids: Vec<String>,
 }
 
 /// Payload for the `describe_image` command: send one image to a vision

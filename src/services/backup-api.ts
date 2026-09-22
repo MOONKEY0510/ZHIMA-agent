@@ -18,6 +18,7 @@ export interface ExportReport {
   messages: number;
   memories: number;
   images: number;
+  skills: number;
   bytes: number;
 }
 
@@ -28,6 +29,7 @@ export interface BackupPreview {
   messages: number;
   memories: number;
   images: number;
+  skills: number;
 }
 
 export interface ImportReport {
@@ -35,6 +37,7 @@ export interface ImportReport {
   messages: number;
   memories: number;
   images: number;
+  skills: number;
   /** Rows left alone because they already existed (merge only). */
   skipped: number;
 }

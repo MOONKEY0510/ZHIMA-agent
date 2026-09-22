@@ -232,6 +232,8 @@ struct TurnContext {
     kb_block: Option<String>,
     kb_hits: usize,
     kb_titles: Vec<String>,
+    /// User-skill catalog plus triggered instructions (v19, `agent::skills`).
+    skills_block: Option<String>,
 }
 
 /// Gather the shared side of one turn: rolling summary, long-term memories,
@@ -247,6 +249,7 @@ fn build_turn_context(
     enable_thinking: bool,
     thinking_effort: &str,
     conversation_id: Option<String>,
+    skill_ids: &[String],
 ) -> TurnContext {
     // Rolling summary so long-conversation context survives the frontend's
     // 40-message window (agent/context.rs).
@@ -278,6 +281,21 @@ fn build_turn_context(
 
     let (kb_block, kb_hits, kb_titles) = retrieve_knowledge(config, db, messages);
 
+    // User skills (自定义技能): catalog of every enabled skill plus the full
+    // instructions of the ones triggered by the latest user message — or
+    // activated manually in the composer (`skill_ids`).  A DB failure degrades
+    // to "no skills"; it must never block a chat request.
+    let skills_block = {
+        let skills = db.list_skills().unwrap_or_default();
+        let user_message = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user" && !m.content.trim().is_empty())
+            .map(|m| m.content.as_str())
+            .unwrap_or("");
+        crate::agent::skills::build_skills_block_with_forced(&skills, user_message, skill_ids)
+    };
+
     TurnContext {
         messages: messages.to_vec(),
         system_prompt,
@@ -295,6 +313,7 @@ fn build_turn_context(
         kb_block,
         kb_hits,
         kb_titles,
+        skills_block,
     }
 }
 
@@ -418,6 +437,7 @@ fn spawn_stream(
             ctx.kb_block,
             ctx.kb_hits,
             ctx.kb_titles,
+            ctx.skills_block,
         )
         .await;
         cancellations.lock().unwrap().remove(&rid);
@@ -449,6 +469,7 @@ pub async fn chat_send(
         request.enable_thinking,
         &request.thinking_effort,
         request.conversation_id.clone(),
+        &request.skill_ids,
     );
     let target = resolve_target(&config, &request.provider_id, &request.model_key)?;
 
@@ -506,6 +527,7 @@ pub async fn chat_send_multi(
         request.enable_thinking,
         &request.thinking_effort,
         request.conversation_id.clone(),
+        &request.skill_ids,
     );
 
     // One shared web search for the whole turn.
@@ -858,6 +880,7 @@ async fn run_stream(
     kb_block: Option<String>,
     kb_hits: usize,
     kb_titles: Vec<String>,
+    skills_block: Option<String>,
 ) {
     // Web-search engine and key, resolved once per request (P0-3).  Changing
     // the engine mid-request therefore applies from the next request onwards.
@@ -986,6 +1009,21 @@ async fn run_stream(
         });
     }
 
+    // Diagram guidance (画图模块): the client renders ```mermaid blocks into
+    // styled, theme-aware diagrams with fullscreen/export support.  A few
+    // structural conventions (class-based colours, proper node shapes) make
+    // the generated charts noticeably nicer than the mermaid defaults.
+    {
+        let diagram_guide = "\n\n【绘图规范】当用户需要流程图、架构图、时序图、状态图、类图、ER 图、甘特图或饼图等可视化时，请使用 ```mermaid 代码块输出，客户端会将其渲染为精美图表（支持全屏缩放与导出）。绘图时遵循：\n1) 用 classDef 定义节点分类并用 ::: 应用（如输入/处理/输出/异常各配一色），避免整图单色；\n2) 起止节点用圆角或胶囊形状（如 A([开始])），判断条件用菱形（如 B{条件?}）；\n3) 节点较多时用 subgraph 分组，并根据图的走向选择 TD 或 LR 方向；\n4) 节点文字简短并使用中文标签，不要在 mermaid 之外改用图片链接或 ASCII 字符图表达图表。";
+        effective_system_prompt = Some(match effective_system_prompt {
+            Some(mut sp) => {
+                sp.push_str(diagram_guide);
+                sp
+            }
+            None => diagram_guide.trim_start().to_string(),
+        });
+    }
+
     // ---- Apply the context budget ------------------------------------------
     // Drop whole older turns if the request would exceed the conservative
     // budget.  An oversized single message (huge image / tool result) is a
@@ -1027,6 +1065,16 @@ async fn run_stream(
             count: kb_hits,
             titles: kb_titles,
         });
+        effective_system_prompt = Some(match effective_system_prompt {
+            Some(sp) if !sp.trim().is_empty() => format!("{sp}\n\n{block}"),
+            _ => block,
+        });
+    }
+
+    // ---- User skills (自定义技能, v19) --------------------------------------
+    // Catalog + triggered instruction bodies, appended after the knowledge
+    // base so user-authored instructions stay closest to the conversation.
+    if let Some(block) = skills_block.filter(|b| !b.trim().is_empty()) {
         effective_system_prompt = Some(match effective_system_prompt {
             Some(sp) if !sp.trim().is_empty() => format!("{sp}\n\n{block}"),
             _ => block,
@@ -1914,6 +1962,7 @@ mod tests {
             thinking_effort: "max".into(),
             request_id: None,
             conversation_id: None,
+            skill_ids: vec![],
         };
         assert!(validate_messages(&req.messages).is_ok());
     }
@@ -1935,6 +1984,7 @@ mod tests {
             thinking_effort: "max".into(),
             request_id: None,
             conversation_id: None,
+            skill_ids: vec![],
         };
         assert!(validate_messages(&req.messages).is_err());
 
@@ -1967,6 +2017,7 @@ mod tests {
                 enable_thinking: true,
                 thinking_effort: "medium".into(),
                 conversation_id: None,
+                skill_ids: vec![],
             }
         }
 

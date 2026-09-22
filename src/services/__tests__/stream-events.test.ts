@@ -32,7 +32,7 @@ function startStreaming() {
   // Since P1-6 a stream always fills a message that already sits in the list.
   useChatStore.setState({
     messages: [{ id: "msg-1", role: "assistant", content: "", status: "streaming" }],
-    streams: { "req-1": { messageId: "msg-1", startedAt: Date.now() } },
+    streams: { "req-1": { messageId: "msg-1", startedAt: Date.now(), conversationId: null } },
   });
 }
 

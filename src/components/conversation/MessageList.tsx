@@ -19,8 +19,8 @@ import {
 import type { Message, MessageVersion, SearchResult, ToolCallStep } from "../../types";
 import { formatChars, splitAttachments } from "../../lib/attachments";
 import {
-  selectStreaming,
   streamRequestIdForMessage,
+  useActiveStreaming,
   useChatStore,
 } from "../../stores/chat-store";
 import { useHistoryStore } from "../../services/history-store";
@@ -140,7 +140,9 @@ export function MessageList() {
   // Printing expands the virtual list so every message reaches the paper.
   const printing = useSyncExternalStore(subscribePrinting, isPrinting);
   const activeId = useHistoryStore((s) => s.activeId);
-  const streaming = useChatStore(selectStreaming);
+  // The displayed conversation's own stream state (background conversations
+  // may generate in parallel without affecting this list).
+  const streaming = useActiveStreaming();
   const listRef = useRef<VirtuosoHandle>(null);
   const previousLength = useRef(messages.length);
   const [activeTurn, setActiveTurn] = useState(0);
@@ -284,7 +286,7 @@ const EmptyState = memo(function EmptyState() {
       <p className="text-sm text-ink-2">有什么可以帮你的？直接输入问题，让我这个桌面小助手来协助你。</p>
       {providerCount === 0 && (
         <button
-          onClick={openSettings}
+          onClick={() => openSettings()}
           className="mt-1 rounded-btn border border-line px-3 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
         >
           先配置服务商
@@ -992,7 +994,7 @@ function VersionSwitcher({
   versions: MessageVersion[];
   activeVersion: number;
 }) {
-  const streaming = useChatStore(selectStreaming);
+  const streaming = useActiveStreaming();
   const total = versions.length;
   const current = Math.min(Math.max(activeVersion, 0), total - 1);
 

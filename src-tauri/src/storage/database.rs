@@ -12,6 +12,7 @@ use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use serde::{Deserialize, Serialize};
 
 use crate::storage::assistants::Assistant;
+use crate::storage::skills::{new_skill_id, Skill, SkillDraft};
 
 /// Ordered, append-only migration list. Never edit applied migrations —
 /// add new ones at the end.
@@ -221,6 +222,22 @@ const MIGRATIONS: &[&str] = &[
         WHERE id = 'assistant.builtin.translator' AND icon = '🌐';
      UPDATE assistants SET icon = 'clipboard-list'
         WHERE id = 'assistant.builtin.meeting' AND icon = '📋';",
+    // v19 — user skills (自定义技能): reusable instruction packages the user
+    // writes once and the assistant applies when triggered.  Triggers live in
+    // a JSON array string; an empty array means "always active"
+    // (see `agent::skills` for the two-stage prompt injection).
+    "CREATE TABLE IF NOT EXISTS skills (
+        id            TEXT PRIMARY KEY,
+        name          TEXT NOT NULL,
+        description   TEXT NOT NULL DEFAULT '',
+        content       TEXT NOT NULL,
+        triggers_json TEXT NOT NULL DEFAULT '[]',
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        sort_order    INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_skills_sort ON skills(sort_order);",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -465,6 +482,22 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// Parse the `skills.triggers_json` column, tolerating garbage values.
+fn parse_triggers(json: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(json).unwrap_or_default()
+}
+
+/// Trim, drop empties and de-duplicate triggers (case-insensitively).
+fn normalized_triggers(triggers: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    triggers
+        .iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .filter(|t| seen.insert(t.to_lowercase()))
+        .collect()
+}
+
 /// Build a short excerpt centred on the first occurrence of `query`
 /// (used by the LIKE fallback, where FTS5's `snippet()` is unavailable).
 fn snippet_around(content: &str, query: &str, radius: usize) -> String {
@@ -656,6 +689,9 @@ pub struct BackupFile {
     pub memories: Vec<Memory>,
     #[serde(default)]
     pub image_generations: Vec<ImageGeneration>,
+    /// User skills (v19); absent in backups written before the feature.
+    #[serde(default)]
+    pub skills: Vec<Skill>,
 }
 
 /// Current backup payload version.
@@ -690,6 +726,7 @@ pub struct ImportReport {
     pub messages: usize,
     pub memories: usize,
     pub images: usize,
+    pub skills: usize,
     /// Rows left alone because their id already existed (merge only).
     pub skipped: usize,
 }
@@ -941,6 +978,27 @@ impl Database {
             params![id, system_prompt],
         )
         .map_err(|e| format!("更新会话提示词失败：{e}"))?;
+        Ok(())
+    }
+
+    /// Bind a conversation to a provider/model ("对话级模型"): every future
+    /// turn of this conversation uses it, other conversations are unaffected.
+    pub fn set_conversation_model(
+        &self,
+        id: &str,
+        provider_id: Option<&str>,
+        model_key: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE conversations SET provider_id = ?2, model_key = ?3 WHERE id = ?1",
+                params![id, provider_id, model_key],
+            )
+            .map_err(|e| format!("更新会话模型失败：{e}"))?;
+        if changed != 1 {
+            return Err("会话不存在，无法更新模型".into());
+        }
         Ok(())
     }
 
@@ -2006,6 +2064,153 @@ impl Database {
         self.upsert_assistant(&template)
     }
 
+    /* ---------------- skills (v19) ---------------- */
+
+    /// All skills, ordered by `sort_order` then creation time.
+    pub fn list_skills(&self) -> Result<Vec<Skill>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, description, content, triggers_json, enabled,
+                        sort_order, created_at, updated_at
+                 FROM skills ORDER BY sort_order ASC, created_at ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                let triggers_json: String = r.get(4)?;
+                Ok(Skill {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    description: r.get(2)?,
+                    content: r.get(3)?,
+                    triggers: parse_triggers(&triggers_json),
+                    enabled: r.get::<_, i64>(5)? != 0,
+                    sort_order: r.get(6)?,
+                    created_at: r.get(7)?,
+                    updated_at: r.get(8)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<SqlResult<Vec<_>>>()
+            .map_err(|e| format!("读取技能失败：{e}"))
+    }
+
+    pub fn get_skill(&self, id: &str) -> Result<Option<Skill>, String> {
+        Ok(self.list_skills()?.into_iter().find(|s| s.id == id))
+    }
+
+    /// Insert or update a skill and return the stored row.
+    ///
+    /// Triggers are trimmed, de-duplicated (case-insensitively) and stored as
+    /// a JSON array; a skill without triggers is always active.
+    pub fn upsert_skill(&self, skill: &Skill) -> Result<Skill, String> {
+        if skill.id.trim().is_empty() {
+            return Err("技能 ID 不能为空".into());
+        }
+        let name = skill.name.trim();
+        if name.is_empty() {
+            return Err("请填写技能名称".into());
+        }
+        let content = skill.content.trim();
+        if content.is_empty() {
+            return Err("请填写技能内容".into());
+        }
+
+        let now = now_ms();
+        let created_at = if skill.created_at > 0 {
+            skill.created_at
+        } else {
+            now
+        };
+        let triggers_json = serde_json::to_string(&normalized_triggers(&skill.triggers))
+            .unwrap_or_else(|_| "[]".to_string());
+        // Scoped so the connection lock is released before reading the row
+        // back (the mutex is not reentrant).
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO skills
+                    (id, name, description, content, triggers_json, enabled,
+                     sort_order, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id) DO UPDATE SET
+                     name = excluded.name,
+                     description = excluded.description,
+                     content = excluded.content,
+                     triggers_json = excluded.triggers_json,
+                     enabled = excluded.enabled,
+                     sort_order = excluded.sort_order,
+                     updated_at = excluded.updated_at",
+                params![
+                    skill.id,
+                    name,
+                    skill.description.trim(),
+                    content,
+                    triggers_json,
+                    if skill.enabled { 1 } else { 0 },
+                    skill.sort_order,
+                    created_at,
+                    now,
+                ],
+            )
+            .map_err(|e| format!("保存技能失败：{e}"))?;
+        }
+
+        self.get_skill(&skill.id)?
+            .ok_or_else(|| "保存技能失败：记录不存在".to_string())
+    }
+
+    pub fn delete_skill(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM skills WHERE id = ?1", params![id])
+            .map_err(|e| format!("删除技能失败：{e}"))?;
+        Ok(())
+    }
+
+    /// Insert or update a skill from an imported draft, matching existing
+    /// rows by name so re-importing the same file updates it instead of
+    /// creating duplicates.  Returns `true` when a new row was created.
+    pub fn import_skill(&self, draft: &SkillDraft) -> Result<bool, String> {
+        let name = draft.name.trim();
+        if name.is_empty() {
+            return Err("技能缺少名称".into());
+        }
+        if draft.content.trim().is_empty() {
+            return Err("技能内容为空".into());
+        }
+
+        let existing = self
+            .list_skills()?
+            .into_iter()
+            .find(|s| s.name.trim() == name);
+        let created = existing.is_none();
+        let now = now_ms();
+        let skill = match existing {
+            // Keep the id / created_at / enabled state of the user's row.
+            Some(mut stored) => {
+                stored.description = draft.description.clone();
+                stored.content = draft.content.clone();
+                stored.triggers = draft.triggers.clone();
+                stored.updated_at = now;
+                stored
+            }
+            None => Skill {
+                id: new_skill_id(),
+                name: name.to_string(),
+                description: draft.description.clone(),
+                content: draft.content.clone(),
+                triggers: draft.triggers.clone(),
+                enabled: true,
+                sort_order: 0,
+                created_at: now,
+                updated_at: now,
+            },
+        };
+        self.upsert_skill(&skill)?;
+        Ok(created)
+    }
+
     /* ---------------- local knowledge base (v15) ---------------- */
 
     /// Every knowledge-base document, newest first.
@@ -2191,6 +2396,7 @@ impl Database {
             } else {
                 Vec::new()
             },
+            skills: self.list_skills()?,
         })
     }
 
@@ -2215,7 +2421,7 @@ impl Database {
             tx.execute_batch(
                 "DELETE FROM messages; DELETE FROM conversations;
                  DELETE FROM conversation_summaries; DELETE FROM memories;
-                 DELETE FROM image_generations;",
+                 DELETE FROM image_generations; DELETE FROM skills;",
             )
             .map_err(|e| format!("清空现有数据失败：{e}"))?;
         }
@@ -2336,6 +2542,35 @@ impl Database {
                 report.skipped += 1;
             } else {
                 report.images += 1;
+            }
+        }
+
+        for skill in &backup.skills {
+            let triggers_json = serde_json::to_string(&normalized_triggers(&skill.triggers))
+                .unwrap_or_else(|_| "[]".to_string());
+            let inserted = tx
+                .execute(
+                    "INSERT OR IGNORE INTO skills
+                        (id, name, description, content, triggers_json, enabled,
+                         sort_order, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        skill.id,
+                        skill.name,
+                        skill.description,
+                        skill.content,
+                        triggers_json,
+                        if skill.enabled { 1 } else { 0 },
+                        skill.sort_order,
+                        skill.created_at,
+                        skill.updated_at,
+                    ],
+                )
+                .map_err(|e| format!("导入技能失败：{e}"))?;
+            if inserted == 0 {
+                report.skipped += 1;
+            } else {
+                report.skills += 1;
             }
         }
 
@@ -2819,6 +3054,119 @@ mod tests {
         assert!(db.upsert_assistant(&a).is_err());
     }
 
+    /* ---------------- skills (v19) ---------------- */
+
+    fn test_skill(id: &str, name: &str) -> Skill {
+        Skill {
+            id: id.into(),
+            name: name.into(),
+            description: "整理周报".into(),
+            content: "把零散记录整理为结构化周报".into(),
+            triggers: vec!["周报".into()],
+            enabled: true,
+            sort_order: 0,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn skills_round_trip_with_trigger_cleanup() {
+        let db = Database::in_memory();
+        let stored = db.upsert_skill(&test_skill("skill-1", "周报助手")).unwrap();
+        assert_eq!(stored.name, "周报助手");
+        assert_eq!(stored.triggers, vec!["周报"]);
+        assert!(stored.created_at > 0);
+        assert!(stored.enabled);
+
+        // Editing trims, drops empty and de-duplicates triggers.
+        let mut edited = stored.clone();
+        edited.name = "  周报生成  ".into();
+        edited.triggers = vec![
+            "周报".into(),
+            " 周报 ".into(),
+            String::new(),
+            "Weekly".into(),
+            "weekly".into(),
+        ];
+        edited.enabled = false;
+        let stored = db.upsert_skill(&edited).unwrap();
+        assert_eq!(stored.name, "周报生成");
+        assert_eq!(stored.triggers, vec!["周报", "Weekly"]);
+        assert!(!stored.enabled);
+        assert_eq!(
+            stored.created_at,
+            db.get_skill("skill-1").unwrap().unwrap().created_at
+        );
+        assert_eq!(db.list_skills().unwrap().len(), 1);
+
+        db.delete_skill("skill-1").unwrap();
+        assert!(db.list_skills().unwrap().is_empty());
+    }
+
+    #[test]
+    fn upsert_skill_validates_fields() {
+        let db = Database::in_memory();
+        let mut blank = test_skill("skill-2", "   ");
+        assert!(db.upsert_skill(&blank).is_err());
+
+        blank.name = "有名字".into();
+        blank.content = "   ".into();
+        assert!(db.upsert_skill(&blank).is_err());
+
+        assert!(db.list_skills().unwrap().is_empty());
+    }
+
+    #[test]
+    fn skills_survive_migration_reruns() {
+        let db = Database::in_memory();
+        db.upsert_skill(&test_skill("skill-3", "保留")).unwrap();
+        db.migrate().unwrap();
+        assert_eq!(db.list_skills().unwrap().len(), 1);
+    }
+
+    fn draft(name: &str, content: &str) -> SkillDraft {
+        SkillDraft {
+            name: name.into(),
+            description: "描述".into(),
+            triggers: vec!["周报".into()],
+            content: content.into(),
+        }
+    }
+
+    #[test]
+    fn import_skill_matches_existing_by_name() {
+        let db = Database::in_memory();
+        assert!(
+            db.import_skill(&draft("周报助手", "第一版")).unwrap(),
+            "first import creates a row"
+        );
+        assert_eq!(db.list_skills().unwrap().len(), 1);
+        let first_id = db.list_skills().unwrap()[0].id.clone();
+
+        // Re-importing the same name updates in place and keeps the id.
+        assert!(
+            !db.import_skill(&draft("周报助手", "第二版")).unwrap(),
+            "second import updates"
+        );
+        let rows = db.list_skills().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, first_id);
+        assert_eq!(rows[0].content, "第二版");
+
+        // A different name creates another row.
+        assert!(db.import_skill(&draft("翻译助手", "x")).unwrap());
+        assert_eq!(db.list_skills().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn import_skill_rejects_incomplete_drafts() {
+        let db = Database::in_memory();
+        assert!(db.import_skill(&draft("   ", "内容")).is_err());
+        assert!(db.import_skill(&draft("有名字", "   ")).is_err());
+        assert!(db.list_skills().unwrap().is_empty());
+    }
+
     #[test]
     fn conversation_binds_an_assistant_through_chat_turn() {
         let db = Database::in_memory();
@@ -3103,6 +3451,7 @@ mod tests {
             .unwrap();
         db.edit_message("m1", "编辑后的提问内容").unwrap();
         db.create_memory(&test_memory("mem1")).unwrap();
+        db.upsert_skill(&test_skill("skill-1", "备份技能")).unwrap();
 
         let backup = db.export_backup(true).unwrap();
         assert_eq!(backup.app, BACKUP_APP_MARKER);
@@ -3110,13 +3459,15 @@ mod tests {
         assert_eq!(backup.conversations.len(), 1);
         assert_eq!(backup.conversations[0].messages.len(), 1);
         assert_eq!(backup.memories.len(), 1);
+        assert_eq!(backup.skills.len(), 1);
 
         // Merging into the same database skips everything.
         let report = db.import_backup(&backup, ImportStrategy::Merge).unwrap();
         assert_eq!(report.conversations, 0);
         assert_eq!(report.messages, 0);
         assert_eq!(report.memories, 0);
-        assert_eq!(report.skipped, 3);
+        assert_eq!(report.skills, 0);
+        assert_eq!(report.skipped, 4);
 
         // Replacing into a fresh database restores everything, versions included.
         let fresh = Database::in_memory();
@@ -3126,6 +3477,7 @@ mod tests {
         assert_eq!(report.conversations, 1);
         assert_eq!(report.messages, 1);
         assert_eq!(report.memories, 1);
+        assert_eq!(report.skills, 1);
         assert_eq!(report.skipped, 0);
 
         let restored = fresh.list_messages("c1").unwrap();
@@ -3134,6 +3486,7 @@ mod tests {
         assert_eq!(versions.len(), 2);
         assert_eq!(versions[0].content, "原始提问");
         assert_eq!(fresh.list_memories().unwrap().len(), 1);
+        assert_eq!(fresh.list_skills().unwrap()[0].name, "备份技能");
 
         // Search works immediately after import (index rebuilt).
         assert_eq!(fresh.search_messages("编辑后的提问", 10).unwrap().len(), 1);
@@ -3146,6 +3499,7 @@ mod tests {
         db.create_conversation(&conv("old", "旧会话", 1)).unwrap();
         db.save_message(&msg("old-m", "old", "user", "旧内容", "done", 10))
             .unwrap();
+        db.upsert_skill(&test_skill("old-skill", "旧技能")).unwrap();
 
         // A backup that only carries a different conversation.
         let other = Database::in_memory();
@@ -3162,6 +3516,8 @@ mod tests {
         assert!(db.get_conversation("new").unwrap().is_some());
         assert!(db.search_messages("旧内容", 10).unwrap().is_empty());
         assert_eq!(db.search_messages("新内容", 10).unwrap().len(), 1);
+        // Replace also clears user skills before inserting the backup's own.
+        assert!(db.list_skills().unwrap().is_empty());
     }
 
     #[test]

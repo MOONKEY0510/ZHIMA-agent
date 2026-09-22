@@ -129,11 +129,14 @@ function applyStoredRow(msg: Message, row: StoredRowMirror): Message {
 type ModelSelection = { provider: ProviderView; model: ModelEntry } | null;
 
 /**
- * Resolve the model + system prompt for a turn (P1-7).
+ * Resolve the model + system prompt for a turn (P1-7, 对话级模型).
  *
  * Priority for the system prompt: the conversation's own override > the bound
- * assistant's prompt > the global default.  The model comes from the
- * assistant's pinned selection when it has one, else the global selection.
+ * assistant's prompt > the global default.
+ *
+ * Priority for the model: the conversation's own binding (对话级模型, set from
+ * the composer) > the draft selection of a fresh chat > the assistant's pinned
+ * model > the global default.
  */
 function resolveTurnContext(conversationId: string | null): {
   selection: ModelSelection;
@@ -141,13 +144,21 @@ function resolveTurnContext(conversationId: string | null): {
   assistantId: string | null;
 } {
   const assistant = activeAssistant();
-  const selection =
-    modelFor(assistant?.providerId ?? null, assistant?.modelKey ?? null) ?? currentModel();
-
-  const conversationPrompt = conversationId
-    ? useHistoryStore.getState().conversations.find((c) => c.id === conversationId)
-        ?.systemPrompt ?? null
+  const historyState = useHistoryStore.getState();
+  const conversation = conversationId
+    ? historyState.conversations.find((c) => c.id === conversationId) ?? null
     : null;
+  const draft = useChatStore.getState().draftSelection;
+
+  const selection =
+    (conversation?.providerId
+      ? modelFor(conversation.providerId, conversation.modelKey)
+      : null) ??
+    (!conversationId && draft ? modelFor(draft.providerId, draft.modelKey) : null) ??
+    modelFor(assistant?.providerId ?? null, assistant?.modelKey ?? null) ??
+    currentModel();
+
+  const conversationPrompt = conversation?.systemPrompt ?? null;
   const systemPrompt =
     conversationPrompt ||
     (assistant?.systemPrompt?.trim() ? assistant.systemPrompt : null) ||
@@ -162,6 +173,12 @@ export interface ActiveStream {
   messageId: string;
   /** Wall-clock start, used for the per-message duration badge. */
   startedAt: number;
+  /**
+   * Conversation owning the generation (`null` while a brand-new conversation
+   * has not been persisted yet).  Drives per-conversation routing: background
+   * message updates, completion notices and cancellation.
+   */
+  conversationId: string | null;
 }
 
 /** One model of a multi-model turn (P1-6). */
@@ -171,21 +188,52 @@ export interface ModelTarget {
 }
 
 /**
+ * Apply `updater` to one message wherever it lives: the visible list or one
+ * of the background conversation snapshots.  Unknown ids are ignored, so
+ * events from a cancelled or finished stream can never touch anything — and
+ * a background generation keeps updating its own snapshot while the user is
+ * reading another conversation.
+ */
+function patchMessage(
+  state: { messages: Message[]; backgroundMessages: Record<string, Message[]> },
+  messageId: string,
+  updater: (msg: Message) => Message,
+): Partial<ChatState> {
+  if (state.messages.some((m) => m.id === messageId)) {
+    return {
+      messages: state.messages.map((m) => (m.id === messageId ? updater(m) : m)),
+    };
+  }
+  for (const [conversationId, list] of Object.entries(state.backgroundMessages)) {
+    if (list.some((m) => m.id === messageId)) {
+      return {
+        backgroundMessages: {
+          ...state.backgroundMessages,
+          [conversationId]: list.map((m) => (m.id === messageId ? updater(m) : m)),
+        },
+      };
+    }
+  }
+  return {};
+}
+
+/**
  * Apply an update to the message a specific stream is filling.  Unknown
  * request ids are ignored, so events from a cancelled or finished stream can
  * never touch the list.
  */
 function patchStream(
-  state: { streams: Record<string, ActiveStream>; messages: Message[] },
+  state: {
+    streams: Record<string, ActiveStream>;
+    messages: Message[];
+    backgroundMessages: Record<string, Message[]>;
+  },
   requestId: string,
   updater: (msg: Message) => Message,
 ): Partial<ChatState> {
   const stream = state.streams[requestId];
   if (!stream) return {};
-  const { messageId } = stream;
-  return {
-    messages: state.messages.map((m) => (m.id === messageId ? updater(m) : m)),
-  };
+  return patchMessage(state, stream.messageId, updater);
 }
 
 /** Drop one stream from the map without mutating the original. */
@@ -197,9 +245,15 @@ function withoutStream(
   return rest;
 }
 
-/** Selector: whether any generation is currently in flight. */
-export function selectStreaming(state: { streams: Record<string, ActiveStream> }): boolean {
-  return Object.keys(state.streams).length > 0;
+/**
+ * Whether the conversation currently on screen has a generation running.
+ * Other conversations may generate in the background without blocking the
+ * composer (multi-conversation support).
+ */
+export function useActiveStreaming(): boolean {
+  const streams = useChatStore((s) => s.streams);
+  const activeId = useHistoryStore((s) => s.activeId);
+  return Object.values(streams).some((stream) => stream.conversationId === activeId);
 }
 
 /** Selector: request id of the stream filling `messageId`, if any. */
@@ -235,6 +289,8 @@ interface ChatState {
     enableTools: boolean;
     enableThinking: boolean;
     thinkingEffort: ThinkingEffort;
+    /** Manually activated skills (自定义技能) replayed by retry / regenerate. */
+    skillIds: string[];
   } | null;
   /**
    * When set (via a clipboard quick action), the next assistant reply is
@@ -251,6 +307,25 @@ interface ChatState {
    * normal single-model send.
    */
   compareTargets: ModelTarget[];
+  /**
+   * Message lists of conversations that are **not** currently displayed.
+   *
+   * Switching away from a conversation snapshots its messages here instead
+   * of dropping them: generations keep flowing into the snapshot (see
+   * `patchMessage`) and switching back is instant.
+   */
+  backgroundMessages: Record<string, Message[]>;
+  /**
+   * Conversations whose generation finished while a different conversation
+   * was on screen.  The sidebar shows a dot; opening the conversation clears
+   * it.
+   */
+  unreadDone: Record<string, true>;
+  /**
+   * Provider/model picked while no conversation exists yet (a fresh chat).
+   * The conversation created by the next send binds to it.
+   */
+  draftSelection: ModelTarget | null;
 
   /** Arm the clipboard writeback for the next assistant reply. */
   armClipboardWriteback: (label: string) => void;
@@ -270,6 +345,8 @@ interface ChatState {
     thinkingEffort?: ThinkingEffort,
     /** Metadata of documents already folded into `text` (P1-8). */
     attachments?: AttachmentMeta[],
+    /** Skills manually activated in the composer (自定义技能). */
+    skillIds?: string[],
   ) => Promise<void>;
   /**
    * Send one prompt to several models at once (P1-6).  Text only; the agent
@@ -281,6 +358,8 @@ interface ChatState {
     webSearch?: boolean,
     enableThinking?: boolean,
     thinkingEffort?: ThinkingEffort,
+    /** Skills manually activated in the composer (自定义技能). */
+    skillIds?: string[],
   ) => Promise<void>;
   appendDelta: (requestId: string, text: string) => void;
   appendReasoning: (requestId: string, text: string) => void;
@@ -308,7 +387,7 @@ interface ChatState {
   ) => void;
   onFinish: (requestId: string, reason?: string) => void;
   onError: (requestId: string, message: string, retryable: boolean) => void;
-  /** Cancel every in-flight generation. */
+  /** Cancel the in-flight generation of the displayed conversation. */
   stop: () => void;
   /** Cancel one column (used by the per-column stop button). */
   stopStream: (requestId: string) => void;
@@ -325,6 +404,18 @@ interface ChatState {
   branchFrom: (messageId: string) => void;
   /** Load a persisted conversation into the message list. */
   loadConversation: (id: string) => Promise<void>;
+  /**
+   * Bind the displayed conversation (or the next new one) to a provider and
+   * model — the composer-level "对话级模型" switch.
+   */
+  setConversationModel: (providerId: string, modelKey: string) => Promise<void>;
+  /** Clear a conversation's "finished" dot (called when it is opened). */
+  clearUnreadDone: (conversationId: string) => void;
+  /**
+   * Start a blank conversation.  Unlike `clearConversation` this keeps every
+   * running generation alive (they continue in their own conversations).
+   */
+  startNewConversation: () => void;
 }
 
 /**
@@ -409,6 +500,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   clipboardWriteback: null,
   focusMessageId: null,
   compareTargets: [],
+  backgroundMessages: {},
+  unreadDone: {},
+  draftSelection: null,
 
   armClipboardWriteback: (label) => set({ clipboardWriteback: label }),
   setCompareTargets: (targets) => set({ compareTargets: targets }),
@@ -423,15 +517,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
     enableThinking = true,
     thinkingEffort: ThinkingEffort = "medium",
     attachments,
+    skillIds,
   ) => {
     const trimmed = text.trim();
     if (!trimmed && (!images || images.length === 0)) return;
 
     const { streams, messages } = get();
-    if (Object.keys(streams).length > 0) return;
+    // Only the displayed conversation is busy-checked: generations in other
+    // conversations may keep running while this one sends (multi-conversation).
+    const activeConvId = useHistoryStore.getState().activeId;
+    if (Object.values(streams).some((stream) => stream.conversationId === activeConvId)) {
+      return;
+    }
 
-    // Model + prompt come from the active assistant (P1-7), falling back to
-    // the global default selection.
+    // Model + prompt come from the conversation binding (对话级模型), then
+    // the active assistant (P1-7), then the global default selection.
     const {
       selection,
       systemPrompt,
@@ -480,7 +580,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const requestId = `req-${Date.now().toString(36)}-${(seq++).toString(36)}`;
     set({
       messages: [...messages, userMessage, assistantMessage],
-      streams: { [requestId]: { messageId: assistantId, startedAt: Date.now() } },
+      streams: {
+        ...streams,
+        // Bound to the conversation the request started in; a brand-new
+        // conversation binds right after it is persisted (below).
+        [requestId]: {
+          messageId: assistantId,
+          startedAt: Date.now(),
+          conversationId: useHistoryStore.getState().activeId,
+        },
+      },
     });
 
     // Hoisted so the invoke error handler below can roll back a conversation
@@ -495,17 +604,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // No fallback configured — fail the column in place.
           set((state) => ({
             streams: withoutStream(state.streams, requestId),
-            messages: state.messages.map((m) =>
-              m.id === assistantId
-                ? {
-                    ...m,
-                    status: "error" as const,
-                    error:
-                      "当前模型不支持图片，且未配置视觉模型。请在设置→模型设置中配置默认视觉模型。",
-                    retryable: false,
-                  }
-                : m,
-            ),
+            ...patchMessage(state, assistantId, (m) => ({
+              ...m,
+              status: "error" as const,
+              error:
+                "当前模型不支持图片，且未配置视觉模型。请在设置→模型设置中配置默认视觉模型。",
+              retryable: false,
+            })),
           }));
           return;
         }
@@ -560,6 +665,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
         conversationId = nextConvId();
         createdNew = true;
       }
+
+      // Now that the id is known, bind the stream so completion notices and
+      // cancellation can be routed per conversation (a fresh conversation had
+      // no id when the stream was created).
+      if (conversationId) {
+        const boundId = conversationId;
+        set((state) => {
+          const stream = state.streams[requestId];
+          if (!stream || stream.conversationId === boundId) return {};
+          return {
+            streams: {
+              ...state.streams,
+              [requestId]: { ...stream, conversationId: boundId },
+            },
+          };
+        });
+      }
     } catch (err) {
       // Unexpected failure during preprocessing (image compression, vision
       // description or conversation creation).  Release the request slot and
@@ -567,11 +689,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const message = err instanceof Error ? err.message : String(err);
       set((state) => ({
         streams: withoutStream(state.streams, requestId),
-        messages: state.messages.map((m) =>
-          m.id === assistantId
-            ? { ...m, status: "error" as const, error: message, retryable: true }
-            : m,
-        ),
+        ...patchMessage(state, assistantId, (m) => ({
+          ...m,
+          status: "error" as const,
+          error: message,
+          retryable: true,
+        })),
       }));
       return;
     }
@@ -589,6 +712,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           thinkingEffort,
           requestId,
           conversationId: conversationId ?? undefined,
+          skillIds: skillIds ?? [],
         },
       });
       // Snapshot the send options so retryLast() can replay the exact same
@@ -599,6 +723,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           enableTools: enableTools ?? false,
           enableThinking,
           thinkingEffort,
+          skillIds: skillIds ?? [],
         },
       });
 
@@ -653,11 +778,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const message = err instanceof Error ? err.message : String(err);
       set((state) => ({
         streams: withoutStream(state.streams, requestId),
-        messages: state.messages.map((m) =>
-          m.id === assistantId
-            ? { ...m, status: "error" as const, error: message, retryable: true }
-            : m,
-        ),
+        ...patchMessage(state, assistantId, (m) => ({
+          ...m,
+          status: "error" as const,
+          error: message,
+          retryable: true,
+        })),
       }));
       if (createdNew) {
         useHistoryStore.getState().setActive(null);
@@ -671,12 +797,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     webSearch,
     enableThinking = true,
     thinkingEffort: ThinkingEffort = "medium",
+    skillIds,
   ) => {
     const trimmed = text.trim();
     if (!trimmed || targets.length === 0) return;
 
     const { streams, messages } = get();
-    if (Object.keys(streams).length > 0) return;
+    // Only the displayed conversation is busy-checked (multi-conversation).
+    const activeConvId = useHistoryStore.getState().activeId;
+    if (Object.values(streams).some((stream) => stream.conversationId === activeConvId)) {
+      return;
+    }
 
     // Resolve every target up front so unknown providers are dropped before
     // any placeholder or backend call is made.
@@ -714,34 +845,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     });
 
-    const startedAt = Date.now();
-    const streamEntries: Record<string, ActiveStream> = {};
-    assistants.forEach((m, index) => {
-      streamEntries[requestIds[index]] = { messageId: m.id, startedAt };
-    });
-
+    // Reserve the conversation id before creating the streams so they can be
+    // bound to it from the start.
     let conversationId: string | null = historyStore.historyEnabled
       ? historyStore.activeId
       : null;
     const createdNew = historyStore.historyEnabled && !conversationId;
     if (createdNew) conversationId = nextConvId();
 
+    const startedAt = Date.now();
+    const streamEntries: Record<string, ActiveStream> = {};
+    assistants.forEach((m, index) => {
+      streamEntries[requestIds[index]] = {
+        messageId: m.id,
+        startedAt,
+        conversationId,
+      };
+    });
+
     const context = [...messages, userMessage]
       .filter((m) => m.content.length > 0 && m.status !== "error")
       .slice(-CONTEXT_LIMIT)
       .map((m) => ({ role: m.role, content: m.content }));
 
-    set({
+    set((state) => ({
       messages: [...messages, userMessage, ...assistants],
-      streams: streamEntries,
+      streams: { ...state.streams, ...streamEntries },
       lastSendOptions: {
         webSearch: webSearch ?? false,
         // The agent loop is a single-model feature (see chat_send_multi).
         enableTools: false,
         enableThinking,
         thinkingEffort,
+        skillIds: skillIds ?? [],
       },
-    });
+    }));
 
     try {
       await invoke<string[]>("chat_send_multi", {
@@ -758,6 +896,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           enableThinking,
           thinkingEffort,
           conversationId: conversationId ?? undefined,
+          skillIds: skillIds ?? [],
         },
       });
 
@@ -821,14 +960,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const failedIds = new Set(assistants.map((a) => a.id));
-      set((state) => ({
-        streams: {},
-        messages: state.messages.map((m) =>
-          failedIds.has(m.id)
-            ? { ...m, status: "error" as const, error: message, retryable: true }
-            : m,
-        ),
-      }));
+      set((state) => {
+        // Release only this turn's streams; other conversations keep running.
+        const streams = { ...state.streams };
+        for (const id of requestIds) delete streams[id];
+        let messages = state.messages;
+        let backgroundMessages = state.backgroundMessages;
+        for (const messageId of failedIds) {
+          const patch = patchMessage({ messages, backgroundMessages }, messageId, (m) => ({
+            ...m,
+            status: "error" as const,
+            error: message,
+            retryable: true,
+          }));
+          if (patch.messages) messages = patch.messages;
+          if (patch.backgroundMessages) backgroundMessages = patch.backgroundMessages;
+        }
+        return { streams, messages, backgroundMessages };
+      });
       if (createdNew) {
         useHistoryStore.getState().setActive(null);
       }
@@ -958,12 +1107,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!stream) return;
     const status = reason === "cancelled" ? "cancelled" : "done";
     const durationMs = Date.now() - stream.startedAt;
+    const activeConvId = useHistoryStore.getState().activeId;
+    // A generation that finishes while the user reads another conversation
+    // raises a "finished" dot in the sidebar (cancellations do not).
+    const finishedInBackground =
+      status === "done" &&
+      stream.conversationId !== null &&
+      stream.conversationId !== activeConvId;
 
     set((state) => ({
       streams: withoutStream(state.streams, requestId),
-      messages: state.messages.map((m) =>
-        m.id === stream.messageId ? syncActiveVersion({ ...m, status, durationMs }) : m,
+      ...patchMessage(state, stream.messageId, (m) =>
+        syncActiveVersion({ ...m, status, durationMs }),
       ),
+      ...(finishedInBackground
+        ? { unreadDone: { ...state.unreadDone, [stream.conversationId as string]: true } }
+        : {}),
     }));
     persistAssistantFinal(stream.messageId, status);
 
@@ -988,10 +1147,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     set((state) => ({
       streams: withoutStream(state.streams, requestId),
-      messages: state.messages.map((m) =>
-        m.id === stream.messageId
-          ? syncActiveVersion({ ...m, status: "error", error: message, retryable, durationMs })
-          : m,
+      ...patchMessage(state, stream.messageId, (m) =>
+        syncActiveVersion({ ...m, status: "error", error: message, retryable, durationMs }),
       ),
     }));
     persistAssistantFinal(stream.messageId, "error");
@@ -1016,10 +1173,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   stop: () => {
     const { streams } = get();
-    const entries = Object.entries(streams);
+    // Only the displayed conversation is cancelled; background generations
+    // in other conversations keep running (multi-conversation support).
+    const activeConvId = useHistoryStore.getState().activeId;
+    const entries = Object.entries(streams).filter(
+      ([, stream]) => stream.conversationId === activeConvId,
+    );
     if (entries.length === 0) return;
 
-    // Tell the backend to cancel every in-flight request.
+    // Tell the backend to cancel those requests.
     for (const [requestId] of entries) {
       void invoke("chat_cancel", { requestId }).catch(() => undefined);
     }
@@ -1029,7 +1191,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const now = Date.now();
     const finished = new Map(entries.map(([, s]) => [s.messageId, now - s.startedAt]));
     set((state) => ({
-      streams: {},
+      streams: Object.fromEntries(
+        Object.entries(state.streams).filter(([, stream]) => !finished.has(stream.messageId)),
+      ),
       messages: state.messages.map((m) =>
         finished.has(m.id)
           ? syncActiveVersion({
@@ -1081,6 +1245,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       enableTools: false,
       enableThinking: true,
       thinkingEffort: "medium" as ThinkingEffort,
+      skillIds: [] as string[],
     };
     const enableTools = opts?.disableTools ? false : base.enableTools;
     void get().send(
@@ -1090,6 +1255,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       enableTools,
       base.enableThinking,
       base.thinkingEffort,
+      undefined,
+      base.skillIds,
     );
   },
 
@@ -1190,6 +1357,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       enableTools: false,
       enableThinking: true,
       thinkingEffort: "medium" as ThinkingEffort,
+      skillIds: [] as string[],
     };
     const context = messages
       .slice(0, index)
@@ -1204,7 +1372,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: state.messages.map((m) => (m.id === messageId ? archived : m)),
       streams: {
         ...state.streams,
-        [requestId]: { messageId, startedAt: Date.now() },
+        [requestId]: {
+          messageId,
+          startedAt: Date.now(),
+          conversationId: useHistoryStore.getState().activeId,
+        },
       },
     }));
 
@@ -1222,6 +1394,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           thinkingEffort: base.thinkingEffort,
           requestId,
           conversationId: activeId ?? undefined,
+          skillIds: base.skillIds,
         },
       });
     } catch (err) {
@@ -1296,24 +1469,56 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearConversation: () => {
-    const { streams, conversationNonce } = get();
-    for (const requestId of Object.keys(streams)) {
-      void invoke("chat_cancel", { requestId }).catch(() => undefined);
+    const { streams, backgroundMessages, conversationNonce } = get();
+    const currentId = useHistoryStore.getState().activeId;
+    // Only this conversation's generations are cancelled; runs in other
+    // conversations are left alone (multi-conversation support).
+    for (const [requestId, stream] of Object.entries(streams)) {
+      if (stream.conversationId === currentId) {
+        void invoke("chat_cancel", { requestId }).catch(() => undefined);
+      }
     }
+    const { [currentId ?? ""]: _droppedSnapshot, ...restBackground } = backgroundMessages;
     set({
       messages: [],
-      streams: {},
+      streams: Object.fromEntries(
+        Object.entries(streams).filter(
+          ([, stream]) => stream.conversationId !== currentId,
+        ),
+      ),
+      backgroundMessages: restBackground,
       conversationNonce: conversationNonce + 1,
     });
     useHistoryStore.getState().setActive(null);
   },
 
   loadConversation: async (id) => {
-    const { streams } = get();
-    if (Object.keys(streams).length > 0) return;
+    const currentId = useHistoryStore.getState().activeId;
+    if (currentId === id) return;
+    const { messages, backgroundMessages, unreadDone } = get();
+
+    // Snapshot the conversation being left, so its running generation (if
+    // any) keeps writing into a place the user can return to.  Switching is
+    // always allowed — generations no longer block navigation.
+    const nextBackground = { ...backgroundMessages };
+    if (currentId) {
+      nextBackground[currentId] = messages;
+    }
+    // Opening a conversation clears its "finished" dot.
+    const { [id]: _seenDot, ...nextUnread } = unreadDone;
+
+    const cached = nextBackground[id];
+    if (cached) {
+      useHistoryStore.getState().setActive(id);
+      const conv = useHistoryStore.getState().conversations.find((c) => c.id === id);
+      useAssistantsStore.getState().setActive(conv?.assistantId ?? null);
+      set({ messages: cached, backgroundMessages: nextBackground, unreadDone: nextUnread });
+      return;
+    }
+
     try {
       const detail = await historyApi.getConversation(id);
-      const messages: Message[] = detail.messages.map((m) => ({
+      const loaded: Message[] = detail.messages.map((m) => ({
         id: m.id,
         role: asRole(m.role),
         content: m.content,
@@ -1337,10 +1542,59 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Follow the conversation's assistant so the sidebar reflects what this
       // chat actually uses (P1-7).
       useAssistantsStore.getState().setActive(detail.conversation.assistantId ?? null);
-      set({ messages, streams: {} });
+      // Fresh server state wins over any leftover snapshot.
+      const { [id]: _staleSnapshot, ...restBackground } = nextBackground;
+      set({
+        messages: loaded,
+        backgroundMessages: restBackground,
+        unreadDone: nextUnread,
+      });
     } catch (err) {
       console.error("加载会话失败:", err);
       void useHistoryStore.getState().refreshList();
     }
+  },
+
+  setConversationModel: async (providerId, modelKey) => {
+    const activeId = useHistoryStore.getState().activeId;
+    if (!activeId) {
+      // No conversation yet: remember the choice for the conversation the
+      // next send creates.
+      set({ draftSelection: { providerId, modelKey } });
+      return;
+    }
+    try {
+      await historyApi.setConversationModel(activeId, providerId, modelKey);
+    } catch (err) {
+      console.error("更新会话模型失败:", err);
+    }
+    useHistoryStore.setState((state) => ({
+      conversations: state.conversations.map((c) =>
+        c.id === activeId ? { ...c, providerId, modelKey } : c,
+      ),
+    }));
+  },
+
+  clearUnreadDone: (conversationId) => {
+    const { unreadDone } = get();
+    if (!unreadDone[conversationId]) return;
+    const { [conversationId]: _clearedDot, ...rest } = unreadDone;
+    set({ unreadDone: rest });
+  },
+
+  startNewConversation: () => {
+    const { messages, backgroundMessages, conversationNonce } = get();
+    const currentId = useHistoryStore.getState().activeId;
+    const patch: Partial<ChatState> = {
+      messages: [],
+      conversationNonce: conversationNonce + 1,
+    };
+    // Keep the conversation being left in memory (including anything still
+    // streaming) instead of dropping it.
+    if (currentId) {
+      patch.backgroundMessages = { ...backgroundMessages, [currentId]: messages };
+    }
+    set(patch);
+    useHistoryStore.getState().setActive(null);
   },
 }));

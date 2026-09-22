@@ -3,23 +3,40 @@ import { Check, ChevronDown, Search, Settings2, Star } from "lucide-react";
 import { useProvidersStore } from "../../stores/providers-store";
 import { useWindowStore } from "../../stores/window-store";
 import { useChatStore, type ModelTarget } from "../../stores/chat-store";
+import { useHistoryStore } from "../../services/history-store";
+import { useAssistantsStore } from "../../stores/assistants-store";
 import type { ModelEntry, ProviderView } from "../../types";
 
 /** Maximum models compared in one turn (mirrors the backend cap). */
 const MAX_COMPARE = 4;
 
 /**
- * Title-bar model switcher (plan §3.1 B: 顶部显示当前模型，点击可快速切换).
- * Shows favorites first, then models grouped by provider.
+ * Composer-level model switcher (对话级模型).
+ *
+ * The choice binds to the **displayed conversation**, so every conversation
+ * can run on a different model.  Priority: the conversation's own binding >
+ * the draft pick of a fresh chat > the bound assistant's pinned model > the
+ * global default.  The selector lives in the composer toolbar (it used to sit
+ * in the title bar as a global switch).
  */
 export function ModelPicker() {
   const providers = useProvidersStore((s) => s.providers);
   const defaultProviderId = useProvidersStore((s) => s.defaultProviderId);
   const defaultModelKey = useProvidersStore((s) => s.defaultModelKey);
-  const select = useProvidersStore((s) => s.select);
   const toggleFavorite = useProvidersStore((s) => s.toggleFavorite);
   const openSettings = useWindowStore((s) => s.openSettings);
-  const fullMode = useWindowStore((s) => s.fullMode);
+
+  // 对话级模型：会话自己的绑定优先，其次是新会话的草稿选择。
+  const activeConversationId = useHistoryStore((s) => s.activeId);
+  const conversation = useHistoryStore(
+    (s) => s.conversations.find((c) => c.id === activeConversationId) ?? null,
+  );
+  const draftSelection = useChatStore((s) => s.draftSelection);
+  const setConversationModel = useChatStore((s) => s.setConversationModel);
+  const activeAssistantId = useAssistantsStore((s) => s.activeId);
+  const assistant = useAssistantsStore(
+    (s) => s.assistants.find((a) => a.id === activeAssistantId) ?? null,
+  );
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -49,14 +66,22 @@ export function ModelPicker() {
   const inDraft = (providerId: string, modelKey: string) =>
     draft.some((t) => t.providerId === providerId && t.modelKey === modelKey);
 
-  // Derive the current selection reactively from the subscribed store fields.
-  const defaultProvider = providers.find((p) => p.id === defaultProviderId) ?? providers[0];
-  const selection = defaultProvider
+  /** The model this conversation currently runs on. */
+  const effectiveProviderId =
+    conversation?.providerId ??
+    draftSelection?.providerId ??
+    assistant?.providerId ??
+    defaultProviderId;
+  const effectiveModelKey =
+    conversation?.modelKey ?? draftSelection?.modelKey ?? assistant?.modelKey ?? defaultModelKey;
+  const effectiveProvider =
+    providers.find((p) => p.id === effectiveProviderId) ?? providers[0];
+  const selection = effectiveProvider
     ? {
-        provider: defaultProvider,
+        provider: effectiveProvider,
         model:
-          defaultProvider.models.find((m) => m.modelKey === defaultModelKey) ??
-          defaultProvider.models[0],
+          effectiveProvider.models.find((m) => m.modelKey === effectiveModelKey) ??
+          effectiveProvider.models[0],
       }
     : null;
 
@@ -92,7 +117,8 @@ export function ModelPicker() {
       toggleDraft(p.id, m.modelKey);
       return;
     }
-    await select(p.id, m.modelKey);
+    // 对话级模型：绑定到当前会话；还没有会话时记为草稿，会话创建时应用。
+    await setConversationModel(p.id, m.modelKey);
     setOpen(false);
   };
 
@@ -100,17 +126,23 @@ export function ModelPicker() {
     compareTargets.length >= 2
       ? `对比 ${compareTargets.length} 个模型`
       : selection
-        ? `${selection.provider.name} · ${selection.model.displayName}`
+        ? selection.model.displayName
         : providers.length === 0
           ? "未配置服务商"
           : "未选择模型";
 
   return (
-    <>
+    <div className="relative shrink-0">
       <button
+        type="button"
         onClick={openPicker}
-        className="flex min-w-0 max-w-[min(42vw,320px)] items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
-        title="切换模型"
+        title={`本对话的模型：${label}（切换只影响当前对话）`}
+        aria-expanded={open}
+        className={`flex h-7 max-w-[10rem] items-center gap-1 rounded-full border px-2 text-[11px] transition-colors ${
+          open
+            ? "border-[color-mix(in_srgb,var(--cf-accent)_45%,transparent)] bg-accent/10 text-accent"
+            : "border-line text-ink-2 hover:bg-panel hover:text-ink"
+        }`}
       >
         <span className="truncate">{label}</span>
         <ChevronDown size={12} className="shrink-0" />
@@ -121,11 +153,8 @@ export function ModelPicker() {
           {/* Click-away layer covering the whole window */}
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
 
-          <div
-            className={`fixed top-9 z-40 flex max-h-[min(80vh,32rem)] w-full max-w-[420px] flex-col overflow-hidden rounded-input border border-line bg-panel shadow-lg ${
-              fullMode ? "left-3 right-auto" : "inset-x-2 mx-auto"
-            }`}
-          >
+          {/* Opens upward: the composer sits at the bottom of the window. */}
+          <div className="absolute bottom-8 left-0 z-40 flex max-h-[min(70vh,30rem)] w-[min(88vw,26rem)] flex-col overflow-hidden rounded-input border border-line bg-panel shadow-lg">
             <div className="flex items-center gap-2 border-b border-line px-3 py-2">
               <Search size={13} className="text-ink-2" />
               <input
@@ -172,7 +201,7 @@ export function ModelPicker() {
                       key={`${p.id}/${m.modelKey}`}
                       provider={p}
                       model={m}
-                      selected={p.id === defaultProviderId && m.modelKey === defaultModelKey}
+                      selected={p.id === effectiveProviderId && m.modelKey === effectiveModelKey}
                       selectable={compareMode}
                       checked={inDraft(p.id, m.modelKey)}
                       onPick={() => void pick(p, m)}
@@ -192,7 +221,7 @@ export function ModelPicker() {
                         key={`${p.id}/${m.modelKey}`}
                         provider={p}
                         model={m}
-                        selected={p.id === defaultProviderId && m.modelKey === defaultModelKey}
+                        selected={p.id === effectiveProviderId && m.modelKey === effectiveModelKey}
                         selectable={compareMode}
                         checked={inDraft(p.id, m.modelKey)}
                         onPick={() => void pick(p, m)}
@@ -246,7 +275,7 @@ export function ModelPicker() {
           </div>
         </>
       )}
-    </>
+    </div>
   );
 }
 

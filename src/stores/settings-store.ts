@@ -3,6 +3,7 @@ import { LazyStore } from "@tauri-apps/plugin-store";
 import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ThemeMode } from "../types";
+import { DIAGRAM_STYLES, type DiagramStyle } from "../lib/mermaid-theme";
 
 /**
  * Non-sensitive UI preferences (plan §2.1: ordinary settings in store/JSON).
@@ -25,6 +26,7 @@ const PRESETS_KEY = "promptPresets";
 const ENABLE_TOOLS_KEY = "enableTools";
 const ENABLE_THINKING_KEY = "enableThinking";
 const THINKING_EFFORT_KEY = "thinkingEffort";
+const DIAGRAM_STYLE_KEY = "diagramStyle";
 
 export const THINKING_EFFORTS = ["low", "medium", "high", "max"] as const;
 export type ThinkingEffort = (typeof THINKING_EFFORTS)[number];
@@ -97,6 +99,8 @@ interface SettingsState {
   defaultEnableThinking: boolean;
   /** Default depth for a model's reasoning pass. */
   defaultThinkingEffort: ThinkingEffort;
+  /** Visual style for rendered mermaid diagrams (画图模块). */
+  diagramStyle: DiagramStyle;
   loaded: boolean;
   load: () => Promise<void>;
   setTheme: (theme: ThemeMode) => Promise<void>;
@@ -112,6 +116,7 @@ interface SettingsState {
   setDefaultEnableTools: (value: boolean) => Promise<void>;
   setDefaultEnableThinking: (value: boolean) => Promise<void>;
   setDefaultThinkingEffort: (value: ThinkingEffort) => Promise<void>;
+  setDiagramStyle: (style: DiagramStyle) => Promise<void>;
 }
 
 /** Fetch the avatar file path from Rust and convert to a displayable URL. */
@@ -138,6 +143,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   defaultEnableTools: false,
   defaultEnableThinking: true,
   defaultThinkingEffort: "medium",
+  diagramStyle: "auto",
   loaded: false,
 
   load: async () => {
@@ -151,6 +157,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     let enableTools: boolean | null | undefined = null;
     let enableThinking: boolean | null | undefined = null;
     let thinkingEffort: ThinkingEffort | null | undefined = null;
+    let diagramStyle: string | null | undefined = null;
 
     try {
       [
@@ -164,6 +171,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
         enableTools,
         enableThinking,
         thinkingEffort,
+        diagramStyle,
       ] = await Promise.all([
         uiPrefsStore.get<ThemeMode | null>(THEME_KEY),
         uiPrefsStore.get<boolean | null>(HIDE_ON_BLUR_KEY),
@@ -175,6 +183,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
         uiPrefsStore.get<boolean | null>(ENABLE_TOOLS_KEY),
         uiPrefsStore.get<boolean | null>(ENABLE_THINKING_KEY),
         uiPrefsStore.get<ThinkingEffort | null>(THINKING_EFFORT_KEY),
+        uiPrefsStore.get<string | null>(DIAGRAM_STYLE_KEY),
       ]);
     } catch {
       // Browser-only Vite previews do not expose the Tauri plugin store.
@@ -225,6 +234,10 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       defaultThinkingEffort: THINKING_EFFORTS.includes(thinkingEffort ?? "medium")
         ? thinkingEffort ?? "medium"
         : "medium",
+      diagramStyle:
+        diagramStyle && (DIAGRAM_STYLES as readonly string[]).includes(diagramStyle)
+          ? (diagramStyle as DiagramStyle)
+          : "auto",
       loaded: true,
     });
   },
@@ -330,5 +343,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     await uiPrefsStore.set(THINKING_EFFORT_KEY, value);
     await uiPrefsStore.save();
     set({ defaultThinkingEffort: value });
+  },
+
+  setDiagramStyle: async (style) => {
+    await uiPrefsStore.set(DIAGRAM_STYLE_KEY, style);
+    await uiPrefsStore.save();
+    set({ diagramStyle: style });
   },
 }));

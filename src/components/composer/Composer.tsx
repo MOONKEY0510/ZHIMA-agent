@@ -4,6 +4,7 @@ import {
   ChevronUp,
   Calculator,
   Brain,
+  Check,
   Clipboard,
   ClipboardPaste,
   Clock,
@@ -11,16 +12,19 @@ import {
   FileText,
   FileType,
   Globe,
+  Image as ImageIcon,
   Link as LinkIcon,
   Loader2,
   MonitorUp,
+  Settings as SettingsIcon,
   Square,
   Paperclip,
   Sparkles,
   Wrench,
   X,
 } from "lucide-react";
-import { selectStreaming, useChatStore } from "../../stores/chat-store";
+import { useActiveStreaming, useChatStore } from "../../stores/chat-store";
+import { ModelPicker } from "../model-picker/ModelPicker";
 import { useProvidersStore } from "../../stores/providers-store";
 import { useWindowStore } from "../../stores/window-store";
 import {
@@ -33,7 +37,9 @@ import { buildAttachmentBlocks, formatChars } from "../../lib/attachments";
 import { appendCapture, clampSelection } from "../../lib/selection-capture";
 import { listTools, readClipboardText, type ToolInfo } from "../../services/tools-api";
 import { parseDocumentPreview, pickDocument } from "../../services/document-api";
+import { listSkills, type SkillView } from "../../services/skills-api";
 import { open } from "@tauri-apps/plugin-dialog";
+import { readFile } from "@tauri-apps/plugin-fs";
 
 /** Quick clipboard actions: prepend an instruction, keep the original text. */
 const CLIPBOARD_ACTIONS: { id: string; label: string; instruction: string }[] = [
@@ -125,7 +131,9 @@ export function Composer() {
   }, [defaultThinkingEffort]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const streaming = useChatStore(selectStreaming);
+  // Only the displayed conversation's generations block the composer; other
+  // conversations may keep running in the background (multi-conversation).
+  const streaming = useActiveStreaming();
   const send = useChatStore((s) => s.send);
   const sendMulti = useChatStore((s) => s.sendMulti);
   const compareTargets = useChatStore((s) => s.compareTargets);
@@ -185,6 +193,13 @@ export function Composer() {
   const [docs, setDocs] = useState<{ name: string; chars: number; text: string }[]>([]);
   const [docBusy, setDocBusy] = useState(false);
   const [docNotice, setDocNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  /** Attachment menu: one button exposing 图片 / 文档. */
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  /** Skill picker (自定义技能): enabled skills, search text and the selection. */
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillQuery, setSkillQuery] = useState("");
+  const [availableSkills, setAvailableSkills] = useState<SkillView[]>([]);
+  const [activeSkills, setActiveSkills] = useState<SkillView[]>([]);
 
   const addImages = useCallback((files: FileList | File[]) => {
     const arr = Array.from(files).filter((f) => f.type.startsWith("image/"));
@@ -201,6 +216,15 @@ export function Composer() {
       reader.readAsDataURL(file);
     }
   }, [images.length]);
+
+  /** Stage already-decoded data URLs (used by native drag & drop). */
+  const addImageDataUrls = useCallback((urls: string[]) => {
+    if (urls.length === 0) return;
+    setImages((prev) => {
+      const room = MAX_IMAGES - prev.length;
+      return room > 0 ? [...prev, ...urls.slice(0, room)] : prev;
+    });
+  }, []);
 
   const removeImage = (idx: number) => {
     setImages((prev) => prev.filter((_, i) => i !== idx));
@@ -292,13 +316,12 @@ export function Composer() {
     });
   };
 
-  /** Pick a document, parse it on the Rust side and stage it for sending. */
-  const addDocument = async () => {
+  /** Parse a document path on the Rust side and stage it for sending.
+   *  Shared by the file picker and native drag & drop. */
+  const stageDocument = useCallback(async (path: string) => {
     setDocNotice(null);
+    setDocBusy(true);
     try {
-      const path = await pickDocument();
-      if (!path) return;
-      setDocBusy(true);
       const preview = await parseDocumentPreview(path);
       setDocs((prev) => [
         ...prev.filter((doc) => doc.name !== preview.name),
@@ -317,10 +340,80 @@ export function Composer() {
     } finally {
       setDocBusy(false);
     }
+  }, []);
+
+  /** Pick a document via the native dialog, then stage it. */
+  const addDocument = async () => {
+    const path = await pickDocument();
+    if (!path) return;
+    void stageDocument(path);
   };
 
   const removeDocument = (idx: number) => {
     setDocs((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  /** Stage files dropped onto the window: images become attachments, documents
+   *  are parsed.  Uses Tauri's native drag-drop because the webview never
+   *  delivers dropped files through HTML5 events. */
+  const handleDroppedPaths = useCallback(
+    async (paths: string[]) => {
+      const imageExts = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
+      const docExts = ["docx", "xlsx", "xlsm", "pptx", "pdf", "txt", "md", "csv", "json", "log"];
+      const droppedImages: string[] = [];
+      for (const path of paths) {
+        const ext = path.split(".").pop()?.toLowerCase() ?? "";
+        if (imageExts.includes(ext)) {
+          const dataUrl = await readImageAsDataUrl(path);
+          if (dataUrl) droppedImages.push(dataUrl);
+        } else if (docExts.includes(ext)) {
+          await stageDocument(path);
+        }
+      }
+      addImageDataUrls(droppedImages);
+    },
+    [stageDocument, addImageDataUrls],
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        const off = await getCurrentWebview().onDragDropEvent((event) => {
+          if (event.payload.type === "drop") {
+            void handleDroppedPaths(event.payload.paths);
+          }
+        });
+        if (disposed) off();
+        else unlisten = off;
+      } catch (error) {
+        console.warn("拖拽文件监听初始化失败:", error);
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [handleDroppedPaths]);
+
+  /** Load the enabled skills for the composer picker (自定义技能). */
+  const refreshSkills = async () => {
+    try {
+      const all = await listSkills();
+      setAvailableSkills(all.filter((skill) => skill.enabled));
+    } catch (error) {
+      console.warn("加载技能列表失败:", error);
+    }
+  };
+
+  const toggleSkill = (skill: SkillView) => {
+    setActiveSkills((prev) =>
+      prev.some((s) => s.id === skill.id)
+        ? prev.filter((s) => s.id !== skill.id)
+        : [...prev, skill],
+    );
   };
 
   // Paste image support.
@@ -365,6 +458,7 @@ export function Composer() {
         webSearch,
         enableThinkingRef.current,
         thinkingEffortRef.current,
+        activeSkills.map((skill) => skill.id),
       );
       return;
     }
@@ -376,6 +470,7 @@ export function Composer() {
       enableThinkingRef.current,
       thinkingEffortRef.current,
       attachmentMeta.length > 0 ? attachmentMeta : undefined,
+      activeSkills.map((skill) => skill.id),
     );
   }, [
     text,
@@ -388,6 +483,7 @@ export function Composer() {
     compareTargets,
     webSearch,
     defaultEnableTools,
+    activeSkills,
   ]);
 
   const applyPreset = useCallback((preset: PromptPreset) => {
@@ -587,6 +683,31 @@ export function Composer() {
         </div>
       )}
 
+      {/* Manually activated skills: stay active for this conversation until
+          removed (自定义技能). */}
+      {activeSkills.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {activeSkills.map((skill) => (
+            <span
+              key={skill.id}
+              className="flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1 text-[11px] text-ink"
+              title={skill.description || skill.name}
+            >
+              <SkillAvatar name={skill.name} size={14} />
+              <span className="max-w-[10rem] truncate">{skill.name}</span>
+              <button
+                type="button"
+                onClick={() => toggleSkill(skill)}
+                title="取消激活"
+                className="grid h-3.5 w-3.5 shrink-0 place-items-center rounded text-ink-2 transition-colors hover:text-danger"
+              >
+                <X size={10} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* Document attachments (P1-8) */}
       {docs.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
@@ -666,6 +787,8 @@ export function Composer() {
         />
         <div className="mt-1.5 flex items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-center gap-1">
+            {/* Model selector (对话级模型): binds to the current conversation */}
+            <ModelPicker />
             {/* Thinking toggle and effort picker */}
             <div className="relative flex shrink-0 items-center">
           <div
@@ -746,28 +869,156 @@ export function Composer() {
           <Globe size={13} />
           联网搜索
         </button>
-        <button
-          onClick={() => fileRef.current?.click()}
-          title={comparing ? "对比模式下不支持图片（请先退出对比）" : "添加图片"}
-          disabled={images.length >= MAX_IMAGES || comparing}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel hover:text-ink disabled:opacity-30"
-        >
-          <Paperclip size={15} />
-        </button>
-        {/* Document attachment (P1-8): Word / Excel / PPT / PDF / text */}
-        <button
-          type="button"
-          onClick={() => void addDocument()}
-          title={
-            comparing
-              ? "对比模式下不支持文档附件（请先退出对比）"
-              : "添加文档（Word / Excel / PPT / PDF / 文本），内容会并入本次提问"
-          }
-          disabled={streaming || comparing || docBusy}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel hover:text-ink disabled:opacity-30"
-        >
-          {docBusy ? <Loader2 size={15} className="animate-spin" /> : <FileText size={15} />}
-        </button>
+        {/* Attachments: one button opening a small menu (图片 / 文档). */}
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() => setAttachMenuOpen((open) => !open)}
+            title="添加附件：图片或文档（也可以直接把文件拖进窗口）"
+            aria-expanded={attachMenuOpen}
+            disabled={comparing}
+            className={`grid h-7 w-7 place-items-center rounded-md transition-colors disabled:opacity-30 ${
+              attachMenuOpen ? "bg-panel text-ink" : "text-ink-2 hover:bg-panel hover:text-ink"
+            }`}
+          >
+            {docBusy ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
+          </button>
+          {attachMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setAttachMenuOpen(false)} />
+              <div className="absolute bottom-8 left-0 z-40 w-36 overflow-hidden rounded-btn border border-line bg-panel p-1 shadow-lg">
+                <button
+                  type="button"
+                  disabled={images.length >= MAX_IMAGES}
+                  onClick={() => {
+                    setAttachMenuOpen(false);
+                    fileRef.current?.click();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+                >
+                  <ImageIcon size={13} className="shrink-0 text-ink-2" />
+                  添加图片
+                  {images.length > 0 && (
+                    <span className="ml-auto text-[10px] text-ink-2">
+                      {images.length}/{MAX_IMAGES}
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  disabled={streaming || docBusy}
+                  onClick={() => {
+                    setAttachMenuOpen(false);
+                    void addDocument();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+                >
+                  <FileText size={13} className="shrink-0 text-ink-2" />
+                  添加文档
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Skill picker (自定义技能): selected skills stay active for this
+            conversation until removed. */}
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              const next = !skillsOpen;
+              setSkillsOpen(next);
+              if (next) void refreshSkills();
+            }}
+            title="选择技能：选中的技能对当前对话持续生效"
+            aria-expanded={skillsOpen}
+            className={`flex h-7 shrink-0 items-center gap-1 rounded-full border px-2.5 text-[11px] transition-colors ${
+              activeSkills.length > 0
+                ? "border-[color-mix(in_srgb,var(--cf-accent)_45%,transparent)] bg-accent/10 text-accent"
+                : "border-line text-ink-2 hover:bg-panel hover:text-ink"
+            }`}
+          >
+            <Wrench size={12} />
+            技能{activeSkills.length > 0 ? ` ${activeSkills.length}` : ""}
+          </button>
+          {skillsOpen && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setSkillsOpen(false)} />
+              <div className="absolute bottom-8 left-0 z-40 w-72 overflow-hidden rounded-btn border border-line bg-panel shadow-lg">
+                <div className="border-b border-line p-1.5">
+                  <input
+                    autoFocus
+                    value={skillQuery}
+                    onChange={(e) => setSkillQuery(e.target.value)}
+                    placeholder="搜索技能"
+                    spellCheck={false}
+                    className="w-full rounded-md border border-line bg-panel-2 px-2 py-1 text-[11px] text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]"
+                  />
+                </div>
+                <div className="max-h-60 overflow-y-auto p-1">
+                  {availableSkills
+                    .filter((skill) => {
+                      const query = skillQuery.trim().toLowerCase();
+                      if (!query) return true;
+                      return (
+                        skill.name.toLowerCase().includes(query) ||
+                        skill.description.toLowerCase().includes(query)
+                      );
+                    })
+                    .map((skill) => {
+                      const active = activeSkills.some((s) => s.id === skill.id);
+                      return (
+                        <button
+                          key={skill.id}
+                          type="button"
+                          onClick={() => toggleSkill(skill)}
+                          className={`flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
+                            active ? "bg-accent/10" : "hover:bg-panel-2"
+                          }`}
+                        >
+                          <SkillAvatar name={skill.name} />
+                          <span className="min-w-0 flex-1">
+                            <span
+                              className={`block truncate text-xs ${active ? "font-medium text-accent" : "text-ink"}`}
+                            >
+                              {skill.name}
+                            </span>
+                            {skill.description && (
+                              <span className="mt-0.5 line-clamp-2 block text-[10px] leading-4 text-ink-2">
+                                {skill.description}
+                              </span>
+                            )}
+                          </span>
+                          {active && (
+                            <Check size={12} className="mt-0.5 shrink-0 text-accent" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  {availableSkills.length === 0 && (
+                    <p className="px-2 py-3 text-center text-[11px] text-ink-2">
+                      还没有技能，先导入或创建一个
+                    </p>
+                  )}
+                </div>
+                <div className="border-t border-line">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSkillsOpen(false);
+                      useWindowStore.getState().openSettings("skills");
+                    }}
+                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+                  >
+                    <SettingsIcon size={12} />
+                    管理技能（导入 / 新建）
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
         {/* Clipboard quick actions */}
         <div className="relative shrink-0">
           <button
@@ -1030,4 +1281,64 @@ export function ToolsPanel({
       )}
     </div>
   );
+}
+
+/** Avatar colors for the skill picker (hash-assigned, first letter shown). */
+const SKILL_AVATAR_COLORS = [
+  "#f97316",
+  "#8b5cf6",
+  "#ec4899",
+  "#6366f1",
+  "#10b981",
+  "#0ea5e9",
+  "#f59e0b",
+  "#ef4444",
+];
+
+/** First-letter avatar for a skill (skills carry no icon field). */
+function SkillAvatar({ name, size = 20 }: { name: string; size?: number }) {
+  const letter = name.trim().charAt(0).toUpperCase() || "技";
+  let hash = 0;
+  for (const ch of name) hash = (hash + ch.charCodeAt(0)) % 997;
+  const color = SKILL_AVATAR_COLORS[hash % SKILL_AVATAR_COLORS.length];
+  return (
+    <span
+      className="grid shrink-0 place-items-center rounded-full font-semibold text-white"
+      style={{
+        width: size,
+        height: size,
+        background: color,
+        fontSize: Math.round(size * 0.55),
+      }}
+    >
+      {letter}
+    </span>
+  );
+}
+
+/** Read a local image into a data URL (used by native drag & drop). */
+async function readImageAsDataUrl(path: string): Promise<string | null> {
+  try {
+    const bytes = await readFile(path);
+    const ext = path.split(".").pop()?.toLowerCase() ?? "png";
+    const mime =
+      ext === "jpg" || ext === "jpeg"
+        ? "image/jpeg"
+        : ext === "webp"
+          ? "image/webp"
+          : ext === "gif"
+            ? "image/gif"
+            : ext === "bmp"
+              ? "image/bmp"
+              : "image/png";
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return `data:${mime};base64,${btoa(binary)}`;
+  } catch (error) {
+    console.error("读取拖入的图片失败:", path, error);
+    return null;
+  }
 }

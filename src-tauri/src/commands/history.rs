@@ -141,6 +141,18 @@ pub fn set_conversation_system_prompt(
     db.set_conversation_system_prompt(&id, prompt.as_deref())
 }
 
+/// Bind a conversation to a provider/model chosen in the composer.  The
+/// binding applies to every future turn of that conversation only.
+#[tauri::command]
+pub fn set_conversation_model(
+    db: State<'_, Database>,
+    id: String,
+    provider_id: Option<String>,
+    model_key: Option<String>,
+) -> Result<(), String> {
+    db.set_conversation_model(&id, provider_id.as_deref(), model_key.as_deref())
+}
+
 #[tauri::command]
 pub fn clear_all_history(db: State<'_, Database>) -> Result<(), String> {
     db.clear_all()

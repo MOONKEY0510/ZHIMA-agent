@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod memory;
 pub mod providers;
 pub mod settings;
+pub mod skills;
 pub mod tools;
 pub mod usage;
 pub mod web_search;

@@ -1,12 +1,12 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { Check, CheckSquare, FileText, MessageSquare, Pencil, Pin, PinOff, Plus, Search, Square, Trash2, X, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Check, CheckSquare, ChevronDown, FileText, Loader2, MessageSquare, Pencil, Pin, PinOff, Plus, Search, Square, Trash2, X, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useHistoryStore } from "../../services/history-store";
 import {
   searchMessages,
   setConversationSystemPrompt,
   type MessageHit,
 } from "../../services/history-api";
-import { selectStreaming, useChatStore } from "../../stores/chat-store";
+import { useChatStore } from "../../stores/chat-store";
 import { sortedAssistants, useAssistantsStore } from "../../stores/assistants-store";
 import { relativeTime } from "../../lib/time";
 import { AssistantIcon } from "../assistant/AssistantIcon";
@@ -17,7 +17,11 @@ const MIN_SEARCH_CHARS = 2;
 /**
  * Conversation history sidebar for the full conversation mode (plan §3.2):
  * full-text message search, title filter, switch, rename, delete, batch
- * select & batch delete. Switching is blocked while generating.
+ * select & batch delete.
+ *
+ * Multi-conversation: switching is never blocked by running generations.  A
+ * row shows a spinner while its conversation generates, and a dot once it
+ * finished in the background (the dot clears when the row is opened).
  */
 export function HistorySidebar() {
   const conversations = useHistoryStore((s) => s.conversations);
@@ -26,7 +30,9 @@ export function HistorySidebar() {
   const rename = useHistoryStore((s) => s.rename);
   const setPinned = useHistoryStore((s) => s.setPinned);
   const loadConversation = useChatStore((s) => s.loadConversation);
-  const clearConversation = useChatStore((s) => s.clearConversation);
+  const startNewConversation = useChatStore((s) => s.startNewConversation);
+  const streams = useChatStore((s) => s.streams);
+  const unreadDone = useChatStore((s) => s.unreadDone);
   const assistants = useAssistantsStore((s) => s.assistants);
   const assistantId = useAssistantsStore((s) => s.activeId);
   const setAssistant = useAssistantsStore((s) => s.setActive);
@@ -38,6 +44,19 @@ export function HistorySidebar() {
   const [promptId, setPromptId] = useState<string | null>(null);
   const [promptValue, setPromptValue] = useState("");
   const [promptSaved, setPromptSaved] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const activeAssistant = assistants.find((a) => a.id === assistantId) ?? null;
+
+  // Esc closes the assistant picker like any other transient popover.
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPickerOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pickerOpen]);
 
   const openPromptEditor = (id: string, current: string | null) => {
     setPromptId(id);
@@ -65,8 +84,6 @@ export function HistorySidebar() {
   const [batchConfirming, setBatchConfirming] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
-
-  const streaming = useChatStore(selectStreaming);
 
   // Full-text search over message content (debounced).
   const [hits, setHits] = useState<MessageHit[]>([]);
@@ -109,7 +126,6 @@ export function HistorySidebar() {
 
   /** Open a hit: load its conversation (if needed) and reveal the message. */
   const openHit = async (hit: MessageHit) => {
-    if (streaming) return;
     if (hit.conversationId !== activeId) {
       await loadConversation(hit.conversationId);
     }
@@ -165,9 +181,9 @@ export function HistorySidebar() {
     exitBatch();
   };
 
+  /** New chat.  Generations in other conversations keep running. */
   const newConversation = () => {
-    if (streaming) return;
-    clearConversation();
+    startNewConversation();
   };
 
   return (
@@ -198,35 +214,74 @@ export function HistorySidebar() {
           {/* Assistant picker (P1-7): binds the next new conversation. Hidden
               while batch-selecting to keep the list uncluttered. */}
           {!batchMode && assistants.length > 0 && (
-            <div className="flex items-center gap-1 overflow-x-auto px-3 pb-1.5 pt-3">
+            <div className="relative px-3 pb-1.5 pt-3">
               <button
                 type="button"
-                onClick={() => setAssistant(null)}
-                title="不使用助手：跟随全局默认提示词与模型"
-                className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
-                  assistantId === null
-                    ? "border-transparent bg-accent font-medium text-accent-fg"
-                    : "border-line text-ink-2 hover:bg-panel hover:text-ink"
-                }`}
+                onClick={() => setPickerOpen((open) => !open)}
+                aria-haspopup="listbox"
+                aria-expanded={pickerOpen}
+                title={activeAssistant?.description ?? "选择助手"}
+                className="flex w-full items-center gap-1.5 rounded-btn border border-line bg-panel px-2 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
               >
-                默认
+                {activeAssistant ? (
+                  <AssistantIcon
+                    icon={activeAssistant.icon}
+                    size={13}
+                    className="shrink-0"
+                  />
+                ) : (
+                  <MessageSquare size={13} className="shrink-0 text-ink-2" />
+                )}
+                <span className="min-w-0 flex-1 truncate text-left">
+                  {activeAssistant?.name ?? "默认助手"}
+                </span>
+                <ChevronDown
+                  size={13}
+                  className={`shrink-0 text-ink-2 transition-transform ${pickerOpen ? "rotate-180" : ""}`}
+                />
               </button>
-              {sortedAssistants(assistants).map((a) => (
-                <button
-                  key={a.id}
-                  type="button"
-                  onClick={() => setAssistant(a.id)}
-                  title={a.description ?? a.name}
-                  className={`flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
-                    assistantId === a.id
-                      ? "border-transparent bg-accent font-medium text-accent-fg"
-                      : "border-line text-ink-2 hover:bg-panel hover:text-ink"
-                  }`}
-                >
-                  <AssistantIcon icon={a.icon} size={12} className="shrink-0" />
-                  <span className="max-w-[5.5rem] truncate">{a.name}</span>
-                </button>
-              ))}
+
+              {pickerOpen && (
+                <>
+                  {/* Click-away layer so any outside click closes the list. */}
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setPickerOpen(false)}
+                  />
+                  <div
+                    role="listbox"
+                    aria-label="选择助手"
+                    className="absolute left-3 right-3 z-50 mt-1 max-h-72 overflow-y-auto rounded-btn border border-line bg-panel py-1 shadow-lg"
+                  >
+                    <AssistantOption
+                      selected={assistantId === null}
+                      icon={<MessageSquare size={13} className="shrink-0 text-ink-2" />}
+                      name="默认助手"
+                      description="不使用助手：跟随全局默认提示词与模型"
+                      onSelect={() => {
+                        setAssistant(null);
+                        setPickerOpen(false);
+                      }}
+                    />
+                    <div className="my-1 border-t border-line" />
+                    {sortedAssistants(assistants).map((a) => (
+                      <AssistantOption
+                        key={a.id}
+                        selected={assistantId === a.id}
+                        icon={
+                          <AssistantIcon icon={a.icon} size={13} className="shrink-0" />
+                        }
+                        name={a.name}
+                        description={a.description ?? ""}
+                        onSelect={() => {
+                          setAssistant(a.id);
+                          setPickerOpen(false);
+                        }}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -329,7 +384,6 @@ export function HistorySidebar() {
                 key={hit.messageId}
                 type="button"
                 onClick={() => void openHit(hit)}
-                disabled={streaming}
                 title={hit.conversationTitle}
                 className="mb-0.5 block w-full rounded-btn px-2 py-1.5 text-left transition-colors hover:bg-panel disabled:opacity-50"
               >
@@ -364,6 +418,12 @@ export function HistorySidebar() {
           const active = c.id === activeId;
           const renaming = renamingId === c.id;
           const isSelected = selected.has(c.id);
+          // Multi-conversation state: is this row's conversation generating,
+          // and did it finish while the user was elsewhere?
+          const isGenerating = Object.values(streams).some(
+            (stream) => stream.conversationId === c.id,
+          );
+          const hasUnread = Boolean(unreadDone[c.id]);
           // Pinned conversations come first; a thin rule separates the two
           // groups once the list leaves them behind (P1-11.1).
           const startsUnpinned = !c.pinned && index > 0 && filtered[index - 1].pinned;
@@ -378,7 +438,8 @@ export function HistorySidebar() {
                   toggleSelect(c.id);
                   return;
                 }
-                if (streaming || renaming || c.id === activeId) return;
+                // Switching is never blocked by running generations.
+                if (renaming || c.id === activeId) return;
                 void loadConversation(c.id);
               }}
               className={`group mb-0.5 flex items-center gap-1.5 rounded-btn px-2 py-1.5 transition-colors ${
@@ -441,6 +502,21 @@ export function HistorySidebar() {
                     >
                       {c.title || "新会话"}
                     </p>
+                    {/* 生成中：转圈；后台完成：圆点（打开后消失） */}
+                    {!batchMode && isGenerating && (
+                      <Loader2
+                        size={11}
+                        className="shrink-0 animate-spin text-accent"
+                        aria-label="正在生成"
+                      />
+                    )}
+                    {!batchMode && !isGenerating && hasUnread && (
+                      <span
+                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                        title="对话已完成，点击查看"
+                        aria-label="对话已完成"
+                      />
+                    )}
                     {c.pinned && !batchMode && (
                       <Pin
                         size={10}
@@ -564,5 +640,49 @@ export function HistorySidebar() {
     </>
   )}
 </aside>
+  );
+}
+
+/** One row inside the assistant picker list (select shows a check mark). */
+function AssistantOption({
+  selected,
+  icon,
+  name,
+  description,
+  onSelect,
+}: {
+  selected: boolean;
+  icon: ReactNode;
+  name: string;
+  description: string;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={selected}
+      onClick={onSelect}
+      className={`flex w-full items-start gap-2 px-2.5 py-1.5 text-left transition-colors ${
+        selected ? "bg-accent/15" : "hover:bg-panel-2"
+      }`}
+    >
+      <span className="mt-0.5">{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span
+          className={`block truncate text-xs ${
+            selected ? "font-medium text-accent" : "text-ink"
+          }`}
+        >
+          {name}
+        </span>
+        {description && (
+          <span className="mt-0.5 line-clamp-2 block text-[10px] leading-4 text-ink-2">
+            {description}
+          </span>
+        )}
+      </span>
+      {selected && <Check size={12} className="mt-0.5 shrink-0 text-accent" />}
+    </button>
   );
 }

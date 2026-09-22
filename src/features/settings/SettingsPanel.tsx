@@ -23,6 +23,7 @@ import {
   MonitorUp,
   Pencil,
   Plus,
+  Puzzle,
   RefreshCw,
   Settings as SettingsIcon,
   SlidersHorizontal,
@@ -54,10 +55,22 @@ import {
   type ToolPolicy,
 } from "../../services/tools-api";
 import { PROVIDER_PRESETS, type ProviderPreset } from "./provider-presets";
+import { DIAGRAM_STYLE_OPTIONS } from "../../lib/mermaid-theme";
+import { useWindowStore } from "../../stores/window-store";
 import {
   isBuiltinAssistant,
   type AssistantView,
 } from "../../services/assistants-api";
+import {
+  deleteSkill,
+  formatTriggers,
+  importSkillFiles,
+  listSkills,
+  newSkill,
+  parseTriggers,
+  upsertSkill,
+  type SkillView,
+} from "../../services/skills-api";
 import { sortedAssistants, useAssistantsStore } from "../../stores/assistants-store";
 import {
   getWebSearchConfig,
@@ -112,6 +125,7 @@ type SettingsTab =
   | "models"
   | "appearance"
   | "tools"
+  | "skills"
   | "usage"
   | "diagnostics"
   | "general"
@@ -194,13 +208,20 @@ const TABS: { id: SettingsTab; label: string; icon: typeof SettingsIcon }[] = [
   { id: "appearance", label: "外观行为", icon: Palette },
   { id: "persona", label: "角色与提示词", icon: UserCircle },
   { id: "tools", label: "Agent 工具", icon: Bot },
+  { id: "skills", label: "技能", icon: Puzzle },
   { id: "usage", label: "用量统计", icon: BarChart3 },
   { id: "diagnostics", label: "诊断信息", icon: Activity },
   { id: "general", label: "通用", icon: Wrench },
 ];
 
 export function SettingsPanel() {
-  const [tab, setTab] = useState<SettingsTab>("models");
+  // The composer can request a specific section (e.g. "skills") when opening.
+  const [tab, setTab] = useState<SettingsTab>(() => {
+    const requested = useWindowStore.getState().settingsTab;
+    return requested && TABS.some((t) => t.id === requested)
+      ? (requested as SettingsTab)
+      : "models";
+  });
   // Travel direction, so the incoming page drifts in from the side you
   // moved towards rather than always from the same place.
   const [direction, setDirection] = useState<1 | -1>(1);
@@ -266,6 +287,7 @@ export function SettingsPanel() {
           {tab === "appearance" && <AppearanceTab />}
           {tab === "persona" && <PersonaTab />}
           {tab === "tools" && <AgentToolsTab />}
+          {tab === "skills" && <SkillsTab />}
           {tab === "usage" && <UsageTab />}
           {tab === "diagnostics" && <DiagnosticsTab />}
           {tab === "general" && <GeneralTab />}
@@ -1558,6 +1580,251 @@ function PersonaTab() {
 }
 
 /* ------------------------------------------------------------------------ */
+/* Skills tab — user-authored instruction packages (v19, 自定义技能)          */
+/* ------------------------------------------------------------------------ */
+
+function SkillsTab() {
+  const [skills, setSkills] = useState<SkillView[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [editing, setEditing] = useState<SkillView | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    try {
+      setSkills(await listSkills());
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const run = async (label: string, fn: () => Promise<void>) => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      await fn();
+      setNotice({ ok: true, text: `${label}完成` });
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const inputCls =
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+
+  const doImport = async () => {
+    setNotice(null);
+    let picked: string | string[] | null = null;
+    try {
+      picked = await openDialog({
+        title: "导入技能",
+        multiple: true,
+        filters: [
+          {
+            name: "技能文件（SKILL.md / JSON / ZIP）",
+            extensions: ["md", "markdown", "txt", "json", "zip"],
+          },
+        ],
+      });
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    if (!picked) return;
+    const paths = Array.isArray(picked) ? picked : [picked];
+    if (paths.length === 0) return;
+
+    setBusy(true);
+    try {
+      const report = await importSkillFiles(paths);
+      await refresh();
+      const parts: string[] = [];
+      if (report.created > 0) parts.push(`新增 ${report.created} 个`);
+      if (report.updated > 0) parts.push(`更新 ${report.updated} 个`);
+      if (report.failed.length > 0) parts.push(`失败 ${report.failed.length} 个`);
+      setNotice({
+        ok: report.failed.length === 0,
+        text: `导入完成：${parts.join(" · ") || "没有变化"}${
+          report.failed.length > 0 ? `\n${report.failed.join("\n")}` : ""
+        }`,
+      });
+    } catch (err) {
+      setNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SettingsSection
+      title="技能"
+      description="导入或编写技能（支持 Claude Skills 的 SKILL.md 格式）：对话命中触发词时，AI 会按技能说明执行。技能的名称与描述随每次对话发送；完整说明仅在触发时注入，以节省上下文。"
+      action={
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void doImport()}
+            className="rounded-btn border border-line px-2.5 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+          >
+            导入技能
+          </button>
+          <button
+            type="button"
+            disabled={editing !== null}
+            onClick={() => setEditing(newSkill())}
+            className="rounded-btn bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+          >
+            新建
+          </button>
+        </div>
+      }
+    >
+      {notice && (
+        <div
+          className={`mx-3 mb-2 whitespace-pre-line rounded-btn border px-2.5 py-1.5 text-[11px] leading-5 ${
+            notice.ok
+              ? "border-line text-ink-2"
+              : "border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--cf-danger)_8%,transparent)] text-danger"
+          }`}
+        >
+          {notice.text}
+        </div>
+      )}
+
+      {loading && (
+        <div className="px-4 py-6 text-center text-xs text-ink-2">正在加载技能…</div>
+      )}
+
+      {!loading && skills.length === 0 && editing === null && (
+        <div className="px-4 py-6 text-center text-xs leading-6 text-ink-2">
+          还没有技能。点击「导入技能」导入 SKILL.md / JSON / ZIP 文件，
+          <br />
+          或点击「新建」从头编写一个，例如「周报助手」。
+        </div>
+      )}
+
+      {skills.map((skill) => (
+        <div key={skill.id} className="mx-3 mb-2 rounded-btn border border-line bg-panel p-2.5">
+          <div className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-xs text-ink">{skill.name}</span>
+            <Dropdown
+              value={skill.enabled ? "on" : "off"}
+              onChange={(value) =>
+                void run("切换启用状态", async () => {
+                  await upsertSkill({ ...skill, enabled: value === "on" });
+                  await refresh();
+                })
+              }
+              options={[
+                { value: "on", label: "启用" },
+                { value: "off", label: "禁用" },
+              ]}
+              className="w-20 shrink-0"
+            />
+          </div>
+          {skill.description && (
+            <p className="mt-1 text-[11px] text-ink-2">{skill.description}</p>
+          )}
+          <p className="mt-1 text-[10px] text-ink-2">
+            {skill.triggers.length > 0
+              ? `触发词：${skill.triggers.join("、")}`
+              : "常驻技能：每次对话都会注入完整说明"}
+          </p>
+          <div className="mt-1.5 flex items-center gap-1.5">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setEditing({ ...skill })}
+              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 disabled:opacity-40"
+            >
+              编辑
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                void run("删除技能", async () => {
+                  await deleteSkill(skill.id);
+                  if (editing?.id === skill.id) setEditing(null);
+                  await refresh();
+                })
+              }
+              className="rounded-btn border border-line px-2 py-1 text-[11px] text-danger transition-colors hover:bg-panel-2 disabled:opacity-40"
+            >
+              删除
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {editing && (
+        <div className="mx-3 mb-2 space-y-2 rounded-btn border border-line bg-panel-2 p-2.5">
+          <input
+            value={editing.name}
+            onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+            placeholder="名称，例如：周报助手"
+            className={inputCls}
+          />
+          <input
+            value={editing.description}
+            onChange={(e) => setEditing({ ...editing, description: e.target.value })}
+            placeholder="一句话说明用途（常驻注入，保持简短）"
+            className={inputCls}
+          />
+          <input
+            value={formatTriggers(editing.triggers)}
+            onChange={(e) =>
+              setEditing({ ...editing, triggers: parseTriggers(e.target.value) })
+            }
+            placeholder="触发词，逗号分隔，例如：周报，weekly；留空 = 每次对话都生效"
+            className={inputCls}
+          />
+          <textarea
+            value={editing.content}
+            onChange={(e) => setEditing({ ...editing, content: e.target.value })}
+            rows={7}
+            placeholder={"技能说明（触发后注入给 AI 的指令），例如：\n把零散记录整理为周报，按「本周完成 / 进行中 / 下周计划」组织，语言简洁。"}
+            className={`${inputCls} resize-y leading-5`}
+          />
+          <div className="flex items-center justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={() => setEditing(null)}
+              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              disabled={busy || !editing.name.trim() || !editing.content.trim()}
+              onClick={() =>
+                void run("保存技能", async () => {
+                  await upsertSkill(editing);
+                  setEditing(null);
+                  await refresh();
+                })
+              }
+              className="rounded-btn bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              保存
+            </button>
+          </div>
+        </div>
+      )}
+    </SettingsSection>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
 /* Appearance tab — theme + avatar + hide-on-blur                            */
 /* ------------------------------------------------------------------------ */
 
@@ -1566,6 +1833,8 @@ function AppearanceTab() {
   const setTheme = useSettingsStore((s) => s.setTheme);
   const backgroundImage = useSettingsStore((s) => s.backgroundImage);
   const setBackgroundImage = useSettingsStore((s) => s.setBackgroundImage);
+  const diagramStyle = useSettingsStore((s) => s.diagramStyle);
+  const setDiagramStyle = useSettingsStore((s) => s.setDiagramStyle);
 
   const themeOptions = [
     { value: "system" as ThemeMode, label: "跟随系统" },
@@ -1581,6 +1850,19 @@ function AppearanceTab() {
       <SettingsSection title="主题" description="选择整个应用的配色风格">
         <div className="px-4 py-3">
           <VisualPills options={themeOptions} value={theme} onChange={(v) => void setTheme(v)} />
+        </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title="图表风格"
+        description="AI 绘制的流程图、时序图等图表的配色风格，支持全屏查看与 SVG / PNG 导出"
+      >
+        <div className="px-4 py-3">
+          <VisualPills
+            options={DIAGRAM_STYLE_OPTIONS}
+            value={diagramStyle}
+            onChange={(v) => void setDiagramStyle(v)}
+          />
         </div>
       </SettingsSection>
 
@@ -1700,6 +1982,33 @@ const SEARCH_ENGINE_OPTIONS = [
   { value: "searxng", label: "SearXNG（自建实例）" },
 ];
 
+/** Per-engine guidance shown in the settings panel (free tier + signup). */
+const ENGINE_HINTS: Record<
+  string,
+  { summary: string; url?: string; linkLabel?: string }
+> = {
+  duckduckgo: {
+    summary:
+      "免费无需配置，但自动化请求容易被反爬验证拦截；若测试经常失败，建议切换到下方任一注册制引擎（均有免费额度）。",
+  },
+  tavily: {
+    summary: "国际主流 AI 搜索 API：每月 1000 次免费额度，注册无需信用卡。",
+    url: "https://app.tavily.com/home",
+    linkLabel: "前往 tavily.com 注册获取 Key",
+  },
+  bocha: {
+    summary: "国内服务：直连速度快、中文搜索质量好，注册即赠免费调用额度。",
+    url: "https://open.bochaai.com/",
+    linkLabel: "前往 open.bochaai.com 注册获取 Key",
+  },
+  searxng: {
+    summary:
+      "自建实例免费不限量；公共实例普遍限流或已关闭 JSON 输出，建议自行搭建。",
+    url: "https://docs.searxng.org/",
+    linkLabel: "查看自建部署文档",
+  },
+};
+
 /* ------------------------------------------------------------------------ */
 /* Data backup: export / import (P0-4)                                       */
 /* ------------------------------------------------------------------------ */
@@ -1738,7 +2047,9 @@ function BackupSection() {
         ok: true,
         text: `已导出 ${report.conversations} 个会话 · ${report.messages} 条消息${
           report.memories ? ` · ${report.memories} 条记忆` : ""
-        }${report.images ? ` · ${report.images} 张图片` : ""}（${(report.bytes / 1024).toFixed(1)} KB）`,
+        }${report.skills ? ` · ${report.skills} 个技能` : ""}${
+          report.images ? ` · ${report.images} 张图片` : ""
+        }（${(report.bytes / 1024).toFixed(1)} KB）`,
       });
     } catch (err) {
       setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
@@ -1786,8 +2097,8 @@ function BackupSection() {
       setMessage({
         ok: true,
         text: `导入完成：新增 ${report.conversations} 个会话 · ${report.messages} 条消息 · ${report.memories} 条记忆${
-          report.skipped > 0 ? `，跳过 ${report.skipped} 条已存在内容` : ""
-        }`,
+          report.skills ? ` · ${report.skills} 个技能` : ""
+        }${report.skipped > 0 ? `，跳过 ${report.skipped} 条已存在内容` : ""}`,
       });
       setPendingPath(null);
       setPreview(null);
@@ -1810,7 +2121,7 @@ function BackupSection() {
   return (
     <SettingsSection
       title="数据备份"
-      description="导出/导入会话、记忆与生成图片。备份中不包含 API Key，换机器后需要重新填写。"
+      description="导出/导入会话、记忆、技能与生成图片。备份中不包含 API Key，换机器后需要重新填写。"
     >
       <div className="space-y-2 px-3 pb-2 pt-1">
         <label className="flex items-center gap-2 text-xs text-ink">
@@ -1859,6 +2170,7 @@ function BackupSection() {
           <p className="text-xs text-ink">
             该备份包含 {preview.conversations} 个会话 · {preview.messages} 条消息 ·{" "}
             {preview.memories} 条记忆
+            {preview.skills > 0 ? ` · ${preview.skills} 个技能` : ""}
             {preview.images > 0 ? ` · ${preview.images} 张图片` : ""}
           </p>
           <p className="mt-0.5 text-[11px] text-ink-2">
@@ -2585,12 +2897,14 @@ function WebSearchSection() {
   const inputCls =
     "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
 
+  const hint = ENGINE_HINTS[engine] ?? ENGINE_HINTS.duckduckgo;
+
   return (
     <SettingsSection
       title="联网搜索"
       description="Agent 的 web_search 工具与对话中的联网搜索都使用这里选择的引擎。"
     >
-      <FormRow label="搜索引擎" description="DuckDuckGo 免费无需配置；其余引擎需要 Key 或自建实例">
+      <FormRow label="搜索引擎" description={hint.summary}>
         <Dropdown
           value={engine}
           onChange={setEngine}
@@ -2622,6 +2936,28 @@ function WebSearchSection() {
           <p className="mt-1 text-[11px] text-ink-2">
             保存在 Windows 凭据管理器中，不会写入配置文件。保存后可用下方「测试搜索」验证。
           </p>
+          {hint.url && (
+            <button
+              type="button"
+              onClick={() => void openUrl(hint.url!).catch(() => undefined)}
+              className="mt-1 flex items-center gap-1 text-[11px] text-accent transition-opacity hover:opacity-80"
+            >
+              <ExternalLink size={11} />
+              {hint.linkLabel}
+            </button>
+          )}
+        </div>
+      )}
+
+      {engine === "duckduckgo" && (
+        <div className="px-3 pb-2">
+          <button
+            type="button"
+            onClick={() => setEngine("bocha")}
+            className="text-[11px] text-accent underline underline-offset-2 transition-opacity hover:opacity-80"
+          >
+            点此改用「博查」：国内直连、注册送免费额度（也可选 Tavily，每月 1000 次免费）
+          </button>
         </div>
       )}
 

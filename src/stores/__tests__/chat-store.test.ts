@@ -22,6 +22,8 @@ vi.mock("../../services/history-api", () => ({
   renameConversation: vi.fn().mockResolvedValue(undefined),
   deleteConversation: vi.fn().mockResolvedValue(undefined),
   clearAllHistory: vi.fn().mockResolvedValue(undefined),
+  setConversationModel: vi.fn().mockResolvedValue(undefined),
+  parseAttachmentsJson: vi.fn().mockReturnValue(undefined),
   editMessage: vi.fn(),
   startMessageVersion: vi.fn(),
   activateMessageVersion: vi.fn(),
@@ -58,6 +60,9 @@ function resetStores() {
     streams: {},
     lastSendOptions: null,
     compareTargets: [],
+    backgroundMessages: {},
+    unreadDone: {},
+    draftSelection: null,
   });
   useHistoryStore.setState({
     loaded: true,
@@ -141,6 +146,7 @@ describe("chat-store send()", () => {
         thinkingEffort: "medium",
         requestId: rid,
         conversationId: expect.any(String),
+        skillIds: [],
       },
     });
 
@@ -292,6 +298,7 @@ describe("chat-store send()", () => {
         thinkingEffort: "medium",
         requestId: rid2,
         conversationId: expect.any(String),
+        skillIds: [],
       },
     });
   });
@@ -314,6 +321,7 @@ describe("chat-store send()", () => {
       enableTools: false,
       enableThinking: false,
       thinkingEffort: "low",
+      skillIds: [],
     });
     expect(Object.keys(useChatStore.getState().streams)).toEqual([rid]);
   });
@@ -832,5 +840,175 @@ describe("chat-store message versions (P0-1)", () => {
     expect(state.messages[0].id).toBe("u1");
     expect(state.messages[1].id).toBe("a1");
     expect(state.messages[1].status).toBe("streaming");
+  });
+});
+
+describe("multi-conversation support (多对话并行)", () => {
+  const conversationB = {
+    id: "conv-b",
+    title: "会话 B",
+    providerId: "p1",
+    modelKey: "m1",
+    systemPrompt: null,
+    assistantId: null,
+    pinned: false,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  /** Register conversation B and stage its backend detail for loadConversation. */
+  function seedConversationB() {
+    useHistoryStore.setState((state) => ({
+      conversations: [...state.conversations, conversationB],
+    }));
+    vi.mocked(historyApi.getConversation).mockResolvedValue({
+      conversation: conversationB,
+      messages: [],
+    });
+  }
+
+  /** Add a second model so a conversation can be bound to a different one. */
+  function seedSecondModel() {
+    useProvidersStore.setState({
+      providers: [
+        {
+          ...seededProvider,
+          models: [
+            ...seededProvider.models,
+            {
+              modelKey: "m2",
+              displayName: "模型二",
+              isFavorite: false,
+              sortOrder: 1,
+              supportsVision: false,
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  it("keeps the generation running in a background snapshot when switching away", async () => {
+    const rid = await sendAndGetRid("问题 A");
+    const convA = useHistoryStore.getState().activeId!;
+    expect(convA).toBeTruthy();
+
+    seedConversationB();
+    await useChatStore.getState().loadConversation("conv-b");
+
+    let state = useChatStore.getState();
+    // B is displayed (empty); A's messages live in the snapshot and its
+    // stream is still alive — switching is never blocked.
+    expect(state.messages).toHaveLength(0);
+    expect(state.backgroundMessages[convA]).toHaveLength(2);
+    expect(Object.keys(state.streams)).toHaveLength(1);
+
+    // Deltas keep flowing into A's snapshot, not into the visible list.
+    useChatStore.getState().appendDelta(rid, "后台回答");
+    state = useChatStore.getState();
+    expect(state.messages).toHaveLength(0);
+    expect(state.backgroundMessages[convA][1].content).toBe("后台回答");
+
+    // Finishing in the background raises the "finished" dot.
+    useChatStore.getState().onFinish(rid, "stop");
+    state = useChatStore.getState();
+    expect(state.unreadDone[convA]).toBe(true);
+    expect(state.backgroundMessages[convA][1].status).toBe("done");
+
+    // Switching back restores the snapshot and clears the dot.
+    await useChatStore.getState().loadConversation(convA);
+    state = useChatStore.getState();
+    expect(state.messages).toHaveLength(2);
+    expect(state.messages[1].content).toBe("后台回答");
+    expect(state.unreadDone[convA]).toBeUndefined();
+  });
+
+  it("starting a new chat keeps other conversations generating", async () => {
+    const rid = await sendAndGetRid("问题 A");
+    const convA = useHistoryStore.getState().activeId!;
+
+    useChatStore.getState().startNewConversation();
+
+    const state = useChatStore.getState();
+    expect(useHistoryStore.getState().activeId).toBeNull();
+    expect(state.messages).toHaveLength(0);
+    // A's stream was neither cancelled nor dropped.
+    expect(state.streams[rid]).toBeTruthy();
+    expect(state.backgroundMessages[convA]).toHaveLength(2);
+    expect(mockedInvoke).not.toHaveBeenCalledWith("chat_cancel", { requestId: rid });
+  });
+
+  it("a different conversation can send while another one is generating", async () => {
+    await sendAndGetRid("问题 A");
+    useChatStore.getState().startNewConversation();
+
+    const before = new Set(Object.keys(useChatStore.getState().streams));
+    await useChatStore.getState().send("问题 B");
+
+    const state = useChatStore.getState();
+    const newRids = Object.keys(state.streams).filter((id) => !before.has(id));
+    expect(newRids).toHaveLength(1);
+    // Both generations run side by side.
+    expect(Object.keys(state.streams)).toHaveLength(2);
+  });
+
+  it("uses the conversation-bound model for its next turn (对话级模型)", async () => {
+    seedSecondModel();
+
+    const rid = await sendAndGetRid("问题 A");
+    useChatStore.getState().onFinish(rid, "stop");
+    const convA = useHistoryStore.getState().activeId!;
+    // In the app the sidebar list holds the conversation (refreshed on
+    // creation); mirror that here so the binding can be updated.
+    useHistoryStore.setState((state) => ({
+      conversations: [
+        ...state.conversations,
+        {
+          id: convA,
+          title: "问题 A",
+          providerId: "p1",
+          modelKey: "m1",
+          systemPrompt: null,
+          assistantId: null,
+          pinned: false,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    }));
+
+    // Bind the conversation to another model (what the composer picker does).
+    await useChatStore.getState().setConversationModel("p1", "m2");
+    expect(
+      useHistoryStore.getState().conversations.find((c) => c.id === convA)?.modelKey,
+    ).toBe("m2");
+
+    await useChatStore.getState().send("再问一次");
+    expect(mockedInvoke).toHaveBeenLastCalledWith(
+      "chat_send",
+      expect.objectContaining({
+        request: expect.objectContaining({ providerId: "p1", modelKey: "m2" }),
+      }),
+    );
+  });
+
+  it("a fresh chat remembers the draft model until the conversation exists", async () => {
+    seedSecondModel();
+
+    // No conversation is open: picking a model stores a draft.
+    await useChatStore.getState().setConversationModel("p1", "m2");
+    expect(useChatStore.getState().draftSelection).toEqual({
+      providerId: "p1",
+      modelKey: "m2",
+    });
+
+    // The next send uses the draft and the created conversation binds to it.
+    await sendAndGetRid("第一条");
+    expect(mockedInvoke).toHaveBeenLastCalledWith(
+      "chat_send",
+      expect.objectContaining({
+        request: expect.objectContaining({ providerId: "p1", modelKey: "m2" }),
+      }),
+    );
   });
 });

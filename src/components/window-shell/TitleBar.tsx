@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Download, ImageIcon, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Settings, X, Palette, Minus } from "lucide-react";
-import { selectStreaming, useChatStore } from "../../stores/chat-store";
+import { useActiveStreaming, useChatStore } from "../../stores/chat-store";
+import { useHistoryStore } from "../../services/history-store";
 import { useWindowStore } from "../../stores/window-store";
 import { useSettingsStore } from "../../stores/settings-store";
 import { minimizeWindow, requestHide } from "../../lib/window";
 import { exportMessagesToMarkdown } from "../../lib/export";
 import { exportNodeAsImage } from "../../lib/export-image";
 import { printConversation, withExpandedList } from "../../lib/print";
-import { ModelPicker } from "../model-picker/ModelPicker";
 import type { ThemeMode } from "../../types";
 
 const THEMES: { value: ThemeMode; label: string; preview: string[] }[] = [
@@ -32,8 +32,14 @@ export function TitleBar() {
   const closeSettings = useWindowStore((s) => s.closeSettings);
   const switchToImage = useWindowStore((s) => s.switchToImage);
   const switchToChat = useWindowStore((s) => s.switchToChat);
-  const clearConversation = useChatStore((s) => s.clearConversation);
-  const streaming = useChatStore(selectStreaming);
+  const startNewConversation = useChatStore((s) => s.startNewConversation);
+  // The displayed conversation's own busy state: other conversations may keep
+  // generating in the background without disabling these controls.
+  const streaming = useActiveStreaming();
+  const activeConversationId = useHistoryStore((s) => s.activeId);
+  const activeTitle = useHistoryStore(
+    (s) => s.conversations.find((c) => c.id === activeConversationId)?.title ?? null,
+  );
   const clearImageGen = () => {
     window.dispatchEvent(new CustomEvent("imagegen-new"));
   };
@@ -92,7 +98,7 @@ export function TitleBar() {
     // Print stylesheet hides this bar so only the conversation reaches paper.
     <div className="cf-print-hide relative z-50 flex h-9 shrink-0 items-center justify-between pl-3 pr-2">
       <div data-tauri-drag-region aria-hidden="true" className="absolute inset-0" />
-      <div className="relative z-10">
+      <div className="relative z-10 min-w-0">
         {view === "settings" ? (
           <button
             onClick={closeSettings}
@@ -100,8 +106,17 @@ export function TitleBar() {
           >
             返回对话
           </button>
+        ) : view === "chat" ? (
+          // The conversation title lives here now; the model selector moved
+          // into the composer (对话级模型).
+          <span
+            className="block max-w-[40vw] truncate px-1.5 text-xs text-ink-2"
+            title={activeTitle ?? "新对话"}
+          >
+            {activeTitle ?? "新对话"}
+          </span>
         ) : (
-          <ModelPicker />
+          <span className="px-1.5 text-xs text-ink-2">图像生成</span>
         )}
       </div>
 
@@ -113,8 +128,9 @@ export function TitleBar() {
             title={view === "chat" ? "新对话" : "新图片"}
             onClick={() => {
               if (view === "chat") {
-                if (streaming) return;
-                clearConversation();
+                // Multi-conversation: starting a new chat never cancels or
+                // waits for generations running elsewhere.
+                startNewConversation();
               } else {
                 clearImageGen();
               }
@@ -193,7 +209,7 @@ export function TitleBar() {
 
         {/* Settings */}
         {isMainView && (
-          <button className={btn} title="设置" onClick={openSettings}>
+          <button className={btn} title="设置" onClick={() => openSettings()}>
             <Settings size={13} />
           </button>
         )}

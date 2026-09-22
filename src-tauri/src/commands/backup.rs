@@ -36,6 +36,7 @@ pub struct ExportReport {
     pub messages: usize,
     pub memories: usize,
     pub images: usize,
+    pub skills: usize,
     pub bytes: u64,
 }
 
@@ -66,6 +67,7 @@ pub fn export_data(
         messages: backup.conversations.iter().map(|c| c.messages.len()).sum(),
         memories: backup.memories.len(),
         images: backup.image_generations.len(),
+        skills: backup.skills.len(),
         bytes: json.len() as u64,
     })
 }
@@ -80,6 +82,7 @@ pub struct BackupPreview {
     pub messages: usize,
     pub memories: usize,
     pub images: usize,
+    pub skills: usize,
 }
 
 /// Read + validate a backup file (shared by preview and import).
@@ -114,6 +117,7 @@ pub fn preview_backup(path: String) -> Result<BackupPreview, String> {
         messages: backup.conversations.iter().map(|c| c.messages.len()).sum(),
         memories: backup.memories.len(),
         images: backup.image_generations.len(),
+        skills: backup.skills.len(),
     })
 }
 

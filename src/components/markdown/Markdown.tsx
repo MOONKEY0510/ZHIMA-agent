@@ -22,6 +22,7 @@ import {
   normalizeDisplayMath,
   type MathPlugins,
 } from "./math";
+import { MermaidDiagram } from "./MermaidDiagram";
 
 /**
  * Markdown rendering with GFM tables, syntax highlighting and safe links.
@@ -48,6 +49,12 @@ export const Markdown = memo(function Markdown({ content }: { content: string })
       rehypePlugins={rehypePlugins}
       components={{
         pre(props) {
+          // ```mermaid blocks become interactive, theme-aware diagrams
+          // instead of raw source (画图模块).
+          const code = extractCodeText(props.children);
+          if (extractLanguage(props.children) === "mermaid" && code.trim()) {
+            return <MermaidDiagram code={code} />;
+          }
           return <PreBlock>{props.children}</PreBlock>;
         },
         a(props) {

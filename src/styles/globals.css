@@ -309,6 +309,19 @@
   border-top: 1px solid var(--cf-border);
 }
 
+/* --- Mermaid diagrams (画图模块) ----------------------------------------- */
+/* Mermaid emits `width="100%"` plus its own `max-width`; centre the result
+   and let it shrink to the message width (fullscreen view offers zooming). */
+.cf-diagram-svg svg {
+  display: block;
+  margin: 0 auto;
+  max-width: 100%;
+  height: auto;
+}
+.cf-diagram-svg {
+  user-select: text;
+}
+
 /* --- Syntax highlighting tokens (lowlight / hljs) ------------------------ */
 .md-body .hljs-comment,
 .md-body .hljs-quote {

@@ -159,6 +159,15 @@ export function setConversationSystemPrompt(
   return invoke("set_conversation_system_prompt", { id, systemPrompt });
 }
 
+/** Bind a conversation to a provider/model (对话级模型). */
+export function setConversationModel(
+  id: string,
+  providerId: string | null,
+  modelKey: string | null,
+): Promise<void> {
+  return invoke("set_conversation_model", { id, providerId, modelKey });
+}
+
 export function deleteConversation(id: string): Promise<void> {
   return invoke("delete_conversation", { id });
 }

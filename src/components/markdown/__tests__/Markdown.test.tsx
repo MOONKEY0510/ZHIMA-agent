@@ -8,6 +8,12 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(),
 }));
 
+// Diagram rendering pulls in the ~1 MB mermaid chunk and needs a real layout
+// engine; the Markdown integration only verifies wiring, so stub it out.
+vi.mock("../../../lib/mermaid-render", () => ({
+  renderMermaidDiagram: vi.fn(async () => '<svg id="mock-diagram"><g/></svg>'),
+}));
+
 describe("Markdown", () => {
   it("renders basic markdown elements", () => {
     const { container } = render(<Markdown content={"# 标题\n\n一段 **加粗** 文本"} />);
@@ -80,5 +86,18 @@ describe("Markdown", () => {
     const inline = container.querySelector("code");
     expect(inline).not.toBeNull();
     expect(inline?.closest("pre")).toBeNull();
+  });
+
+  it("renders mermaid code blocks as diagrams instead of code", async () => {
+    const md = "```mermaid\ngraph TD\n  A[开始] --> B[结束]\n```";
+    const { container } = render(<Markdown content={md} />);
+
+    // The diagram card appears once the (mocked) render resolves.
+    expect(await screen.findByText("mermaid 图表")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(container.querySelector(".cf-diagram-svg #mock-diagram")).not.toBeNull();
+    });
+    // The raw source is not shown as a code block.
+    expect(container.querySelector("pre")).toBeNull();
   });
 });
