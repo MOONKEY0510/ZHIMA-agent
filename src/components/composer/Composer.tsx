@@ -202,6 +202,10 @@ export function Composer() {
   const [activeSkills, setActiveSkills] = useState<SkillView[]>([]);
 
   const addImages = useCallback((files: FileList | File[]) => {
+    if (comparing) {
+      setDocNotice({ ok: false, text: "对比模式下不支持图片，请先移除对比模型或使用单模型发送" });
+      return;
+    }
     const arr = Array.from(files).filter((f) => f.type.startsWith("image/"));
     for (const file of arr) {
       if (images.length >= MAX_IMAGES) break;
@@ -215,16 +219,20 @@ export function Composer() {
       reader.onerror = () => console.error("读取图片失败:", file.name);
       reader.readAsDataURL(file);
     }
-  }, [images.length]);
+  }, [comparing, images.length]);
 
   /** Stage already-decoded data URLs (used by native drag & drop). */
   const addImageDataUrls = useCallback((urls: string[]) => {
     if (urls.length === 0) return;
+    if (comparing) {
+      setDocNotice({ ok: false, text: "对比模式下不支持图片，请先移除对比模型或使用单模型发送" });
+      return;
+    }
     setImages((prev) => {
       const room = MAX_IMAGES - prev.length;
       return room > 0 ? [...prev, ...urls.slice(0, room)] : prev;
     });
-  }, []);
+  }, [comparing]);
 
   const removeImage = (idx: number) => {
     setImages((prev) => prev.filter((_, i) => i !== idx));
@@ -451,6 +459,11 @@ export function Composer() {
     // Read the live toggle state via ref so the callback never captures a
     // stale value (bug fix: toggling tools then sending used the old value).
     if (comparing) {
+      // Comparison is text only; refusing beats silently dropping pictures.
+      if (images.length > 0) {
+        setDocNotice({ ok: false, text: "对比模式下不支持图片，请先移除图片或关闭对比" });
+        return;
+      }
       // Multi-model comparison (P1-6): text only, no agent tools.
       void sendMulti(
         content,
@@ -1150,6 +1163,7 @@ const RISK_LABEL: Record<string, { text: string; tone: "auto" | "warn" }> = {
   external_read: { text: "只读外部", tone: "auto" },
   sensitive_read: { text: "敏感读取 · 需确认", tone: "warn" },
   external_action: { text: "外部动作 · 需确认", tone: "warn" },
+  mcp: { text: "MCP 服务器 · 每次确认", tone: "warn" },
 };
 
 export function ToolsPanel({

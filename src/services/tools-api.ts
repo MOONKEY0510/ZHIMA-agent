@@ -1,9 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type ToolRiskLevel = "low" | "external_read" | "sensitive_read" | "external_action";
+export type ToolRiskLevel =
+  | "low"
+  | "external_read"
+  | "sensitive_read"
+  | "external_action"
+  /** Discovered from an MCP server; always confirmed per call. */
+  | "mcp";
 
 /** Per-tool policy configured by the user. */
-export type ToolPolicy = "allow" | "confirm" | "disabled";
+export type ToolPolicy = "allow" | "confirm" | "always_allow" | "disabled";
 
 /** One tool as reported by the backend `list_tools` command. */
 export interface ToolInfo {

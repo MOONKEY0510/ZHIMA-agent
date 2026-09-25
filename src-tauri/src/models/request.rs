@@ -66,6 +66,10 @@ pub struct ChatSendRequest {
     /// and regenerated after it finishes.
     #[serde(default)]
     pub conversation_id: Option<String>,
+    /// Ephemeral scope for tool approvals; changes when the user opens a new
+    /// chat, even if history recording is disabled.
+    #[serde(default)]
+    pub approval_session_id: Option<String>,
     /// Skills the user activated manually in the composer.  Their full
     /// instructions are injected regardless of trigger-word matching
     /// (`agent::skills`); automatic matching still applies to the rest.
@@ -108,6 +112,8 @@ pub struct ChatSendMultiRequest {
     pub thinking_effort: String,
     #[serde(default)]
     pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub approval_session_id: Option<String>,
     /// Skills the user activated manually (see [`ChatSendRequest::skill_ids`]).
     #[serde(default)]
     pub skill_ids: Vec<String>,

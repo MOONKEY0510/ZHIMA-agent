@@ -14,6 +14,8 @@ export interface ToolCallStep {
   status: "pending" | "running" | "done" | "error" | "rejected";
   /** Human-readable summary shown on the confirmation card. */
   summary?: string;
+  /** Whether ordinary permission may be remembered for this action. */
+  canRemember?: boolean;
   /** Serialized JSON result when `status === "done"`. */
   result?: string;
   /** Error message when `status === "error"`. */
@@ -62,6 +64,7 @@ export type ChatStreamEvent =
       callId: string;
       name: string;
       summary: string;
+      canRemember?: boolean;
     }
   | {
       type: "tool_rejected";

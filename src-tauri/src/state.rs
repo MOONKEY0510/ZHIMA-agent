@@ -4,27 +4,22 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-/// Verdict for a pending tool approval.
-///
-/// `policy` extends the plain allow/reject with per-call vs remembered
-/// decisions:
-/// - `once`: allow only this call (no persistence).
-/// - `session`: allow every call to this tool for the rest of the process.
-/// - `always`: allow every call to this tool from now on (persisted).
-#[derive(Debug, Clone)]
+/// Verdict for one pending call. Remembered permissions are handled at the
+/// command boundary before the agent is allowed to resume.
+#[derive(Debug, Clone, Default)]
 pub struct ApprovalVerdict {
     pub approved: bool,
-    pub policy: String,
 }
 
-impl Default for ApprovalVerdict {
-    fn default() -> Self {
-        Self {
-            approved: false,
-            policy: "once".into(),
-        }
-    }
+pub struct PendingToolApproval {
+    pub sender: oneshot::Sender<ApprovalVerdict>,
+    pub tool_name: String,
+    pub scope: String,
+    /// Data transfers and MCP tools may only be approved one call at a time.
+    pub can_remember: bool,
 }
+
+pub type PendingToolApprovals = Arc<Mutex<HashMap<String, PendingToolApproval>>>;
 
 /// Shared application state.
 ///
@@ -43,9 +38,10 @@ pub struct AppState {
     /// When the agent loop needs user confirmation for a tool call it
     /// registers a `oneshot` sender here, emits `ToolPending`, and awaits
     /// the receiver. `chat_approve_tool` resolves the matching channel.
-    pub tool_approvals: Arc<Mutex<HashMap<String, oneshot::Sender<ApprovalVerdict>>>>,
-    /// Tools approved for the rest of this process ("本次会话允许").
-    pub session_tool_approvals: Arc<Mutex<HashSet<String>>>,
+    pub tool_approvals: PendingToolApprovals,
+    /// Ordinary approvals scoped to the current conversation; a new or
+    /// reloaded chat uses a new scope even while the app keeps running.
+    pub session_tool_approvals: Arc<Mutex<HashSet<(String, String)>>>,
     /// MCP client: child processes of the configured servers (P1-10).
     pub mcp: crate::mcp::McpManager,
 }

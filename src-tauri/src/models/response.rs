@@ -67,6 +67,8 @@ pub enum ChatEvent {
         name: String,
         /// Human-readable argument summary for the confirmation card.
         summary: String,
+        /// False for data transfers, MCP tools and "confirm every time".
+        can_remember: bool,
     },
     /// Fired when the user rejected a pending tool call. The model is
     /// informed through a tool result message that it was refused.

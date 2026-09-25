@@ -684,20 +684,24 @@ function ToolCallRow({
             >
               <Check size={11} /> 仅一次
             </button>
-            <button
-              onClick={() => approve("session")}
-              className="inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2"
-              title="本次会话内不再询问该工具"
-            >
-              本次会话允许
-            </button>
-            <button
-              onClick={() => approve("always")}
-              className="inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2"
-              title="永久允许该工具，不再询问"
-            >
-              永久允许
-            </button>
+            {call.canRemember && (
+              <>
+                <button
+                  onClick={() => approve("session")}
+                  className="inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2"
+                  title="当前聊天中不再询问此工具；外发数据仍需单次确认"
+                >
+                  本次会话允许
+                </button>
+                <button
+                  onClick={() => approve("always")}
+                  className="inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2"
+                  title="永久免除普通工具确认，可在设置中撤销；外发仍需单次确认"
+                >
+                  永久允许
+                </button>
+              </>
+            )}
             <button
               onClick={reject}
               className="inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-1 text-[11px] text-danger transition-colors hover:bg-panel-2"
@@ -961,8 +965,8 @@ const UserMessage = memo(function UserMessage({
             </button>
             <button
               className={iconBtn}
-              title="从这里继续（创建分支）"
-              onClick={() => useChatStore.getState().branchFrom(message.id)}
+              title="从这里创建分支（新会话，原会话保留）"
+              onClick={() => void useChatStore.getState().branchFrom(message.id)}
             >
               <GitBranch size={11} />
             </button>

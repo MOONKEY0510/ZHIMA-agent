@@ -23,6 +23,9 @@ pub enum ToolPolicy {
     Allow,
     /// Force a confirmation dialog before every call.
     Confirm,
+    /// Explicitly waive ordinary per-tool confirmation across restarts.
+    /// Sending local data outside the app still requires a separate approval.
+    AlwaysAllow,
     /// Tool is disabled entirely and never offered to the model.
     Disabled,
 }
@@ -32,6 +35,7 @@ impl ToolPolicy {
         match self {
             Self::Allow => "allow",
             Self::Confirm => "confirm",
+            Self::AlwaysAllow => "always_allow",
             Self::Disabled => "disabled",
         }
     }
@@ -40,8 +44,32 @@ impl ToolPolicy {
         match value {
             "allow" => Some(Self::Allow),
             "confirm" => Some(Self::Confirm),
+            "always_allow" => Some(Self::AlwaysAllow),
             "disabled" => Some(Self::Disabled),
             _ => None,
+        }
+    }
+
+    /// Higher means more restrictive.
+    ///
+    /// Used to merge a global policy with an assistant's suggestion: neither
+    /// side may weaken the other, so an assistant can neither re-enable a
+    /// globally disabled tool nor waive a global "confirm every time".
+    pub fn severity(&self) -> u8 {
+        match self {
+            Self::Allow => 0,
+            Self::AlwaysAllow => 1,
+            Self::Confirm => 2,
+            Self::Disabled => 3,
+        }
+    }
+
+    /// The more restrictive of two policies.
+    pub fn stricter(self, other: Self) -> Self {
+        if other.severity() > self.severity() {
+            other
+        } else {
+            self
         }
     }
 }
@@ -341,6 +369,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stricter_policy_wins_in_either_direction() {
+        use ToolPolicy::{Allow, AlwaysAllow, Confirm, Disabled};
+        assert_eq!(Allow.stricter(Confirm), Confirm);
+        assert_eq!(Confirm.stricter(Allow), Confirm);
+        assert_eq!(AlwaysAllow.stricter(Disabled), Disabled);
+        assert_eq!(Disabled.stricter(AlwaysAllow), Disabled);
+        assert_eq!(Allow.stricter(AlwaysAllow), AlwaysAllow);
+    }
+
+    #[test]
     fn config_roundtrip_keeps_fields() {
         let cfg = ProvidersConfig {
             version: 1,
@@ -420,10 +458,15 @@ mod tests {
     fn tool_policy_roundtrip_and_parse() {
         assert_eq!(ToolPolicy::parse("allow"), Some(ToolPolicy::Allow));
         assert_eq!(ToolPolicy::parse("confirm"), Some(ToolPolicy::Confirm));
+        assert_eq!(
+            ToolPolicy::parse("always_allow"),
+            Some(ToolPolicy::AlwaysAllow)
+        );
         assert_eq!(ToolPolicy::parse("disabled"), Some(ToolPolicy::Disabled));
         assert_eq!(ToolPolicy::parse("bogus"), None);
         assert_eq!(ToolPolicy::Allow.as_str(), "allow");
         assert_eq!(ToolPolicy::Confirm.as_str(), "confirm");
+        assert_eq!(ToolPolicy::AlwaysAllow.as_str(), "always_allow");
         assert_eq!(ToolPolicy::Disabled.as_str(), "disabled");
         assert_eq!(ToolPolicy::default(), ToolPolicy::Allow);
     }
@@ -431,7 +474,7 @@ mod tests {
     #[test]
     fn tool_policies_survive_roundtrip() {
         let mut policies = std::collections::HashMap::new();
-        policies.insert("read_clipboard".to_string(), ToolPolicy::Confirm);
+        policies.insert("read_clipboard".to_string(), ToolPolicy::AlwaysAllow);
         policies.insert("web_search".to_string(), ToolPolicy::Disabled);
         let cfg = ProvidersConfig {
             tool_policies: policies,
@@ -442,7 +485,7 @@ mod tests {
         let back: ProvidersConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(
             back.tool_policies.get("read_clipboard"),
-            Some(&ToolPolicy::Confirm)
+            Some(&ToolPolicy::AlwaysAllow)
         );
         assert_eq!(
             back.tool_policies.get("web_search"),

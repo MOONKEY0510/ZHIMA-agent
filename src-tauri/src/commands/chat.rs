@@ -167,6 +167,19 @@ fn new_request_id() -> String {
     format!("req-{millis:x}-{seq:x}")
 }
 
+fn validate_approval_scope(scope: Option<&str>) -> Result<Option<String>, String> {
+    let Some(scope) = scope else { return Ok(None) };
+    if scope.is_empty()
+        || scope.len() > 128
+        || !scope
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        return Err("授权会话 ID 格式无效".into());
+    }
+    Ok(Some(scope.to_owned()))
+}
+
 /// Maximum number of models one turn may fan out to (P1-6).
 const MAX_MULTI_TARGETS: usize = 4;
 
@@ -226,13 +239,14 @@ struct TurnContext {
     thinking_effort: String,
     session_summary: Option<String>,
     conversation_id: Option<String>,
+    approval_session_id: Option<String>,
     memory_block: String,
     tool_policies: std::collections::HashMap<String, crate::storage::config::ToolPolicy>,
     /// Retrieved knowledge-base passages, already formatted (P1-9).
     kb_block: Option<String>,
     kb_hits: usize,
     kb_titles: Vec<String>,
-    /// User-skill catalog plus triggered instructions (v19, `agent::skills`).
+    /// User-skill catalog plus triggered instructions (v20, `agent::skills`).
     skills_block: Option<String>,
 }
 
@@ -296,6 +310,8 @@ fn build_turn_context(
         crate::agent::skills::build_skills_block_with_forced(&skills, user_message, skill_ids)
     };
 
+    let tool_policies = merge_tool_policies(config, db, conversation_id.as_deref());
+
     TurnContext {
         messages: messages.to_vec(),
         system_prompt,
@@ -308,13 +324,57 @@ fn build_turn_context(
         },
         session_summary,
         conversation_id,
+        approval_session_id: None,
         memory_block,
-        tool_policies: config.read(|cfg| cfg.tool_policies.clone()),
+        tool_policies,
         kb_block,
         kb_hits,
         kb_titles,
         skills_block,
     }
+}
+
+/// Effective tool policies for one turn: the global map merged with the
+/// suggestion stored on the conversation's bound assistant.
+///
+/// The stricter of the two wins for every tool.  That keeps a global "disable"
+/// or "confirm every time" authoritative while still letting an assistant
+/// tighten a tool the user left on the default.  Unparseable assistant
+/// payloads degrade to the global map — a bad JSON blob must never block chat.
+fn merge_tool_policies(
+    config: &ConfigStore,
+    db: &Database,
+    conversation_id: Option<&str>,
+) -> std::collections::HashMap<String, crate::storage::config::ToolPolicy> {
+    use crate::storage::config::ToolPolicy;
+
+    let mut merged = config.read(|cfg| cfg.tool_policies.clone());
+    let Some(conversation_id) = conversation_id else {
+        return merged;
+    };
+    let assistant_id = db
+        .get_conversation(conversation_id)
+        .ok()
+        .flatten()
+        .and_then(|conversation| conversation.assistant_id);
+    let Some(assistant_id) = assistant_id else {
+        return merged;
+    };
+    let Some(raw) = db
+        .get_assistant(&assistant_id)
+        .ok()
+        .flatten()
+        .and_then(|assistant| assistant.tool_policies_json)
+    else {
+        return merged;
+    };
+    let suggestions: std::collections::HashMap<String, ToolPolicy> =
+        serde_json::from_str(&raw).unwrap_or_default();
+    for (name, suggestion) in suggestions {
+        let entry = merged.entry(name).or_default();
+        *entry = entry.stricter(suggestion);
+    }
+    merged
 }
 
 /// Retrieve the best knowledge-base passages for this turn (P1-9).
@@ -432,6 +492,7 @@ fn spawn_stream(
             target.max_tokens,
             ctx.session_summary,
             ctx.conversation_id,
+            ctx.approval_session_id,
             ctx.memory_block,
             ctx.tool_policies,
             ctx.kb_block,
@@ -459,7 +520,7 @@ pub async fn chat_send(
     }
     validate_messages(&request.messages)?;
 
-    let ctx = build_turn_context(
+    let mut ctx = build_turn_context(
         &config,
         &db,
         &request.messages,
@@ -471,7 +532,13 @@ pub async fn chat_send(
         request.conversation_id.clone(),
         &request.skill_ids,
     );
+    ctx.approval_session_id = validate_approval_scope(request.approval_session_id.as_deref())?;
     let target = resolve_target(&config, &request.provider_id, &request.model_key)?;
+
+    // Enabled MCP servers start in the background, so this turn is never
+    // blocked on a child process; if their tools were not cached yet they
+    // become available on the next turn instead of silently disappearing.
+    super::mcp::warm_in_background(&window);
 
     spawn_stream(
         window,
@@ -503,6 +570,10 @@ pub async fn chat_send_multi(
     validate_multi_request(&request)?;
     validate_messages(&request.messages)?;
 
+    // Same on-demand MCP warm-up as the single-target path: never block the
+    // turn, but have the tools ready for the next one.
+    super::mcp::warm_in_background(&window);
+
     // Resolve all targets first: fail fast, spawn nothing.
     let mut resolved = Vec::with_capacity(request.targets.len());
     for target in &request.targets {
@@ -529,6 +600,7 @@ pub async fn chat_send_multi(
         request.conversation_id.clone(),
         &request.skill_ids,
     );
+    ctx.approval_session_id = validate_approval_scope(request.approval_session_id.as_deref())?;
 
     // One shared web search for the whole turn.
     let mut event_seqs: Vec<std::sync::Arc<AtomicU64>> = (0..resolved.len())
@@ -610,31 +682,62 @@ pub async fn chat_cancel(state: State<'_, AppState>, request_id: String) -> Resu
 /// when it emitted `ToolPending`; this command resolves it. If the request
 /// was already cancelled or the channel is gone, the call is a no-op.
 ///
-/// `policy` selects how the decision is remembered:
-/// - `"once"` (default): allow only this call.
-/// - `"session"`: allow every call to this tool for the rest of the process.
-/// - `"always"`: allow forever (persisted in tool policies).
+/// `policy` selects how an ordinary approval is remembered. Data transfers,
+/// MCP calls and tools configured as `confirm` may only be approved once.
 #[tauri::command]
 pub async fn chat_approve_tool(
     state: State<'_, AppState>,
+    config: State<'_, ConfigStore>,
     request_id: String,
     call_id: String,
     approved: bool,
     policy: Option<String>,
 ) -> Result<(), String> {
-    let key = format!("{request_id}:{call_id}");
-    let sender = state.tool_approvals.lock().unwrap().remove(&key);
     let policy = policy.unwrap_or_else(|| "once".into());
     if !matches!(policy.as_str(), "once" | "session" | "always") {
         return Err("无效的审批策略".into());
     }
-    match sender {
-        Some(tx) => {
-            let _ = tx.send(crate::state::ApprovalVerdict { approved, policy });
-            Ok(())
-        }
-        None => Err("该工具请求已失效或已处理".into()),
+    let key = format!("{request_id}:{call_id}");
+    let mut pending = state.tool_approvals.lock().unwrap();
+    let entry = pending
+        .get(&key)
+        .ok_or_else(|| "该工具请求已失效或已处理".to_string())?;
+    let current = config.read(|cfg| {
+        cfg.tool_policies
+            .get(&entry.tool_name)
+            .copied()
+            .unwrap_or_default()
+    });
+    if approved && current == crate::storage::config::ToolPolicy::Disabled {
+        return Err("工具已被禁用，请拒绝此请求".into());
     }
+    if approved
+        && policy != "once"
+        && (!entry.can_remember || current == crate::storage::config::ToolPolicy::Confirm)
+    {
+        return Err("此操作只能单次授权".into());
+    }
+    if approved && policy == "always" {
+        config.update(|cfg| {
+            cfg.tool_policies.insert(
+                entry.tool_name.clone(),
+                crate::storage::config::ToolPolicy::AlwaysAllow,
+            );
+            Ok(())
+        })?;
+    }
+    if approved && policy == "session" {
+        state
+            .session_tool_approvals
+            .lock()
+            .unwrap()
+            .insert((entry.scope.clone(), entry.tool_name.clone()));
+    }
+    let entry = pending.remove(&key).expect("pending approval was checked");
+    entry
+        .sender
+        .send(crate::state::ApprovalVerdict { approved })
+        .map_err(|_| "该工具请求已失效".to_string())
 }
 
 /// Send one image to a vision model (non-streaming) and return the text
@@ -846,6 +949,79 @@ fn truncate_to_budget(text: String, budget: &mut usize) -> String {
     format!("{}…[工具结果已超出本轮预算，其余内容被截断]", &text[..end])
 }
 
+fn needs_tool_approval(
+    policy: crate::storage::config::ToolPolicy,
+    requires_confirmation: bool,
+    session_approved: bool,
+    is_mcp: bool,
+    transfers_sensitive_data: bool,
+) -> bool {
+    use crate::storage::config::ToolPolicy;
+    transfers_sensitive_data
+        || is_mcp
+        || policy == ToolPolicy::Confirm
+        || (requires_confirmation && policy != ToolPolicy::AlwaysAllow && !session_approved)
+}
+
+struct ApprovalPrompt<'a> {
+    call_id: &'a str,
+    name: &'a str,
+    summary: String,
+    scope: &'a str,
+    can_remember: bool,
+}
+
+enum ApprovalOutcome {
+    Approved,
+    Rejected,
+    Cancelled,
+}
+
+async fn request_approval(
+    emit: &impl Fn(ChatEvent),
+    pending: &crate::state::PendingToolApprovals,
+    token: &CancellationToken,
+    request_id: &str,
+    prompt: ApprovalPrompt<'_>,
+) -> ApprovalOutcome {
+    let key = format!("{request_id}:{}", prompt.call_id);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    pending.lock().unwrap().insert(
+        key.clone(),
+        crate::state::PendingToolApproval {
+            sender: tx,
+            tool_name: prompt.name.to_owned(),
+            scope: prompt.scope.to_owned(),
+            can_remember: prompt.can_remember,
+        },
+    );
+    emit(ChatEvent::ToolPending {
+        request_id: request_id.to_owned(),
+        call_id: prompt.call_id.to_owned(),
+        name: prompt.name.to_owned(),
+        summary: prompt.summary,
+        can_remember: prompt.can_remember,
+    });
+    let outcome = tokio::select! {
+        _ = token.cancelled() => ApprovalOutcome::Cancelled,
+        _ = tokio::time::sleep(Duration::from_secs(APPROVAL_TIMEOUT_SECS)) => ApprovalOutcome::Rejected,
+        result = rx => if result.unwrap_or_default().approved {
+            ApprovalOutcome::Approved
+        } else {
+            ApprovalOutcome::Rejected
+        },
+    };
+    pending.lock().unwrap().remove(&key);
+    if matches!(outcome, ApprovalOutcome::Rejected) {
+        emit(ChatEvent::ToolRejected {
+            request_id: request_id.to_owned(),
+            call_id: prompt.call_id.to_owned(),
+            name: prompt.name.to_owned(),
+        });
+    }
+    outcome
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_stream(
     window: Window,
@@ -862,19 +1038,15 @@ async fn run_stream(
     enable_tools: bool,
     enable_thinking: bool,
     thinking_effort: String,
-    tool_approvals: std::sync::Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<
-                String,
-                tokio::sync::oneshot::Sender<crate::state::ApprovalVerdict>,
-            >,
-        >,
+    tool_approvals: crate::state::PendingToolApprovals,
+    session_tool_approvals: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashSet<(String, String)>>,
     >,
-    session_tool_approvals: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     temperature: Option<f32>,
     max_tokens: Option<u32>,
     session_summary: Option<String>,
     conversation_id: Option<String>,
+    approval_session_id: Option<String>,
     memory_block: String,
     tool_policies: std::collections::HashMap<String, crate::storage::config::ToolPolicy>,
     kb_block: Option<String>,
@@ -890,35 +1062,10 @@ async fn run_stream(
     };
     // Local stores for tools that read them (knowledge base search).
     let db_handle = window.state::<Database>();
-
-    // ---- Debug trace --------------------------------------------------------
-    // Appends raw SSE payloads and emitted events to `chat-debug.log` in the
-    // app config dir so streaming issues can be diagnosed from real data.
-    let debug_log_path = window
-        .app_handle()
-        .path()
-        .app_config_dir()
-        .ok()
-        .map(|dir| dir.join("chat-debug.log"));
-    let debug_log = |msg: &str| {
-        use std::io::Write;
-        let Some(path) = &debug_log_path else { return };
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
-            let _ = writeln!(f, "{msg}");
-        }
-    };
-    debug_log(&format!(
-        "==== run start rid={request_id} model={model} url={url} msgs={} tools={enable_tools} ====",
-        messages.len()
-    ));
+    let approval_scope = approval_session_id.unwrap_or_else(|| request_id.clone());
 
     let emit = |event: ChatEvent| {
         let s = event_seq.fetch_add(1, Ordering::Relaxed);
-        debug_log(&format!("[event #{s}] {event:?}"));
         let _ = window.emit(EVENT_CHANNEL, &SequencedChatEvent { seq: s, event });
     };
 
@@ -959,6 +1106,7 @@ async fn run_stream(
     // first; nothing the user or an external source says can override it
     // (prompt-injection hardening, plan §3.5).
     let system_prompt = system_prompt.filter(|s| !s.trim().is_empty());
+    let injects_local_data = !memory_block.trim().is_empty() || kb_hits > 0;
     let memory_block = memory_block.trim().to_string();
     let session_summary = session_summary.filter(|s| !s.trim().is_empty());
 
@@ -1071,7 +1219,7 @@ async fn run_stream(
         });
     }
 
-    // ---- User skills (自定义技能, v19) --------------------------------------
+    // ---- User skills (自定义技能, v20) --------------------------------------
     // Catalog + triggered instruction bodies, appended after the knowledge
     // base so user-authored instructions stay closest to the conversation.
     if let Some(block) = skills_block.filter(|b| !b.trim().is_empty()) {
@@ -1182,6 +1330,70 @@ async fn run_stream(
             &thinking_effort,
         );
 
+        // Automatic knowledge/memory injection and successful local tool
+        // results are not explicit user messages. Ask before giving them to
+        // the model provider, including on subsequent agent rounds.
+        if (_step == 0 && injects_local_data) || context_sensitive {
+            let call_id = format!("provider-round-{_step}");
+            let host = url::Url::parse(&url)
+                .ok()
+                .and_then(|parsed| parsed.host_str().map(str::to_owned))
+                .unwrap_or_else(|| "所选模型服务商".to_owned());
+            let source = if context_sensitive {
+                "本地工具结果"
+            } else {
+                "本地知识库或记忆"
+            };
+            match request_approval(
+                &emit,
+                &tool_approvals,
+                &token,
+                &request_id,
+                ApprovalPrompt {
+                    call_id: &call_id,
+                    name: "发送本地数据至模型",
+                    summary: format!("即将把{source}发送到 {host}；本次请求需要单独确认。"),
+                    scope: &approval_scope,
+                    can_remember: false,
+                },
+            )
+            .await
+            {
+                ApprovalOutcome::Approved => {
+                    emit(ChatEvent::ToolStart {
+                        request_id: request_id.clone(),
+                        call_id: call_id.clone(),
+                        name: "发送本地数据至模型".into(),
+                        arguments: "{}".into(),
+                    });
+                    emit(ChatEvent::ToolEnd {
+                        request_id: request_id.clone(),
+                        call_id,
+                        name: "发送本地数据至模型".into(),
+                        result: "已获本次授权".into(),
+                    });
+                }
+                ApprovalOutcome::Rejected => {
+                    emit(ChatEvent::Error {
+                        request_id: request_id.clone(),
+                        code: "data_transfer_denied".into(),
+                        message: "本地数据发送未获授权，已停止请求。".into(),
+                        retryable: false,
+                    });
+                    record_run(&request_id, "failed", Some("data_transfer_denied"));
+                    return;
+                }
+                ApprovalOutcome::Cancelled => {
+                    emit(ChatEvent::Finish {
+                        request_id: request_id.clone(),
+                        reason: Some("cancelled".into()),
+                    });
+                    record_run(&request_id, "cancelled", None);
+                    return;
+                }
+            }
+        }
+
         // ---- Send (with automatic retry for retryable failures) ------------
         // Only failures that happen before any token is streamed are retried
         // (connect failures, timeouts, 429, 5xx).  Exponential backoff with
@@ -1219,7 +1431,6 @@ async fn run_stream(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_ascii_lowercase();
-        debug_log(&format!("[http] 200 content-type={content_type}"));
 
         // A number of OpenAI-compatible relays ignore `stream: true` and send
         // a regular JSON completion. Treat it as a valid fallback instead of
@@ -1315,8 +1526,6 @@ async fn run_stream(
                     match next {
                         Some(Ok(bytes)) => {
                             for data in parser.push(&bytes) {
-                                let preview: String = data.chars().take(2000).collect();
-                                debug_log(&format!("[sse] {preview}"));
                                 if handle_data(
                                     &request_id,
                                     &data,
@@ -1334,6 +1543,28 @@ async fn run_stream(
                                 ) {
                                     break;
                                 }
+                            }
+                            if parser.overflowed() {
+                                // A line or a single event crossed its cap:
+                                // stop reading instead of buffering an
+                                // unbounded response.
+                                flush_content_filters(
+                                    &mut thinking,
+                                    &mut text_tools,
+                                    &request_id,
+                                    &emit,
+                                    enable_thinking,
+                                    &mut text_tool_seen,
+                                    &mut tool_calls,
+                                );
+                                emit(ChatEvent::Error {
+                                    request_id: request_id.clone(),
+                                    code: "stream_too_large".into(),
+                                    message: "响应数据异常过大，已停止接收；请重试或更换服务商。".into(),
+                                    retryable: false,
+                                });
+                                record_run(&request_id, "failed", Some("stream_too_large"));
+                                return;
                             }
                             if stream_ended || (finished && usage_seen) {
                                 break;
@@ -1400,6 +1631,19 @@ async fn run_stream(
             &mut text_tool_seen,
             &mut tool_calls,
         );
+
+        // The trailing flush can itself trip an event cap (no blank line was
+        // received); surface it as an error rather than a finished answer.
+        if parser.overflowed() {
+            emit(ChatEvent::Error {
+                request_id: request_id.clone(),
+                code: "stream_too_large".into(),
+                message: "响应数据异常过大，已停止接收；请重试或更换服务商。".into(),
+                retryable: false,
+            });
+            record_run(&request_id, "failed", Some("stream_too_large"));
+            return;
+        }
 
         // If the stream produced a fatal error (ParsedChunk::Error), the
         // Error event has already been emitted.  Return immediately without
@@ -1516,7 +1760,12 @@ async fn run_stream(
                 //    silently approve "then upload it".
                 // A policy-disabled tool should never execute; treat it like a
                 // rejected call and tell the model to stop using it.
-                let policy = tool_policies.get(&canonical).copied().unwrap_or_default();
+                let policy = config_handle.read(|cfg| {
+                    cfg.tool_policies
+                        .get(&canonical)
+                        .copied()
+                        .unwrap_or_default()
+                });
                 if policy == crate::storage::config::ToolPolicy::Disabled {
                     emit(ChatEvent::ToolRejected {
                         request_id: request_id.clone(),
@@ -1533,95 +1782,60 @@ async fn run_stream(
                 let (requires_confirmation, is_network) = def
                     .map(|d| (d.requires_confirmation, d.network_access))
                     .unwrap_or((true, false));
-                let needs_approval = requires_confirmation
-                    || policy == crate::storage::config::ToolPolicy::Confirm
-                    || (context_sensitive && is_network);
-
-                // A tool approved for the rest of this session skips the
-                // gate entirely (no prompt, no timeout).
-                if needs_approval && !session_tool_approvals.lock().unwrap().contains(&canonical) {
-                    let summary = if context_sensitive && is_network && !requires_confirmation {
-                        // Explain why this extra confirmation is needed.
-                        format!(
-                            "{}（当前上下文包含本地敏感数据，联网前需要再次确认）",
-                            summarize_tool_call(&canonical, &tc.arguments)
-                        )
-                    } else {
-                        summarize_tool_call(&canonical, &tc.arguments)
-                    };
-                    emit(ChatEvent::ToolPending {
-                        request_id: request_id.clone(),
-                        call_id: tc.id.clone(),
-                        name: canonical.clone(),
-                        summary: summary.clone(),
-                    });
-
-                    let (tx, rx) = tokio::sync::oneshot::channel::<crate::state::ApprovalVerdict>();
-                    let key = format!("{}:{}", request_id, tc.id);
-                    tool_approvals.lock().unwrap().insert(key, tx);
-
-                    let verdict = tokio::select! {
-                        _ = token.cancelled() => {
-                            tool_approvals.lock().unwrap().remove(
-                                &format!("{}:{}", request_id, tc.id),
-                            );
+                let is_mcp = mcp_tools.iter().any(|t| t.qualified == canonical);
+                let transfers_sensitive_data = context_sensitive && is_network;
+                let session_approved = session_tool_approvals
+                    .lock()
+                    .unwrap()
+                    .contains(&(approval_scope.clone(), canonical.clone()));
+                if needs_tool_approval(
+                    policy,
+                    requires_confirmation,
+                    session_approved,
+                    is_mcp,
+                    transfers_sensitive_data,
+                ) {
+                    let mut summary = summarize_tool_call(&canonical, &tc.arguments);
+                    if transfers_sensitive_data {
+                        summary.push_str("（当前上下文包含本地敏感数据，本次联网需要单独确认）");
+                    } else if is_mcp {
+                        summary.push_str("（MCP 进程可能读取本地数据或联网，仅允许单次授权）");
+                    }
+                    let can_remember = def.is_some()
+                        && !is_mcp
+                        && !transfers_sensitive_data
+                        && policy != crate::storage::config::ToolPolicy::Confirm;
+                    match request_approval(
+                        &emit,
+                        &tool_approvals,
+                        &token,
+                        &request_id,
+                        ApprovalPrompt {
+                            call_id: &tc.id,
+                            name: &canonical,
+                            summary,
+                            scope: &approval_scope,
+                            can_remember,
+                        },
+                    )
+                    .await
+                    {
+                        ApprovalOutcome::Approved => {}
+                        ApprovalOutcome::Rejected => {
+                            openai_messages.push(json!({
+                                "role": "tool",
+                                "tool_call_id": tc.id.clone(),
+                                "content": "用户拒绝了该工具调用，请勿再次调用，直接基于已有信息回答。",
+                            }));
+                            continue;
+                        }
+                        ApprovalOutcome::Cancelled => {
                             emit(ChatEvent::Finish {
                                 request_id: request_id.clone(),
                                 reason: Some("cancelled".into()),
                             });
                             record_run(&request_id, "cancelled", None);
                             return;
-                        }
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS)) => {
-                            // Approval timed out: clean up the oneshot sender
-                            // so a late chat_approve_tool call finds nothing.
-                            tool_approvals.lock().unwrap().remove(
-                                &format!("{}:{}", request_id, tc.id),
-                            );
-                            emit(ChatEvent::ToolRejected {
-                                request_id: request_id.clone(),
-                                call_id: tc.id.clone(),
-                                name: canonical.clone(),
-                            });
-                            // Treat as rejection — push a tool result telling
-                            // the model the user did not respond in time.
-                            crate::state::ApprovalVerdict::default()
-                        }
-                        verdict = rx => verdict.unwrap_or_default(),
-                    };
-
-                    if !verdict.approved {
-                        emit(ChatEvent::ToolRejected {
-                            request_id: request_id.clone(),
-                            call_id: tc.id.clone(),
-                            name: canonical.clone(),
-                        });
-                        openai_messages.push(json!({
-                            "role": "tool",
-                            "tool_call_id": tc.id.clone(),
-                            "content": "用户拒绝了该工具调用，请勿再次调用，直接基于已有信息回答。",
-                        }));
-                        continue;
-                    }
-
-                    // Remember the decision for later calls in this session.
-                    if verdict.policy == "session" {
-                        session_tool_approvals
-                            .lock()
-                            .unwrap()
-                            .insert(canonical.clone());
-                    } else if verdict.policy == "always" {
-                        // Remember for the session AND persist the policy as
-                        // "allow" so it never asks again.
-                        session_tool_approvals
-                            .lock()
-                            .unwrap()
-                            .insert(canonical.clone());
-                        if let Some(config) = window.try_state::<ConfigStore>() {
-                            let _ = config.update(|cfg| {
-                                cfg.tool_policies.remove(&canonical);
-                                Ok(())
-                            });
                         }
                     }
                 }
@@ -1694,11 +1908,6 @@ async fn run_stream(
         }
 
         // ---- Normal finish --------------------------------------------------
-        debug_log(&format!(
-            "[round] finished reason={:?} tool_calls={} (accumulated in openai_messages)",
-            finish_reason,
-            tool_calls.len()
-        ));
         emit(ChatEvent::Finish {
             request_id: request_id.clone(),
             reason: finish_reason.or(Some("stop".into())),
@@ -1946,6 +2155,170 @@ mod tests {
     use super::*;
 
     #[test]
+    fn approval_scope_and_outbound_override_remembered_permissions() {
+        use crate::storage::config::ToolPolicy;
+        let mut approvals = std::collections::HashSet::new();
+        approvals.insert(("chat-a".to_owned(), "read_clipboard".to_owned()));
+        let for_chat = |id: &str| approvals.contains(&(id.to_owned(), "read_clipboard".to_owned()));
+        assert!(!needs_tool_approval(
+            ToolPolicy::Allow,
+            true,
+            for_chat("chat-a"),
+            false,
+            false
+        ));
+        assert!(needs_tool_approval(
+            ToolPolicy::Allow,
+            true,
+            for_chat("chat-b"),
+            false,
+            false
+        ));
+        assert!(needs_tool_approval(
+            ToolPolicy::Confirm,
+            true,
+            for_chat("chat-a"),
+            false,
+            false
+        ));
+        assert!(!needs_tool_approval(
+            ToolPolicy::AlwaysAllow,
+            true,
+            false,
+            false,
+            false
+        ));
+        assert!(needs_tool_approval(
+            ToolPolicy::AlwaysAllow,
+            true,
+            true,
+            false,
+            true
+        ));
+        assert!(needs_tool_approval(
+            ToolPolicy::AlwaysAllow,
+            true,
+            true,
+            true,
+            false
+        ));
+        assert!(validate_approval_scope(Some("chat-a")).is_ok());
+        assert!(validate_approval_scope(Some("chat a")).is_err());
+    }
+
+    #[tokio::test]
+    async fn approval_is_registered_before_the_pending_event_is_emitted() {
+        let pending = crate::state::PendingToolApprovals::default();
+        let token = CancellationToken::new();
+        let emit = |event: ChatEvent| {
+            if let ChatEvent::ToolPending {
+                request_id,
+                call_id,
+                ..
+            } = event
+            {
+                let key = format!("{request_id}:{call_id}");
+                let entry = pending
+                    .lock()
+                    .unwrap()
+                    .remove(&key)
+                    .expect("approval registered");
+                entry
+                    .sender
+                    .send(crate::state::ApprovalVerdict { approved: true })
+                    .unwrap();
+            }
+        };
+        let result = request_approval(
+            &emit,
+            &pending,
+            &token,
+            "req-1",
+            ApprovalPrompt {
+                call_id: "c1",
+                name: "read_clipboard",
+                summary: "读取剪贴板".into(),
+                scope: "chat-a",
+                can_remember: true,
+            },
+        )
+        .await;
+        assert!(matches!(result, ApprovalOutcome::Approved));
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn assistant_policy_suggestions_merge_with_global_at_the_stricter_side() {
+        use crate::storage::assistants::Assistant;
+        use crate::storage::config::{ConfigStore, ToolPolicy};
+        use crate::storage::database::{Conversation, Database};
+
+        let dir = std::env::temp_dir().join(format!(
+            "chatfloat-merge-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = ConfigStore::load(dir.join("providers.json"));
+        store
+            .update(|cfg| {
+                cfg.tool_policies
+                    .insert("read_clipboard".into(), ToolPolicy::Confirm);
+                cfg.tool_policies
+                    .insert("web_search".into(), ToolPolicy::Disabled);
+                Ok(())
+            })
+            .unwrap();
+
+        let db = Database::in_memory();
+        db.upsert_assistant(&Assistant {
+            id: "a1".into(),
+            name: "测试助手".into(),
+            icon: None,
+            description: None,
+            system_prompt: "你是测试助手".into(),
+            provider_id: None,
+            model_key: None,
+            tool_policies_json: Some(
+                r#"{"read_clipboard":"allow","web_search":"allow","read_pdf":"disabled"}"#.into(),
+            ),
+            sort_order: 1,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .unwrap();
+        db.create_conversation(&Conversation {
+            id: "c1".into(),
+            title: "会话".into(),
+            provider_id: None,
+            model_key: None,
+            system_prompt: None,
+            assistant_id: Some("a1".into()),
+            pinned: false,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .unwrap();
+
+        let merged = merge_tool_policies(&store, &db, Some("c1"));
+        // A global "confirm" cannot be waived by the assistant's suggestion…
+        assert_eq!(merged.get("read_clipboard"), Some(&ToolPolicy::Confirm));
+        // …a global "disabled" stays disabled…
+        assert_eq!(merged.get("web_search"), Some(&ToolPolicy::Disabled));
+        // …while an assistant-only suggestion still takes effect.
+        assert_eq!(merged.get("read_pdf"), Some(&ToolPolicy::Disabled));
+
+        // Without a bound conversation only the global map applies.
+        let plain = merge_tool_policies(&store, &db, None);
+        assert!(!plain.contains_key("read_pdf"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn validate_chat_request_accepts_normal_payload() {
         let req = ChatSendRequest {
             provider_id: "p".into(),
@@ -1962,6 +2335,7 @@ mod tests {
             thinking_effort: "max".into(),
             request_id: None,
             conversation_id: None,
+            approval_session_id: None,
             skill_ids: vec![],
         };
         assert!(validate_messages(&req.messages).is_ok());
@@ -1984,6 +2358,7 @@ mod tests {
             thinking_effort: "max".into(),
             request_id: None,
             conversation_id: None,
+            approval_session_id: None,
             skill_ids: vec![],
         };
         assert!(validate_messages(&req.messages).is_err());
@@ -2017,6 +2392,7 @@ mod tests {
                 enable_thinking: true,
                 thinking_effort: "medium".into(),
                 conversation_id: None,
+                approval_session_id: None,
                 skill_ids: vec![],
             }
         }
