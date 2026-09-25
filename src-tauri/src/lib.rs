@@ -11,6 +11,11 @@ mod window;
 
 use tauri::Manager;
 
+/// How long to wait after launch before warming MCP servers. Startup and the
+/// first paint get priority; an unused server then still has time to boot
+/// before the user's first question.
+const MCP_WARMUP_DELAY_SECS: u64 = 15;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -95,6 +100,7 @@ pub fn run() {
             commands::knowledge::add_kb_text,
             commands::knowledge::search_kb,
             commands::mcp::list_mcp_servers,
+            commands::mcp::warm_mcp_servers,
             commands::mcp::upsert_mcp_server,
             commands::mcp::delete_mcp_server,
             commands::mcp::test_mcp_server,
@@ -128,6 +134,7 @@ pub fn run() {
             commands::history::set_conversation_model,
             commands::history::delete_conversation,
             commands::history::set_conversation_pinned,
+            commands::history::branch_conversation,
             commands::history::clear_all_history,
             commands::usage::get_usage_stats,
             commands::memory::list_memories,
@@ -151,6 +158,13 @@ pub fn run() {
                 .map_err(|e| format!("cannot resolve config dir: {e}"))?;
             std::fs::create_dir_all(&config_dir)
                 .map_err(|e| format!("cannot create config dir: {e}"))?;
+            // Older builds wrote raw prompts, stream events and tool results here.
+            // The debug writer is gone; remove its legacy file on upgrade.
+            if let Err(err) = std::fs::remove_file(config_dir.join("chat-debug.log")) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("清理旧版聊天调试日志失败：{err}");
+                }
+            }
             let config_store =
                 storage::config::ConfigStore::load(config_dir.join("providers.json"));
             // Apply the persisted proxy settings to the shared HTTP client.
@@ -185,20 +199,24 @@ pub fn run() {
                 window::manager::force_rounded_corners(&w);
             }
 
-            // Warm the MCP tool list in the background (P1-10).  Tools are
-            // offered from this cached snapshot, so the first chat request
-            // never waits for a server process to boot.  A slow tick then
-            // reaps sessions that have been idle for a while.
+            // MCP servers are started on demand instead of at launch: a cold
+            // start should not pay for child processes the user may never
+            // touch, and an idle app should not keep them alive. Once the app
+            // has settled, one warm-up runs so the first chat usually finds its
+            // tools already cached (P1-10). A slow tick reaps idle sessions.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let config = handle.state::<storage::config::ConfigStore>();
-                let state = handle.state::<state::AppState>();
-                commands::mcp::refresh_from_config(&config, &state).await;
+                tokio::time::sleep(std::time::Duration::from_secs(MCP_WARMUP_DELAY_SECS)).await;
+                {
+                    let config = handle.state::<storage::config::ConfigStore>();
+                    let state = handle.state::<state::AppState>();
+                    commands::mcp::refresh_from_config(&config, &state).await;
+                }
 
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
                 loop {
                     ticker.tick().await;
-                    state.mcp.reap_idle();
+                    handle.state::<state::AppState>().mcp.reap_idle();
                 }
             });
 

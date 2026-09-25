@@ -24,6 +24,20 @@ vi.mock("../../services/history-api", () => ({
   clearAllHistory: vi.fn().mockResolvedValue(undefined),
   setConversationModel: vi.fn().mockResolvedValue(undefined),
   parseAttachmentsJson: vi.fn().mockReturnValue(undefined),
+  // Mirror of the real parser: only data-URL images survive.
+  parseImagesJson: (raw?: string | null) => {
+    if (!raw || !raw.trim()) return undefined;
+    try {
+      const parsed = JSON.parse(raw);
+      const images = Array.isArray(parsed)
+        ? parsed.filter((entry: unknown) => typeof entry === "string" && entry.startsWith("data:image/"))
+        : [];
+      return images.length > 0 ? images : undefined;
+    } catch {
+      return undefined;
+    }
+  },
+  branchConversation: vi.fn(),
   editMessage: vi.fn(),
   startMessageVersion: vi.fn(),
   activateMessageVersion: vi.fn(),
@@ -146,6 +160,7 @@ describe("chat-store send()", () => {
         thinkingEffort: "medium",
         requestId: rid,
         conversationId: expect.any(String),
+        approvalSessionId: expect.any(String),
         skillIds: [],
       },
     });
@@ -162,6 +177,25 @@ describe("chat-store send()", () => {
     expect(historyApi.createConversation).not.toHaveBeenCalled();
     expect(historyApi.touchConversation).not.toHaveBeenCalled();
     expect(useHistoryStore.getState().activeId).toBeTruthy();
+  });
+
+  it("waits for the initial history transaction before persisting a fast final event", async () => {
+    let release!: () => void;
+    vi.mocked(historyApi.beginChatTurn).mockImplementationOnce(
+      () => new Promise<void>((resolve) => { release = resolve; }),
+    );
+    const sending = useChatStore.getState().send("快速问题");
+    await Promise.resolve();
+    const rid = Object.keys(useChatStore.getState().streams)[0]!;
+    useChatStore.getState().appendDelta(rid, "快速回答");
+    useChatStore.getState().onFinish(rid, "stop");
+    expect(historyApi.saveMessage).not.toHaveBeenCalled();
+    release();
+    await sending;
+    await Promise.resolve();
+    expect(historyApi.saveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: expect.any(String), content: "快速回答", status: "done" }),
+    );
   });
 
   it("appends deltas and finalizes on finish, persisting the final content", async () => {
@@ -298,6 +332,7 @@ describe("chat-store send()", () => {
         thinkingEffort: "medium",
         requestId: rid2,
         conversationId: expect.any(String),
+        approvalSessionId: expect.any(String),
         skillIds: [],
       },
     });
@@ -326,7 +361,11 @@ describe("chat-store send()", () => {
     expect(Object.keys(useChatStore.getState().streams)).toEqual([rid]);
   });
 
-  it("branchFrom keeps the chosen message and cuts everything after it", async () => {
+  it("branchFrom cuts locally when history recording is off", async () => {
+    // With recording off there is nothing to persist, so the shortcut keeps
+    // the old in-memory behaviour: keep up to the chosen message and stop.
+    useHistoryStore.setState({ historyEnabled: false, activeId: null });
+
     const rid1 = await sendAndGetRid("问题一");
     useChatStore.getState().appendDelta(rid1, "回答一");
     useChatStore.getState().onFinish(rid1, "stop");
@@ -340,7 +379,7 @@ describe("chat-store send()", () => {
 
     const firstAssistant = before.find((m) => m.role === "assistant");
     expect(firstAssistant).toBeDefined();
-    useChatStore.getState().branchFrom(firstAssistant!.id);
+    await useChatStore.getState().branchFrom(firstAssistant!.id);
 
     const after = useChatStore.getState().messages;
     expect(after).toHaveLength(2);
@@ -843,6 +882,72 @@ describe("chat-store message versions (P0-1)", () => {
   });
 });
 
+describe("branchFrom() 创建分支", () => {
+  const sourceMessages = [
+    { id: "u1", role: "user" as const, content: "问题", status: "done" as const },
+    { id: "a1", role: "assistant" as const, content: "回答", status: "done" as const },
+    { id: "u2", role: "user" as const, content: "追问", status: "done" as const },
+  ];
+
+  it("persists the branch and switches to the new conversation", async () => {
+    useHistoryStore.setState({ activeId: "c1", historyEnabled: true });
+    useChatStore.setState({ messages: sourceMessages });
+    vi.mocked(historyApi.branchConversation).mockResolvedValue({
+      conversation: {
+        id: "c2",
+        title: "问题 · 分支",
+        providerId: "p1",
+        modelKey: "m1",
+        systemPrompt: null,
+        assistantId: null,
+        pinned: false,
+        createdAt: 2,
+        updatedAt: 2,
+      },
+      messages: [
+        { id: "nu1", conversationId: "c2", role: "user", content: "问题", status: "done", createdAt: 1 },
+        { id: "na1", conversationId: "c2", role: "assistant", content: "回答", status: "done", createdAt: 2 },
+      ],
+    });
+
+    await useChatStore.getState().branchFrom("a1");
+
+    expect(historyApi.branchConversation).toHaveBeenCalledWith("c1", "a1");
+    expect(useHistoryStore.getState().activeId).toBe("c2");
+    expect(useChatStore.getState().messages.map((m) => m.id)).toEqual(["nu1", "na1"]);
+    expect(useChatStore.getState().messages[1].content).toBe("回答");
+  });
+
+  it("discards a stale branch when the user navigated away", async () => {
+    useHistoryStore.setState({ activeId: "c1", historyEnabled: true });
+    useChatStore.setState({ messages: sourceMessages });
+    vi.mocked(historyApi.branchConversation).mockImplementation(async () => {
+      // The user switches conversations while the backend copies the messages.
+      useHistoryStore.setState({ activeId: "other" });
+      useChatStore.setState({ approvalSessionId: "rotated" });
+      return {
+        conversation: {
+          id: "c2",
+          title: "问题 · 分支",
+          providerId: "p1",
+          modelKey: "m1",
+          systemPrompt: null,
+          assistantId: null,
+          pinned: false,
+          createdAt: 2,
+          updatedAt: 2,
+        },
+        messages: [],
+      };
+    });
+
+    await useChatStore.getState().branchFrom("a1");
+
+    expect(useHistoryStore.getState().activeId).toBe("other");
+    expect(useChatStore.getState().messages).toHaveLength(3);
+  });
+});
+
 describe("multi-conversation support (多对话并行)", () => {
   const conversationB = {
     id: "conv-b",
@@ -911,8 +1016,12 @@ describe("multi-conversation support (多对话并行)", () => {
 
     // Finishing in the background raises the "finished" dot.
     useChatStore.getState().onFinish(rid, "stop");
+    await Promise.resolve();
     state = useChatStore.getState();
     expect(state.unreadDone[convA]).toBe(true);
+    expect(historyApi.saveMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ conversationId: convA, content: "后台回答", status: "done" }),
+    );
     expect(state.backgroundMessages[convA][1].status).toBe("done");
 
     // Switching back restores the snapshot and clears the dot.

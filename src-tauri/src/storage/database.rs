@@ -16,6 +16,11 @@ use crate::storage::skills::{new_skill_id, Skill, SkillDraft};
 
 /// Ordered, append-only migration list. Never edit applied migrations —
 /// add new ones at the end.
+///
+/// Each element is exactly one migration: the element at index `n` is version
+/// `n + 1`, i.e. the number written to `PRAGMA user_version` once it has been
+/// applied.  Keep the `// vN` comments in step with that numbering — a stale
+/// comment shifts every later reference (v10 once held two elements).
 const MIGRATIONS: &[&str] = &[
     // v1 — initial schema
     "CREATE TABLE IF NOT EXISTS conversations (
@@ -102,15 +107,17 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE agent_runs ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;",
     // v9 — image generation history keeps reference images for image-to-image / reference workflows.
     "ALTER TABLE image_generations ADD COLUMN reference_images_json TEXT;",
-    // v10 — assistant messages remember which model answered and how long it took.
+    // v10 — assistant messages remember which model answered.
     "ALTER TABLE messages ADD COLUMN model_name TEXT;",
+    // v11 — …and how long that answer took.  Split out as its own entry so the
+    // numbers below line up with `PRAGMA user_version`.
     "ALTER TABLE messages ADD COLUMN duration_ms INTEGER;",
-    // v11 — message version stacks: `versions_json` holds every version of a
+    // v12 — message version stacks: `versions_json` holds every version of a
     // message's content (JSON array); the row's content fields mirror the
     // entry at `active_version`.  Absent (NULL) for never-edited messages.
     "ALTER TABLE messages ADD COLUMN versions_json TEXT;
      ALTER TABLE messages ADD COLUMN active_version INTEGER NOT NULL DEFAULT 0;",
-    // v12 — full-text search over message content (P0-2).
+    // v13 — full-text search over message content (P0-2).
     //
     // `trigram` is the only built-in tokenizer that supports CJK substring
     // matching (unicode61 treats a whole CJK run as one token).  It indexes
@@ -138,7 +145,7 @@ const MIGRATIONS: &[&str] = &[
         INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
     END;
     INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');",
-    // v13 — assistants (P1-7): role presets that bundle a system prompt, an
+    // v14 — assistants (P1-7): role presets that bundle a system prompt, an
     // optional pinned model and suggested tool policies.  Conversations bind
     // to one assistant; rows are seeded from the built-in definitions on
     // startup (`seed_builtin_assistants`).
@@ -157,11 +164,11 @@ const MIGRATIONS: &[&str] = &[
          updated_at         INTEGER NOT NULL
      );
      CREATE INDEX IF NOT EXISTS idx_assistants_sort ON assistants(sort_order);",
-    // v14 — message attachments (P1-8): metadata (name + character count) of
+    // v15 — message attachments (P1-8): metadata (name + character count) of
     // the documents a prompt was sent with.  The extracted text lives inside
     // `content`, so exports / search / summaries keep working unchanged.
     "ALTER TABLE messages ADD COLUMN attachments_json TEXT;",
-    // v15 — local knowledge base (P1-9): documents, their chunks, and a trigram
+    // v16 — local knowledge base (P1-9): documents, their chunks, and a trigram
     // FTS index over the chunks (same pattern as messages_fts, so CJK
     // substring search works out of the box).  No vectors: BM25 over this
     // index is the whole retrieval model.
@@ -198,15 +205,15 @@ const MIGRATIONS: &[&str] = &[
          VALUES ('delete', old.rowid, old.content);
          INSERT INTO kb_chunks_fts(rowid, content) VALUES (new.rowid, new.content);
      END;",
-    // v16 — pinned conversations sort above the recency list (P1-11.1).
+    // v17 — pinned conversations sort above the recency list (P1-11.1).
     "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;",
-    // v17 — per-message token usage.  The v1 `usage_json` column was never
+    // v18 — per-message token usage.  The v1 `usage_json` column was never
     // written; dedicated integer columns keep the aggregate queries
     // (`SUM` / `GROUP BY` over models and days) simple.  NULL for rows that
     // predate usage recording or whose provider never reported it.
     "ALTER TABLE messages ADD COLUMN input_tokens INTEGER;
      ALTER TABLE messages ADD COLUMN output_tokens INTEGER;",
-    // v18 — built-in assistant icons become vector-icon keys resolved by the
+    // v19 — built-in assistant icons become vector-icon keys resolved by the
     // frontend (`AssistantIcon`).  Only rows still carrying the shipped emoji
     // are rewritten, so a user's own icon choice is never clobbered; the
     // emoji variants cover both the U+FE0F and bare forms.
@@ -222,7 +229,7 @@ const MIGRATIONS: &[&str] = &[
         WHERE id = 'assistant.builtin.translator' AND icon = '🌐';
      UPDATE assistants SET icon = 'clipboard-list'
         WHERE id = 'assistant.builtin.meeting' AND icon = '📋';",
-    // v19 — user skills (自定义技能): reusable instruction packages the user
+    // v20 — user skills (自定义技能): reusable instruction packages the user
     // writes once and the assistant applies when triggered.  Triggers live in
     // a JSON array string; an empty array means "always active"
     // (see `agent::skills` for the two-stage prompt injection).
@@ -238,6 +245,13 @@ const MIGRATIONS: &[&str] = &[
         updated_at    INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_skills_sort ON skills(sort_order);",
+    // v21 — old tool-call JSON may contain local files, MCP output, clipboard
+    // data or approval summaries. Retire these historical payloads on upgrade.
+    "UPDATE messages SET tool_calls = NULL WHERE tool_calls IS NOT NULL;",
+    // v22 — images attached to a prompt (data URLs, already downscaled by the
+    // composer). Without this a re-opened conversation lost the pictures it was
+    // asked about, even though the question itself was stored.
+    "ALTER TABLE messages ADD COLUMN images_json TEXT;",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,11 +262,11 @@ pub struct Conversation {
     pub provider_id: Option<String>,
     pub model_key: Option<String>,
     pub system_prompt: Option<String>,
-    /// Assistant this conversation is bound to (v13).  `None` = follow the
+    /// Assistant this conversation is bound to (v14).  `None` = follow the
     /// global default prompt/model.
     #[serde(default)]
     pub assistant_id: Option<String>,
-    /// Pinned conversations sort above the recency list (v16).
+    /// Pinned conversations sort above the recency list (v17).
     #[serde(default)]
     pub pinned: bool,
     pub created_at: i64,
@@ -279,7 +293,7 @@ fn map_conversation(r: &rusqlite::Row<'_>) -> SqlResult<Conversation> {
     })
 }
 
-/// One version inside a message's version stack (v11).
+/// One version inside a message's version stack (v12).
 ///
 /// The array stored in `messages.versions_json` contains **all** versions
 /// including the active one; the row's own content fields are a mirror of
@@ -301,6 +315,36 @@ pub struct MessageVersion {
     pub created_at: i64,
 }
 
+/// Keep only the non-content tool timeline. The storage boundary also applies
+/// to imported backups, so a caller cannot bypass the frontend redaction.
+fn sanitize_tool_calls(raw: Option<&str>) -> Option<String> {
+    let calls: Vec<serde_json::Value> = serde_json::from_str(raw?).ok()?;
+    let safe: Vec<serde_json::Value> = calls
+        .iter()
+        .filter_map(|call| {
+            let id = call.get("callId")?.as_str()?;
+            let name = call.get("name")?.as_str()?;
+            let status = call.get("status")?.as_str()?;
+            let mut step = serde_json::json!({
+                "callId": id,
+                "name": name,
+                "status": status,
+                "arguments": "{}",
+            });
+            for field in ["startedAt", "finishedAt", "durationMs"] {
+                if let Some(value) = call.get(field).and_then(serde_json::Value::as_u64) {
+                    step[field] = value.into();
+                }
+            }
+            Some(step)
+        })
+        .collect();
+    if safe.is_empty() {
+        return None;
+    }
+    serde_json::to_string(&safe).ok()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -319,28 +363,32 @@ pub struct Message {
     pub model_name: Option<String>,
     #[serde(default)]
     pub duration_ms: Option<i64>,
-    /// Serialized JSON array of [`MessageVersion`] (v11). `None` when the
+    /// Serialized JSON array of [`MessageVersion`] (v12). `None` when the
     /// message was never edited or regenerated.
     #[serde(default)]
     pub versions_json: Option<String>,
-    /// Index into `versions_json` mirrored by the row's content fields (v11).
+    /// Index into `versions_json` mirrored by the row's content fields (v12).
     #[serde(default)]
     pub active_version: i64,
     /// Serialized JSON array of `{ name, chars }` for attached documents
-    /// (v14).  Only metadata — the extracted text lives inside `content`.
+    /// (v15).  Only metadata — the extracted text lives inside `content`.
     #[serde(default)]
     pub attachments_json: Option<String>,
-    /// Prompt tokens reported by the provider (v17).  `None` when the
+    /// Serialized JSON array of data-URL images attached to the prompt (v22).
+    /// Downscaled by the composer before storing; `None` for text-only turns.
+    #[serde(default)]
+    pub images_json: Option<String>,
+    /// Prompt tokens reported by the provider (v18).  `None` when the
     /// provider did not report usage or the row predates recording.
     #[serde(default)]
     pub input_tokens: Option<i64>,
-    /// Completion tokens reported by the provider (v17).
+    /// Completion tokens reported by the provider (v18).
     #[serde(default)]
     pub output_tokens: Option<i64>,
     pub created_at: i64,
 }
 
-/// One full-text search hit (v12).
+/// One full-text search hit (v13).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageHit {
@@ -353,7 +401,7 @@ pub struct MessageHit {
     pub created_at: i64,
 }
 
-/// Aggregated token usage for one model (v17).
+/// Aggregated token usage for one model (v18).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelUsage {
@@ -403,7 +451,7 @@ pub struct UsageStats {
     /// Finished assistant turns on record.
     pub rounds: i64,
     /// How many of those turns carry token numbers (providers may omit
-    /// usage, and rows saved before v17 have none).
+    /// usage, and rows saved before v18 have none).
     pub rounds_with_usage: i64,
     /// Longest span between the first and last message of a conversation
     /// (ms); 0 when nothing is recorded.
@@ -414,7 +462,7 @@ pub struct UsageStats {
     pub model_daily: Vec<ModelDailyUsage>,
 }
 
-/// One knowledge-base document (v15).
+/// One knowledge-base document (v16).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KbDocument {
@@ -429,7 +477,7 @@ pub struct KbDocument {
     pub created_at: i64,
 }
 
-/// One retrieved knowledge-base passage (v15).
+/// One retrieved knowledge-base passage (v16).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KbHit {
@@ -446,7 +494,7 @@ pub struct KbHit {
 /// expects.  Keep the two in sync.
 const MESSAGE_COLUMNS: &str = "id, conversation_id, role, content, status, reasoning, \
      tool_calls, model_name, duration_ms, versions_json, active_version, attachments_json, \
-     input_tokens, output_tokens, created_at";
+     images_json, input_tokens, output_tokens, created_at";
 
 /// Map one `messages` row selected with [`MESSAGE_COLUMNS`].
 fn map_message(r: &rusqlite::Row<'_>) -> SqlResult<Message> {
@@ -463,10 +511,39 @@ fn map_message(r: &rusqlite::Row<'_>) -> SqlResult<Message> {
         versions_json: r.get(9)?,
         active_version: r.get(10)?,
         attachments_json: r.get(11)?,
-        input_tokens: r.get(12)?,
-        output_tokens: r.get(13)?,
-        created_at: r.get(14)?,
+        images_json: r.get(12)?,
+        input_tokens: r.get(13)?,
+        output_tokens: r.get(14)?,
+        created_at: r.get(15)?,
     })
+}
+
+/// Image limits for one message: a handful of downscaled screenshots, not a
+/// photo library.  Rejecting oversized payloads keeps the local database and
+/// the exported backup from silently ballooning.
+const MAX_MESSAGE_IMAGES: usize = 6;
+const MAX_MESSAGE_IMAGES_BYTES: usize = 12 * 1024 * 1024;
+
+/// Validate a `images_json` payload: a JSON array of `data:image/*` URLs.
+fn validate_images_json(raw: Option<&str>) -> Result<(), String> {
+    let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
+        return Ok(());
+    };
+    if raw.len() > MAX_MESSAGE_IMAGES_BYTES {
+        return Err("图片体积过大，请减少图片数量或尺寸后重试".into());
+    }
+    let parsed: Vec<serde_json::Value> =
+        serde_json::from_str(raw).map_err(|_| "图片数据格式无效".to_string())?;
+    if parsed.len() > MAX_MESSAGE_IMAGES {
+        return Err(format!("单条消息最多附带 {MAX_MESSAGE_IMAGES} 张图片"));
+    }
+    if parsed
+        .iter()
+        .any(|entry| !entry.as_str().is_some_and(|s| s.starts_with("data:image/")))
+    {
+        return Err("图片数据格式无效".into());
+    }
+    Ok(())
 }
 
 /// Parse a `versions_json` payload into the version list (empty when absent
@@ -480,6 +557,26 @@ fn parse_versions(raw: Option<&str>) -> Vec<MessageVersion> {
 /// Current wall-clock time in milliseconds since the Unix epoch.
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+/// Monotonic suffix so two rows created in the same millisecond never collide.
+static LOCAL_ID_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Id for a row the backend creates itself (branches).  The frontend keeps its
+/// own scheme for live turns; these only need to be unique and stable.
+fn new_local_id(prefix: &str) -> String {
+    let millis = now_ms();
+    let seq = LOCAL_ID_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{prefix}-{millis:x}-{seq:x}")
+}
+
+/// `原标题 · 分支`, trimmed so the sidebar keeps a readable width.
+fn branch_title(title: &str) -> String {
+    const MAX_CHARS: usize = 32;
+    const SUFFIX: &str = " · 分支";
+    let room = MAX_CHARS.saturating_sub(SUFFIX.chars().count());
+    let base: String = title.trim().chars().take(room).collect();
+    format!("{base}{SUFFIX}")
 }
 
 /// Parse the `skills.triggers_json` column, tolerating garbage values.
@@ -689,7 +786,7 @@ pub struct BackupFile {
     pub memories: Vec<Memory>,
     #[serde(default)]
     pub image_generations: Vec<ImageGeneration>,
-    /// User skills (v19); absent in backups written before the feature.
+    /// User skills (v20); absent in backups written before the feature.
     #[serde(default)]
     pub skills: Vec<Skill>,
 }
@@ -851,7 +948,7 @@ impl Database {
     }
 
     #[cfg(test)]
-    fn in_memory() -> Self {
+    pub(crate) fn in_memory() -> Self {
         let conn = Connection::open_in_memory().expect("in-memory db");
         let db = Self {
             conn: Mutex::new(conn),
@@ -876,7 +973,15 @@ impl Database {
             // the next startup would re-run the migration and fail (e.g. a
             // duplicate column).
             let tx = conn.transaction()?;
-            tx.execute_batch(sql)?;
+            if let Err(e) = tx.execute_batch(sql) {
+                // A downgraded `user_version` (tests, manual schema edits) can
+                // replay an ALTER whose column already exists.  That is the
+                // desired end state, not a broken schema — any other error is
+                // still fatal.
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e);
+                }
+            }
             tx.pragma_update(None, "user_version", (idx + 1) as u32)?;
             tx.commit()?;
         }
@@ -1042,19 +1147,21 @@ impl Database {
         }
 
         for msg in [user_message, assistant_message] {
+            validate_images_json(msg.images_json.as_deref())?;
             tx.execute(
-                "INSERT INTO messages (id, conversation_id, role, content, status, reasoning, tool_calls, model_name, duration_ms, attachments_json, input_tokens, output_tokens, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                "INSERT INTO messages (id, conversation_id, role, content, status, reasoning, tool_calls, model_name, duration_ms, attachments_json, images_json, input_tokens, output_tokens, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                  ON CONFLICT(id) DO UPDATE SET
-                     content = excluded.content,
-                     status = excluded.status,
-                     reasoning = excluded.reasoning,
-                     tool_calls = excluded.tool_calls,
-                     model_name = excluded.model_name,
-                     duration_ms = excluded.duration_ms,
-                     input_tokens = excluded.input_tokens,
-                     output_tokens = excluded.output_tokens,
-                     attachments_json = COALESCE(excluded.attachments_json, attachments_json)",
+                    content = excluded.content,
+                    status = excluded.status,
+                    reasoning = excluded.reasoning,
+                    tool_calls = excluded.tool_calls,
+                    model_name = excluded.model_name,
+                    duration_ms = excluded.duration_ms,
+                    input_tokens = excluded.input_tokens,
+                    output_tokens = excluded.output_tokens,
+                    attachments_json = COALESCE(excluded.attachments_json, attachments_json),
+                    images_json = COALESCE(excluded.images_json, images_json)",
                 params![
                     msg.id,
                     msg.conversation_id,
@@ -1062,10 +1169,11 @@ impl Database {
                     msg.content,
                     msg.status,
                     msg.reasoning,
-                    msg.tool_calls,
+                    sanitize_tool_calls(msg.tool_calls.as_deref()),
                     msg.model_name,
                     msg.duration_ms,
                     msg.attachments_json,
+                    msg.images_json,
                     msg.input_tokens,
                     msg.output_tokens,
                     msg.created_at,
@@ -1212,10 +1320,11 @@ impl Database {
     /// Insert or update a message (assistant rows are created when the
     /// request starts, then updated once the stream settles).
     pub fn save_message(&self, msg: &Message) -> Result<(), String> {
+        validate_images_json(msg.images_json.as_deref())?;
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, status, reasoning, tool_calls, model_name, duration_ms, attachments_json, input_tokens, output_tokens, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            "INSERT INTO messages (id, conversation_id, role, content, status, reasoning, tool_calls, model_name, duration_ms, attachments_json, images_json, input_tokens, output_tokens, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(id) DO UPDATE SET
                  content = excluded.content,
                  status = excluded.status,
@@ -1224,6 +1333,7 @@ impl Database {
                  model_name = excluded.model_name,
                  duration_ms = excluded.duration_ms,
                  attachments_json = COALESCE(excluded.attachments_json, attachments_json),
+                 images_json = COALESCE(excluded.images_json, images_json),
                  input_tokens = excluded.input_tokens,
                  output_tokens = excluded.output_tokens",
             params![
@@ -1233,10 +1343,11 @@ impl Database {
                 msg.content,
                 msg.status,
                 msg.reasoning,
-                msg.tool_calls,
+                sanitize_tool_calls(msg.tool_calls.as_deref()),
                 msg.model_name,
                 msg.duration_ms,
                 msg.attachments_json,
+                msg.images_json,
                 msg.input_tokens,
                 msg.output_tokens,
                 msg.created_at,
@@ -1280,7 +1391,7 @@ impl Database {
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {MESSAGE_COLUMNS} FROM messages
-                 WHERE conversation_id = ?1 ORDER BY created_at ASC"
+                 WHERE conversation_id = ?1 ORDER BY created_at ASC, rowid ASC"
             ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -1288,6 +1399,124 @@ impl Database {
             .map_err(|e| e.to_string())?;
         rows.collect::<SqlResult<Vec<_>>>()
             .map_err(|e| format!("读取消息失败：{e}"))
+    }
+
+    /// Copy a conversation up to (and including) `from_message_id` into a new
+    /// conversation and return it with its messages.  The source row is left
+    /// untouched — this is a branch, not a destructive truncation.
+    ///
+    /// Message ids are regenerated and image payloads re-validated, so a branch
+    /// cannot smuggle a payload the writer would have refused.
+    pub fn branch_conversation(
+        &self,
+        source_id: &str,
+        from_message_id: &str,
+    ) -> Result<(Conversation, Vec<Message>), String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("开始分支事务失败：{e}"))?;
+
+        let source: Conversation = tx
+            .query_row(
+                &format!("SELECT {CONVERSATION_COLUMNS} FROM conversations WHERE id = ?1"),
+                params![source_id],
+                map_conversation,
+            )
+            .optional()
+            .map_err(|e| format!("读取会话失败：{e}"))?
+            .ok_or_else(|| "原会话不存在".to_string())?;
+
+        let kept: Vec<Message> = {
+            let mut stmt = tx
+                .prepare(&format!(
+                    "SELECT {MESSAGE_COLUMNS} FROM messages
+                     WHERE conversation_id = ?1 ORDER BY created_at ASC, rowid ASC"
+                ))
+                .map_err(|e| format!("读取分支消息失败：{e}"))?;
+            let rows = stmt
+                .query_map(params![source_id], map_message)
+                .map_err(|e| format!("读取分支消息失败：{e}"))?;
+            let all = rows
+                .collect::<SqlResult<Vec<_>>>()
+                .map_err(|e| format!("读取分支消息失败：{e}"))?;
+            let cut = all
+                .iter()
+                .position(|m| m.id == from_message_id)
+                .ok_or_else(|| "找不到要分支的消息".to_string())?;
+            all[..=cut].to_vec()
+        };
+
+        let now = now_ms();
+        let branch = Conversation {
+            id: new_local_id("conv"),
+            title: branch_title(&source.title),
+            provider_id: source.provider_id.clone(),
+            model_key: source.model_key.clone(),
+            system_prompt: source.system_prompt.clone(),
+            assistant_id: source.assistant_id.clone(),
+            pinned: false,
+            created_at: now,
+            updated_at: now,
+        };
+        tx.execute(
+            "INSERT INTO conversations
+                (id, title, provider_id, model_key, system_prompt, assistant_id, pinned,
+                 created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                branch.id,
+                branch.title,
+                branch.provider_id,
+                branch.model_key,
+                branch.system_prompt,
+                branch.assistant_id,
+                branch.pinned,
+                branch.created_at,
+                branch.updated_at,
+            ],
+        )
+        .map_err(|e| format!("创建分支会话失败：{e}"))?;
+
+        let mut copied = Vec::with_capacity(kept.len());
+        for original in &kept {
+            validate_images_json(original.images_json.as_deref())?;
+            let message = Message {
+                id: new_local_id("msg"),
+                conversation_id: branch.id.clone(),
+                ..original.clone()
+            };
+            tx.execute(
+                "INSERT INTO messages
+                    (id, conversation_id, role, content, status, reasoning, tool_calls,
+                     model_name, duration_ms, versions_json, active_version, attachments_json,
+                     images_json, input_tokens, output_tokens, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                params![
+                    message.id,
+                    message.conversation_id,
+                    message.role,
+                    message.content,
+                    message.status,
+                    message.reasoning,
+                    sanitize_tool_calls(message.tool_calls.as_deref()),
+                    message.model_name,
+                    message.duration_ms,
+                    message.versions_json,
+                    message.active_version,
+                    message.attachments_json,
+                    message.images_json,
+                    message.input_tokens,
+                    message.output_tokens,
+                    message.created_at,
+                ],
+            )
+            .map_err(|e| format!("复制分支消息失败：{e}"))?;
+            copied.push(message);
+        }
+
+        tx.commit().map_err(|e| format!("提交分支失败：{e}"))?;
+        Ok((branch, copied))
     }
 
     /// Read a single message row (used by version operations).
@@ -1301,7 +1530,7 @@ impl Database {
         .map_err(|e| format!("读取消息失败：{e}"))
     }
 
-    /* ---------------- message versions (v11) ---------------- */
+    /* ---------------- message versions (v12) ---------------- */
 
     /// Append `content` as a new version and make it active (user edit).
     /// The first call seeds the stack with the message's current state, so the
@@ -1392,7 +1621,7 @@ impl Database {
         Ok(updated)
     }
 
-    /* ---------------- knowledge base (v15) ---------------- */
+    /* ---------------- knowledge base (v16) ---------------- */
 
     /// Ingest one document: chunk it and store document + chunks atomically.
     pub fn kb_ingest(
@@ -1416,7 +1645,7 @@ impl Database {
         Ok(document)
     }
 
-    /* ---------------- full-text search (v12) ---------------- */
+    /* ---------------- full-text search (v13) ---------------- */
 
     /// Search message content across every conversation (P0-2).
     ///
@@ -1794,11 +2023,11 @@ impl Database {
         Ok(())
     }
 
-    /* ---------------- token usage (v17) ---------------- */
+    /* ---------------- token usage (v18) ---------------- */
 
     /// Aggregate per-model and per-day token usage.
     ///
-    /// Only finished assistant turns count.  Rows saved before v17 (or from
+    /// Only finished assistant turns count.  Rows saved before v18 (or from
     /// providers that never report usage) have NULL token columns: they still
     /// contribute to the round counts, so the UI can explain the gap.
     pub fn usage_stats(&self) -> Result<UsageStats, String> {
@@ -1937,7 +2166,7 @@ impl Database {
         })
     }
 
-    /* ---------------- assistants (v13) ---------------- */
+    /* ---------------- assistants (v14) ---------------- */
 
     /// All assistants: shipped ones first (by `sort_order`), then user ones.
     pub fn list_assistants(&self) -> Result<Vec<Assistant>, String> {
@@ -2064,7 +2293,7 @@ impl Database {
         self.upsert_assistant(&template)
     }
 
-    /* ---------------- skills (v19) ---------------- */
+    /* ---------------- skills (v20) ---------------- */
 
     /// All skills, ordered by `sort_order` then creation time.
     pub fn list_skills(&self) -> Result<Vec<Skill>, String> {
@@ -2211,7 +2440,7 @@ impl Database {
         Ok(created)
     }
 
-    /* ---------------- local knowledge base (v15) ---------------- */
+    /* ---------------- local knowledge base (v16) ---------------- */
 
     /// Every knowledge-base document, newest first.
     pub fn kb_list_documents(&self) -> Result<Vec<KbDocument>, String> {
@@ -2455,13 +2684,17 @@ impl Database {
             report.conversations += 1;
 
             for m in &entry.messages {
+                // A backup can carry pictures too; validate them at the same
+                // boundary as live writes so an import cannot bypass the caps.
+                validate_images_json(m.images_json.as_deref())?;
                 let inserted = tx
                     .execute(
                         "INSERT OR IGNORE INTO messages
                             (id, conversation_id, role, content, status, reasoning, tool_calls,
                              model_name, duration_ms, versions_json, active_version,
-                             attachments_json, input_tokens, output_tokens, created_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                             attachments_json, images_json, input_tokens, output_tokens,
+                             created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                         params![
                             m.id,
                             // Trust the parent: never let a message point at
@@ -2471,12 +2704,13 @@ impl Database {
                             m.content,
                             m.status,
                             m.reasoning,
-                            m.tool_calls,
+                            sanitize_tool_calls(m.tool_calls.as_deref()),
                             m.model_name,
                             m.duration_ms,
                             m.versions_json,
                             m.active_version,
                             m.attachments_json,
+                            m.images_json,
                             m.input_tokens,
                             m.output_tokens,
                             m.created_at,
@@ -2587,6 +2821,27 @@ impl Database {
 mod tests {
     use super::*;
 
+    /// Guards the `// vN` convention in [`MIGRATIONS`]: the highest comment
+    /// number must equal the number of migrations — i.e. the `user_version` a
+    /// fully migrated database carries.  Without this, a migration added
+    /// without its comment silently shifts every later reference (v10 once
+    /// covered two elements, which is how the numbering drifted).
+    #[test]
+    fn migration_comments_match_the_array_length() {
+        static SOURCE: &str = include_str!("database.rs");
+        let re = regex::Regex::new(r"// v(\d+) —").expect("version regex");
+        let highest = re
+            .captures_iter(SOURCE)
+            .filter_map(|caps| caps.get(1)?.as_str().parse::<u32>().ok())
+            .max()
+            .expect("migration comments carry version numbers");
+        assert_eq!(
+            highest,
+            MIGRATIONS.len() as u32,
+            "迁移注释的编号必须与迁移项数一致"
+        );
+    }
+
     fn conv(id: &str, title: &str, updated: i64) -> Conversation {
         Conversation {
             id: id.into(),
@@ -2647,10 +2902,56 @@ mod tests {
             versions_json: None,
             active_version: 0,
             attachments_json: None,
+            images_json: None,
             input_tokens: None,
             output_tokens: None,
             created_at: at,
         }
+    }
+
+    #[test]
+    fn tool_calls_keep_only_non_content_timeline_at_storage_boundary() {
+        let db = Database::in_memory();
+        db.create_conversation(&conv("c1", "t", 1)).unwrap();
+        let mut message = msg("a1", "c1", "assistant", "答复", "done", 10);
+        message.tool_calls = Some(
+            serde_json::json!([{
+                "callId": "c1", "name": "mcp_file_reader", "status": "done",
+                "arguments": "private-input", "result": "private-output",
+                "summary": "private-summary", "error": "private-error",
+                "durationMs": 12
+            }])
+            .to_string(),
+        );
+        db.save_message(&message).unwrap();
+        let raw = db.list_messages("c1").unwrap()[0]
+            .tool_calls
+            .clone()
+            .unwrap();
+        assert!(!raw.contains("private-"));
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value[0]["name"], "mcp_file_reader");
+        assert_eq!(value[0]["durationMs"], 12);
+        assert_eq!(value[0]["arguments"], "{}");
+    }
+
+    #[test]
+    fn old_tool_call_payloads_are_removed_by_migration() {
+        let db = Database::in_memory();
+        db.create_conversation(&conv("c1", "t", 1)).unwrap();
+        db.save_message(&msg("a1", "c1", "assistant", "答复", "done", 10))
+            .unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE messages SET tool_calls = ?1 WHERE id = 'a1'",
+                ["private-output"],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 19).unwrap();
+        }
+        db.migrate().unwrap();
+        assert!(db.list_messages("c1").unwrap()[0].tool_calls.is_none());
     }
 
     #[test]
@@ -2771,7 +3072,7 @@ mod tests {
         assert!(db.activate_message_version("u1", -1).is_err());
     }
 
-    /* ---------------- full-text search (v12) ---------------- */
+    /* ---------------- full-text search (v13) ---------------- */
 
     #[test]
     fn search_messages_matches_cjk_via_fts_and_short_queries_via_like() {
@@ -2850,7 +3151,7 @@ mod tests {
         assert_eq!(hits[0].message_id, "m1");
     }
 
-    /* ---------------- assistants (v13) ---------------- */
+    /* ---------------- assistants (v14) ---------------- */
 
     fn test_assistant(id: &str, name: &str) -> Assistant {
         Assistant {
@@ -2969,10 +3270,10 @@ mod tests {
     }
 
     #[test]
-    fn migration_v18_normalizes_legacy_emoji_icons() {
+    fn migration_v19_normalizes_legacy_emoji_icons() {
         let db = Database::in_memory();
         {
-            // Simulate a database created before v18: the shipped emoji are
+            // Simulate a database created before v19: the shipped emoji are
             // still stored and `user_version` counts every already-applied
             // migration (18 — one legacy entry carries no vN label).
             let conn = db.conn.lock().unwrap();
@@ -3054,7 +3355,7 @@ mod tests {
         assert!(db.upsert_assistant(&a).is_err());
     }
 
-    /* ---------------- skills (v19) ---------------- */
+    /* ---------------- skills (v20) ---------------- */
 
     fn test_skill(id: &str, name: &str) -> Skill {
         Skill {
@@ -3195,7 +3496,7 @@ mod tests {
         );
     }
 
-    /* ---------------- token usage (v17) ---------------- */
+    /* ---------------- token usage (v18) ---------------- */
 
     fn usage_msg(
         id: &str,
@@ -3381,7 +3682,7 @@ mod tests {
         assert!(stats.daily.is_empty());
     }
 
-    /* ---------------- knowledge base (v15) ---------------- */
+    /* ---------------- knowledge base (v16) ---------------- */
 
     #[test]
     fn knowledge_base_ingests_chunks_and_retrieves_them() {
@@ -3599,6 +3900,159 @@ mod tests {
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "最终回答");
         assert_eq!(msgs[0].status, "done");
+    }
+
+    #[test]
+    fn message_images_survive_reload_and_respect_caps() {
+        let db = Database::in_memory();
+        db.create_conversation(&conv("c1", "t", 1)).unwrap();
+
+        let mut message = msg("u1", "c1", "user", "这张图是什么", "done", 2);
+        message.images_json = Some(r#"["data:image/png;base64,AAAA"]"#.to_string());
+        db.save_message(&message).unwrap();
+
+        let loaded = db.list_messages("c1").unwrap();
+        assert_eq!(
+            loaded[0].images_json.as_deref(),
+            Some(r#"["data:image/png;base64,AAAA"]"#)
+        );
+
+        // Non-image payloads and over-long arrays are refused at the boundary.
+        let mut foreign = msg("u2", "c1", "user", "x", "done", 3);
+        foreign.images_json = Some(r#"["file:///C:/secret.txt"]"#.to_string());
+        assert!(db.save_message(&foreign).is_err());
+
+        let mut too_many = msg("u3", "c1", "user", "x", "done", 4);
+        let images: Vec<String> = (0..MAX_MESSAGE_IMAGES + 1)
+            .map(|i| format!("data:image/png;base64,{i}"))
+            .collect();
+        too_many.images_json = Some(serde_json::to_string(&images).unwrap());
+        assert!(db.save_message(&too_many).is_err());
+    }
+
+    #[test]
+    fn begin_chat_turn_persists_prompt_images() {
+        let db = Database::in_memory();
+        let conversation = conv("c1", "视觉提问", 10);
+        let mut user = msg("u1", "c1", "user", "描述这张图", "done", 10);
+        user.images_json = Some(r#"["data:image/jpeg;base64,BBBB"]"#.to_string());
+        let assistant = msg("a1", "c1", "assistant", "", "streaming", 10);
+
+        db.begin_chat_turn(Some(&conversation), &user, &assistant, 11, None, None)
+            .unwrap();
+
+        // The row carries the image on the same path a reload reads.
+        let loaded = db.list_messages("c1").unwrap();
+        assert_eq!(
+            loaded[0].images_json.as_deref(),
+            Some(r#"["data:image/jpeg;base64,BBBB"]"#)
+        );
+    }
+
+    #[test]
+    fn backup_round_trip_preserves_message_images() {
+        let db = Database::in_memory();
+        db.create_conversation(&conv("c1", "带图会话", 1)).unwrap();
+        let mut user = msg("m1", "c1", "user", "这是什么", "done", 1);
+        user.images_json = Some(r#"["data:image/png;base64,AAAA"]"#.to_string());
+        db.save_message(&user).unwrap();
+
+        let backup = db.export_backup(true).unwrap();
+        assert_eq!(backup.conversations.len(), 1);
+        assert_eq!(
+            backup.conversations[0].messages[0].images_json.as_deref(),
+            Some(r#"["data:image/png;base64,AAAA"]"#)
+        );
+
+        let target = Database::in_memory();
+        let report = target
+            .import_backup(&backup, ImportStrategy::Merge)
+            .unwrap();
+        assert_eq!(report.messages, 1);
+        let restored = target.list_messages("c1").unwrap();
+        assert_eq!(
+            restored[0].images_json.as_deref(),
+            Some(r#"["data:image/png;base64,AAAA"]"#)
+        );
+    }
+
+    #[test]
+    fn import_rejects_image_payloads_over_the_cap() {
+        let mut user = msg("m1", "c1", "user", "多图", "done", 1);
+        // Seven tiny images: the count cap must reject them on import too.
+        let too_many: Vec<String> = (0..7)
+            .map(|_| "\"data:image/png;base64,AA\"".to_string())
+            .collect();
+        user.images_json = Some(format!("[{}]", too_many.join(",")));
+        let backup = BackupFile {
+            app: BACKUP_APP_MARKER.to_string(),
+            format_version: BACKUP_FORMAT_VERSION,
+            exported_at: 1,
+            conversations: vec![BackupConversation {
+                conversation: conv("c1", "会话", 1),
+                messages: vec![user],
+            }],
+            memories: Vec::new(),
+            image_generations: Vec::new(),
+            skills: Vec::new(),
+        };
+
+        let target = Database::in_memory();
+        assert!(target
+            .import_backup(&backup, ImportStrategy::Merge)
+            .is_err());
+        assert_eq!(target.list_messages("c1").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn branch_conversation_copies_up_to_message_and_keeps_source() {
+        let db = Database::in_memory();
+        db.create_conversation(&conv("c1", "原会话", 1)).unwrap();
+        db.save_message(&msg("u1", "c1", "user", "问题一", "done", 1))
+            .unwrap();
+        db.save_message(&msg("a1", "c1", "assistant", "回答一", "done", 2))
+            .unwrap();
+        db.save_message(&msg("u2", "c1", "user", "问题二", "done", 3))
+            .unwrap();
+        db.save_message(&msg("a2", "c1", "assistant", "回答二", "done", 4))
+            .unwrap();
+
+        let (branch, messages) = db.branch_conversation("c1", "a1").unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(branch.title, "原会话 · 分支");
+        assert!(branch.title.chars().count() <= 32);
+        // Fresh ids, same content, bound to the branch.
+        assert_ne!(messages[0].id, "u1");
+        assert_eq!(messages[1].content, "回答一");
+        assert!(messages.iter().all(|m| m.conversation_id == branch.id));
+
+        // The source still has every message; the branch reloads on its own.
+        assert_eq!(db.list_messages("c1").unwrap().len(), 4);
+        let reloaded = db.list_messages(&branch.id).unwrap();
+        assert_eq!(reloaded.len(), 2);
+        assert_eq!(reloaded[0].content, "问题一");
+
+        // Unknown message ids must not produce an empty branch.
+        assert!(db.branch_conversation("c1", "missing").is_err());
+        assert!(db.branch_conversation("missing", "u1").is_err());
+    }
+
+    #[test]
+    fn branch_conversation_carries_images_and_long_titles_stay_short() {
+        let db = Database::in_memory();
+        let long_title: String = "很长的标题".repeat(12);
+        db.create_conversation(&conv("c1", &long_title, 1)).unwrap();
+        let mut user = msg("u1", "c1", "user", "看图", "done", 1);
+        user.images_json = Some(r#"["data:image/png;base64,AAAA"]"#.to_string());
+        db.save_message(&user).unwrap();
+
+        let (branch, messages) = db.branch_conversation("c1", "u1").unwrap();
+        assert!(branch.title.chars().count() <= 32);
+        assert!(branch.title.ends_with(" · 分支"));
+        assert_eq!(
+            messages[0].images_json.as_deref(),
+            Some(r#"["data:image/png;base64,AAAA"]"#)
+        );
     }
 
     #[test]

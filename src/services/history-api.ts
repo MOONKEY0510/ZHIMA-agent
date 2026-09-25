@@ -38,7 +38,24 @@ export interface StoredMessage {
   activeVersion?: number;
   /** Serialized JSON array of `{ name, chars }` for attached documents. */
   attachmentsJson?: string | null;
+  /** Serialized JSON array of data-URL images attached to the prompt. */
+  imagesJson?: string | null;
   createdAt: number;
+}
+
+/** Parse persisted image payloads (data URLs), tolerating absent/corrupted data. */
+export function parseImagesJson(raw?: string | null): string[] | undefined {
+  if (!raw || !raw.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return undefined;
+    const images = parsed.filter(
+      (entry): entry is string => typeof entry === "string" && entry.startsWith("data:image/"),
+    );
+    return images.length > 0 ? images : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Parse persisted attachment metadata, tolerating absent/corrupted payloads. */
@@ -120,6 +137,14 @@ export function getConversation(id: string): Promise<ConversationDetail> {
 
 export function createConversation(conv: Conversation): Promise<Conversation> {
   return invoke<Conversation>("create_conversation", { conv });
+}
+
+/** Copy a conversation up to `fromMessageId` into a new one (persistent branch). */
+export function branchConversation(
+  sourceId: string,
+  fromMessageId: string,
+): Promise<ConversationDetail> {
+  return invoke<ConversationDetail>("branch_conversation", { sourceId, fromMessageId });
 }
 
 export interface BeginChatTurnArgs {

@@ -1,4 +1,4 @@
-//! Model usage statistics (v17).
+//! Model usage statistics (v18).
 //!
 //! Exposes the aggregate view over the per-message token counters that
 //! `save_message` persists, so the settings panel can chart cumulative

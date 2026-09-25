@@ -46,6 +46,25 @@ pub fn create_conversation(
     Ok(conv)
 }
 
+/// Create a persistent branch: a new conversation holding every message up to
+/// and including `from_message_id`.  The source conversation is not modified,
+/// so both histories stay independently reloadable.
+#[tauri::command]
+pub fn branch_conversation(
+    db: State<'_, Database>,
+    source_id: String,
+    from_message_id: String,
+) -> Result<ConversationDetail, String> {
+    if source_id.trim().is_empty() || from_message_id.trim().is_empty() {
+        return Err("分支参数不完整".into());
+    }
+    let (conversation, messages) = db.branch_conversation(&source_id, &from_message_id)?;
+    Ok(ConversationDetail {
+        conversation,
+        messages,
+    })
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BeginChatTurnArgs {
@@ -158,7 +177,7 @@ pub fn clear_all_history(db: State<'_, Database>) -> Result<(), String> {
     db.clear_all()
 }
 
-/* ---------------- message versions (v11) ---------------- */
+/* ---------------- message versions (v12) ---------------- */
 
 /// Edit a user message: appends the new content as a version and makes it
 /// active, keeping every earlier version for switching.  Returns the updated

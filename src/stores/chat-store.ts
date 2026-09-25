@@ -48,6 +48,31 @@ function parseToolCalls(raw?: string | null): ToolCallStep[] | undefined {
   }
 }
 
+/** Map a stored database row onto the in-memory message shape. */
+function storedMessageToMessage(m: historyApi.StoredMessage): Message {
+  return {
+    id: m.id,
+    role: asRole(m.role),
+    content: m.content,
+    status: asStatus(m.status),
+    reasoning: m.reasoning ?? undefined,
+    toolCalls: parseToolCalls(m.toolCalls),
+    modelName: m.modelName ?? undefined,
+    durationMs: m.durationMs ?? undefined,
+    usage:
+      m.inputTokens != null || m.outputTokens != null
+        ? {
+            inputTokens: m.inputTokens ?? undefined,
+            outputTokens: m.outputTokens ?? undefined,
+          }
+        : undefined,
+    versions: historyApi.parseVersionsJson(m.versionsJson),
+    activeVersion: m.activeVersion ?? 0,
+    attachments: historyApi.parseAttachmentsJson(m.attachmentsJson),
+    images: historyApi.parseImagesJson(m.imagesJson),
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* Message version stacks (P0-1)                                       */
 /* ------------------------------------------------------------------ */
@@ -173,11 +198,8 @@ export interface ActiveStream {
   messageId: string;
   /** Wall-clock start, used for the per-message duration badge. */
   startedAt: number;
-  /**
-   * Conversation owning the generation (`null` while a brand-new conversation
-   * has not been persisted yet).  Drives per-conversation routing: background
-   * message updates, completion notices and cancellation.
-   */
+  /** Reserved conversation ID from the beginning of a recorded turn; null
+   * when history recording is disabled. Drives background routing. */
   conversationId: string | null;
 }
 
@@ -245,15 +267,27 @@ function withoutStream(
   return rest;
 }
 
-/**
- * Whether the conversation currently on screen has a generation running.
- * Other conversations may generate in the background without blocking the
- * composer (multi-conversation support).
- */
+function isVisibleStream(stream: ActiveStream, activeId: string | null, messages: Message[]): boolean {
+  return activeId ? stream.conversationId === activeId : messages.some((m) => m.id === stream.messageId);
+}
+
+function visibleConversationId(
+  state: { streams: Record<string, ActiveStream>; messages: Message[] },
+  activeId: string | null,
+): string | null {
+  if (activeId) return activeId;
+  const visibleMessageIds = new Set(state.messages.map((message) => message.id));
+  return Object.values(state.streams).find(
+    (stream) => stream.conversationId && visibleMessageIds.has(stream.messageId),
+  )?.conversationId ?? null;
+}
+
+/** Whether the displayed chat is generating (other chats remain usable). */
 export function useActiveStreaming(): boolean {
   const streams = useChatStore((s) => s.streams);
+  const messages = useChatStore((s) => s.messages);
   const activeId = useHistoryStore((s) => s.activeId);
-  return Object.values(streams).some((stream) => stream.conversationId === activeId);
+  return Object.values(streams).some((stream) => isVisibleStream(stream, activeId, messages));
 }
 
 /** Selector: request id of the stream filling `messageId`, if any. */
@@ -280,6 +314,8 @@ interface ChatState {
    * to re-focus the input so the user lands right on the fresh composer.
    */
   conversationNonce: number;
+  /** Ephemeral scope of tool approvals for the currently displayed chat. */
+  approvalSessionId: string;
   /**
    * Snapshot of the last send() options so retryLast() can replay the same
    * web-search / agent-tools configuration instead of silently dropping it.
@@ -375,7 +411,7 @@ interface ChatState {
   finishToolCall: (requestId: string, callId: string, result: string) => void;
   failToolCall: (requestId: string, callId: string, message: string) => void;
   /** Show a tool call awaiting the user's approval. */
-  pendingToolCall: (requestId: string, callId: string, name: string, summary: string) => void;
+  pendingToolCall: (requestId: string, callId: string, name: string, summary: string, canRemember?: boolean) => void;
   /** Mark a tool call as rejected by the user. */
   rejectToolCall: (requestId: string, callId: string) => void;
   /** Deliver the user's verdict (approve/reject) to the backend. */
@@ -401,7 +437,7 @@ interface ChatState {
   switchMessageVersion: (messageId: string, index: number) => Promise<void>;
   clearConversation: () => void;
   /** Start a branch from the given message (cut everything after it). */
-  branchFrom: (messageId: string) => void;
+  branchFrom: (messageId: string) => Promise<void>;
   /** Load a persisted conversation into the message list. */
   loadConversation: (id: string) => Promise<void>;
   /**
@@ -418,51 +454,93 @@ interface ChatState {
   startNewConversation: () => void;
 }
 
-/**
- * Tool calls whose results may contain local-sensitive data (clipboard,
- * file contents, PDF text, screenshots) must NOT be persisted in full to
- * SQLite.  We keep only a redacted summary: name, status and (for safe,
- * non-sensitive tools) the result.  The result payload is dropped for
- * sensitive tools to avoid writing secrets or full document text to disk.
+/** Tool inputs, results, errors and approval summaries may all contain local data.
+ * Persist only the non-content timeline, regardless of tool name or MCP origin.
  */
-const SENSITIVE_TOOL_NAMES = new Set([
-  "read_clipboard",
-  "select_and_read_text_file",
-  "read_pdf",
-  "capture_screen",
-]);
+function persistedToolCalls(calls: ToolCallStep[]): string {
+  return JSON.stringify(calls.map(({ callId, name, status, startedAt, finishedAt, durationMs }) => ({
+    callId,
+    name,
+    status,
+    arguments: "{}",
+    startedAt,
+    finishedAt,
+    durationMs,
+  })));
+}
 
-/** Persist the final state of the assistant message once streaming settles. */
-function persistAssistantFinal(messageId: string | null, status: MessageStatus) {
-  const history = useHistoryStore.getState();
-  if (!history.historyEnabled || !history.activeId || !messageId) return;
-  const msg = useChatStore.getState().messages.find((m) => m.id === messageId);
+type TurnWrite = {
+  ready: Promise<boolean>;
+  complete: (saved: boolean) => void;
+  settled: boolean;
+  saved?: boolean;
+};
+const turnWrites = new Map<string, TurnWrite>();
+const finalWrites = new Map<string, Promise<void>>();
+
+function reserveTurnWrite(messageId: string) {
+  let complete!: (saved: boolean) => void;
+  const entry: TurnWrite = {
+    ready: new Promise<boolean>((resolve) => { complete = resolve; }),
+    complete: (saved) => {
+      if (entry.settled) return;
+      entry.settled = true;
+      entry.saved = saved;
+      complete(saved);
+    },
+    settled: false,
+  };
+  turnWrites.set(messageId, entry);
+}
+
+function completeTurnWrite(messageId: string, saved: boolean) {
+  turnWrites.get(messageId)?.complete(saved);
+}
+
+function discardTurnWrite(messageId: string) {
+  const entry = turnWrites.get(messageId);
+  entry?.complete(false);
+  turnWrites.delete(messageId);
+}
+
+/** A final answer must never race its placeholder or follow the visible chat. */
+function persistAssistantFinal(stream: ActiveStream, status: MessageStatus) {
+  const conversationId = stream.conversationId;
+  if (!conversationId) return;
+  const state = useChatStore.getState();
+  const msg = state.messages.find((m) => m.id === stream.messageId)
+    ?? state.backgroundMessages[conversationId]?.find((m) => m.id === stream.messageId);
   if (!msg) return;
-  const toolCalls = msg.toolCalls && msg.toolCalls.length > 0
-    ? JSON.stringify(
-        msg.toolCalls.map((call) =>
-          SENSITIVE_TOOL_NAMES.has(call.name)
-            ? { ...call, result: undefined, arguments: undefined, summary: call.summary }
-            : call,
-        ),
-      )
-    : null;
-  void historyApi
-    .saveMessage({
-      id: msg.id,
-      conversationId: history.activeId,
-      role: msg.role,
-      content: msg.content,
-      status,
-      reasoning: msg.reasoning ?? null,
-      toolCalls,
-      modelName: msg.modelName ?? null,
-      durationMs: msg.durationMs ?? null,
-      inputTokens: msg.usage?.inputTokens ?? null,
-      outputTokens: msg.usage?.outputTokens ?? null,
-      createdAt: Date.now(),
-    })
-    .catch((err) => console.error("保存会话消息失败:", err));
+  const toolCalls = msg.toolCalls?.length ? persistedToolCalls(msg.toolCalls) : null;
+  const barrier = turnWrites.get(msg.id);
+  const write = (async () => {
+    try {
+      if (barrier && (barrier.settled ? !barrier.saved : !(await barrier.ready))) return;
+      if (!useHistoryStore.getState().historyEnabled) return;
+      await historyApi.saveMessage({
+        id: msg.id,
+        conversationId,
+        role: msg.role,
+        content: msg.content,
+        status,
+        reasoning: msg.reasoning ?? null,
+        toolCalls,
+        modelName: msg.modelName ?? null,
+        durationMs: msg.durationMs ?? null,
+        inputTokens: msg.usage?.inputTokens ?? null,
+        outputTokens: msg.usage?.outputTokens ?? null,
+        createdAt: Date.now(),
+      });
+    } catch (err) {
+      console.error("保存会话消息失败:", err);
+    } finally {
+      turnWrites.delete(msg.id);
+    }
+  })();
+  finalWrites.set(msg.id, write);
+  void write.finally(() => {
+    if (finalWrites.get(msg.id) === write) finalWrites.delete(msg.id);
+  });
 }
 
 /** Read a File/data-URL and return a compressed data URL (max ~512px). */
@@ -496,6 +574,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   streams: {},
   conversationNonce: 0,
+  approvalSessionId: nextConvId(),
   lastSendOptions: null,
   clipboardWriteback: null,
   focusMessageId: null,
@@ -522,11 +601,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const trimmed = text.trim();
     if (!trimmed && (!images || images.length === 0)) return;
 
-    const { streams, messages } = get();
+    const { streams, messages, approvalSessionId } = get();
     // Only the displayed conversation is busy-checked: generations in other
     // conversations may keep running while this one sends (multi-conversation).
     const activeConvId = useHistoryStore.getState().activeId;
-    if (Object.values(streams).some((stream) => stream.conversationId === activeConvId)) {
+    if (Object.values(streams).some((stream) => isVisibleStream(stream, activeConvId, messages))) {
       return;
     }
 
@@ -578,24 +657,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // concurrent sends are rejected; the same requestId goes to the backend
     // so stream events match.
     const requestId = `req-${Date.now().toString(36)}-${(seq++).toString(36)}`;
+    const historyState = useHistoryStore.getState();
+    const initialNonce = get().conversationNonce;
+    const conversationId = historyState.historyEnabled
+      ? historyState.activeId ?? nextConvId()
+      : null;
+    const createdNew = historyState.historyEnabled && historyState.activeId === null;
     set({
       messages: [...messages, userMessage, assistantMessage],
       streams: {
         ...streams,
-        // Bound to the conversation the request started in; a brand-new
-        // conversation binds right after it is persisted (below).
         [requestId]: {
           messageId: assistantId,
           startedAt: Date.now(),
-          conversationId: useHistoryStore.getState().activeId,
+          conversationId,
         },
       },
     });
 
-    // Hoisted so the invoke error handler below can roll back a conversation
-    // that was created during preprocessing.
-    let conversationId: string | null = null;
-    let createdNew = false;
     let history: { role: Role; content: string; images?: string[] }[] = [];
 
     try {
@@ -657,36 +736,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           images: m.role === "user" && m.id === userMessage.id ? effectiveImages : undefined,
         }));
 
-      // Reserve an id for a new conversation. The row itself is created
-      // atomically with both messages after chat_send accepts the request.
-      const historyStore = useHistoryStore.getState();
-      conversationId = historyStore.historyEnabled ? historyStore.activeId : null;
-      if (historyStore.historyEnabled && !conversationId) {
-        conversationId = nextConvId();
-        createdNew = true;
-      }
-
-      // Now that the id is known, bind the stream so completion notices and
-      // cancellation can be routed per conversation (a fresh conversation had
-      // no id when the stream was created).
-      if (conversationId) {
-        const boundId = conversationId;
-        set((state) => {
-          const stream = state.streams[requestId];
-          if (!stream || stream.conversationId === boundId) return {};
-          return {
-            streams: {
-              ...state.streams,
-              [requestId]: { ...stream, conversationId: boundId },
-            },
-          };
-        });
-      }
+      if (conversationId) reserveTurnWrite(assistantId);
     } catch (err) {
       // Unexpected failure during preprocessing (image compression, vision
       // description or conversation creation).  Release the request slot and
       // surface the error so the UI never stays stuck in the generating state.
       const message = err instanceof Error ? err.message : String(err);
+      discardTurnWrite(assistantId);
       set((state) => ({
         streams: withoutStream(state.streams, requestId),
         ...patchMessage(state, assistantId, (m) => ({
@@ -712,6 +768,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           thinkingEffort,
           requestId,
           conversationId: conversationId ?? undefined,
+          approvalSessionId,
           skillIds: skillIds ?? [],
         },
       });
@@ -754,6 +811,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               attachmentsJson: userMessage.attachments
                 ? JSON.stringify(userMessage.attachments)
                 : null,
+              imagesJson: userMessage.images ? JSON.stringify(userMessage.images) : null,
               createdAt: now,
             },
             assistantMessage: {
@@ -768,14 +826,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
             providerId: selection.provider.id,
             modelKey: selection.model.modelKey,
           });
-          if (createdNew) useHistoryStore.getState().setActive(conversationId);
+          completeTurnWrite(assistantId, true);
+          if (createdNew && useChatStore.getState().conversationNonce === initialNonce
+            && useHistoryStore.getState().activeId === null) {
+            useHistoryStore.getState().setActive(conversationId);
+          }
           void useHistoryStore.getState().refreshList();
         } catch (err) {
+          completeTurnWrite(assistantId, false);
           console.error("保存聊天轮次失败:", err);
         }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      discardTurnWrite(assistantId);
       set((state) => ({
         streams: withoutStream(state.streams, requestId),
         ...patchMessage(state, assistantId, (m) => ({
@@ -802,10 +866,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const trimmed = text.trim();
     if (!trimmed || targets.length === 0) return;
 
-    const { streams, messages } = get();
+    const { streams, messages, approvalSessionId } = get();
     // Only the displayed conversation is busy-checked (multi-conversation).
     const activeConvId = useHistoryStore.getState().activeId;
-    if (Object.values(streams).some((stream) => stream.conversationId === activeConvId)) {
+    if (Object.values(streams).some((stream) => isVisibleStream(stream, activeConvId, messages))) {
       return;
     }
 
@@ -852,6 +916,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       : null;
     const createdNew = historyStore.historyEnabled && !conversationId;
     if (createdNew) conversationId = nextConvId();
+    const initialNonce = get().conversationNonce;
 
     const startedAt = Date.now();
     const streamEntries: Record<string, ActiveStream> = {};
@@ -868,6 +933,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       .slice(-CONTEXT_LIMIT)
       .map((m) => ({ role: m.role, content: m.content }));
 
+    if (conversationId) {
+      assistants.forEach((assistant) => reserveTurnWrite(assistant.id));
+    }
     set((state) => ({
       messages: [...messages, userMessage, ...assistants],
       streams: { ...state.streams, ...streamEntries },
@@ -896,6 +964,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           enableThinking,
           thinkingEffort,
           conversationId: conversationId ?? undefined,
+          approvalSessionId,
           skillIds: skillIds ?? [],
         },
       });
@@ -938,6 +1007,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             providerId: resolved[0].provider.id,
             modelKey: resolved[0].model.modelKey,
           });
+          completeTurnWrite(assistants[0].id, true);
           // Every extra column is persisted too, so reopening the
           // conversation restores the whole comparison.
           for (const extra of assistants.slice(1)) {
@@ -950,15 +1020,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
               modelName: extra.modelName ?? null,
               createdAt: now,
             });
+            completeTurnWrite(extra.id, true);
           }
-          if (createdNew) useHistoryStore.getState().setActive(conversationId);
+          if (createdNew && useChatStore.getState().conversationNonce === initialNonce
+            && useHistoryStore.getState().activeId === null) {
+            useHistoryStore.getState().setActive(conversationId);
+          }
           void useHistoryStore.getState().refreshList();
         } catch (err) {
+          completeTurnWrite(assistants[0].id, false);
+          assistants.slice(1).forEach((assistant) => completeTurnWrite(assistant.id, false));
           console.error("保存对比轮次失败:", err);
         }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      assistants.forEach((assistant) => discardTurnWrite(assistant.id));
       const failedIds = new Set(assistants.map((a) => a.id));
       set((state) => {
         // Release only this turn's streams; other conversations keep running.
@@ -1075,8 +1152,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     );
   },
 
-  pendingToolCall: (requestId, callId, name, summary) => {
-    const step: ToolCallStep = { callId, name, arguments: "{}", status: "pending", summary };
+  pendingToolCall: (requestId, callId, name, summary, canRemember = false) => {
+    const step: ToolCallStep = { callId, name, arguments: "{}", status: "pending", summary, canRemember };
     set((state) =>
       patchStream(state, requestId, (msg) => ({
         ...msg,
@@ -1113,7 +1190,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const finishedInBackground =
       status === "done" &&
       stream.conversationId !== null &&
-      stream.conversationId !== activeConvId;
+      !isVisibleStream(stream, activeConvId, get().messages);
 
     set((state) => ({
       streams: withoutStream(state.streams, requestId),
@@ -1124,7 +1201,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ? { unreadDone: { ...state.unreadDone, [stream.conversationId as string]: true } }
         : {}),
     }));
-    persistAssistantFinal(stream.messageId, status);
+    persistAssistantFinal(stream, status);
 
     // If this reply was triggered by a clipboard quick action, write the
     // result back to the clipboard so the user can paste it right away.
@@ -1151,7 +1228,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         syncActiveVersion({ ...m, status: "error", error: message, retryable, durationMs }),
       ),
     }));
-    persistAssistantFinal(stream.messageId, "error");
+    persistAssistantFinal(stream, "error");
   },
 
   stopStream: (requestId) => {
@@ -1162,13 +1239,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const durationMs = Date.now() - stream.startedAt;
     set((state) => ({
       streams: withoutStream(state.streams, requestId),
-      messages: state.messages.map((m) =>
-        m.id === stream.messageId
-          ? syncActiveVersion({ ...m, status: "cancelled" as const, durationMs })
-          : m,
+      ...patchMessage(state, stream.messageId, (m) =>
+        syncActiveVersion({ ...m, status: "cancelled", durationMs }),
       ),
     }));
-    persistAssistantFinal(stream.messageId, "cancelled");
+    persistAssistantFinal(stream, "cancelled");
   },
 
   stop: () => {
@@ -1177,7 +1252,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // in other conversations keep running (multi-conversation support).
     const activeConvId = useHistoryStore.getState().activeId;
     const entries = Object.entries(streams).filter(
-      ([, stream]) => stream.conversationId === activeConvId,
+      ([, stream]) => isVisibleStream(stream, activeConvId, get().messages),
     );
     if (entries.length === 0) return;
 
@@ -1204,8 +1279,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : m,
       ),
     }));
-    for (const messageId of finished.keys()) {
-      persistAssistantFinal(messageId, "cancelled");
+    for (const [, stream] of entries) {
+      persistAssistantFinal(stream, "cancelled");
     }
   },
 
@@ -1316,6 +1391,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
     const modelLabel = selection.model.displayName || selection.model.modelKey;
+    await finalWrites.get(messageId);
+    if (useHistoryStore.getState().activeId !== activeConversationId
+      || !get().messages.some((m) => m.id === messageId)) return;
 
     // Archive the current answer so the version switcher can reach it again.
     const history = useHistoryStore.getState();
@@ -1394,6 +1472,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           thinkingEffort: base.thinkingEffort,
           requestId,
           conversationId: activeId ?? undefined,
+          approvalSessionId: get().approvalSessionId,
           skillIds: base.skillIds,
         },
       });
@@ -1407,7 +1486,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             : m,
         ),
       }));
-      persistAssistantFinal(messageId, "error");
+      persistAssistantFinal({ messageId, startedAt: Date.now(), conversationId: activeConversationId }, "error");
     }
   },
 
@@ -1418,6 +1497,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!target) return;
 
     const history = useHistoryStore.getState();
+    await finalWrites.get(messageId);
+    if (history.activeId !== useHistoryStore.getState().activeId) return;
     if (history.historyEnabled && history.activeId) {
       try {
         const row = await historyApi.activateMessageVersion(messageId, index);
@@ -1454,23 +1535,60 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
   },
 
-  /** Start a branch from the given message: cut everything after it and
-   * focus the composer so the user can continue with a new prompt.  The
-   * chosen message becomes the last one in the conversation. */
-  branchFrom: (messageId: string) => {
+  /**
+   * Branch from `messageId`: with history recording on, persist a new
+   * conversation holding every message up to and including it, then switch to
+   * it — the source conversation keeps its full history.  With recording off
+   * it falls back to a local, unsaved cut so the action still does something
+   * useful.  Nothing is branched while a generation is running.
+   */
+  branchFrom: async (messageId: string) => {
     const { messages, streams, conversationNonce } = get();
     if (Object.keys(streams).length > 0) return;
     const index = messages.findIndex((m) => m.id === messageId);
     if (index < 0) return;
-    const kept = messages.slice(0, index + 1);
-    // Bump the nonce so the composer re-focuses, prompting the user to
-    // continue from this branch point.
-    set({ messages: kept, conversationNonce: conversationNonce + 1 });
+
+    const history = useHistoryStore.getState();
+    const sourceId = visibleConversationId(get(), history.activeId);
+    if (!history.historyEnabled || !sourceId) {
+      // Unsaved conversation: keep the old local behaviour.
+      set({ messages: messages.slice(0, index + 1), conversationNonce: conversationNonce + 1 });
+      return;
+    }
+
+    const navigationScope = get().approvalSessionId;
+    try {
+      const detail = await historyApi.branchConversation(sourceId, messageId);
+      // A navigation or reload while the backend worked invalidates this branch.
+      if (get().approvalSessionId !== navigationScope) return;
+      if (visibleConversationId(get(), useHistoryStore.getState().activeId) !== sourceId) return;
+
+      const latest = get();
+      const latestBackground = { ...latest.backgroundMessages };
+      const leavingId = visibleConversationId(latest, useHistoryStore.getState().activeId);
+      if (leavingId) latestBackground[leavingId] = latest.messages;
+      const branchId = detail.conversation.id;
+      const { [branchId]: _staleSnapshot, ...restBackground } = latestBackground;
+      const { [branchId]: _seenDot, ...restUnread } = latest.unreadDone;
+      useHistoryStore.getState().setActive(branchId);
+      useAssistantsStore.getState().setActive(detail.conversation.assistantId ?? null);
+      set({
+        messages: detail.messages.map(storedMessageToMessage),
+        backgroundMessages: restBackground,
+        unreadDone: restUnread,
+        // Re-focus the composer so the user continues from the branch point.
+        conversationNonce: latest.conversationNonce + 1,
+        approvalSessionId: nextConvId(),
+      });
+      void useHistoryStore.getState().refreshList();
+    } catch (err) {
+      console.error("创建分支失败:", err);
+    }
   },
 
   clearConversation: () => {
     const { streams, backgroundMessages, conversationNonce } = get();
-    const currentId = useHistoryStore.getState().activeId;
+    const currentId = visibleConversationId(get(), useHistoryStore.getState().activeId);
     // Only this conversation's generations are cancelled; runs in other
     // conversations are left alone (multi-conversation support).
     for (const [requestId, stream] of Object.entries(streams)) {
@@ -1488,6 +1606,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ),
       backgroundMessages: restBackground,
       conversationNonce: conversationNonce + 1,
+      approvalSessionId: nextConvId(),
     });
     useHistoryStore.getState().setActive(null);
   },
@@ -1495,59 +1614,50 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadConversation: async (id) => {
     const currentId = useHistoryStore.getState().activeId;
     if (currentId === id) return;
-    const { messages, backgroundMessages, unreadDone } = get();
+    const navigationScope = get().approvalSessionId;
+    const { messages, backgroundMessages } = get();
 
-    // Snapshot the conversation being left, so its running generation (if
-    // any) keeps writing into a place the user can return to.  Switching is
-    // always allowed — generations no longer block navigation.
+    // Snapshot the latest visible conversation, including a turn whose DB row
+    // has not been created yet. The scope check below prevents stale loads
+    // from taking over after another navigation.
     const nextBackground = { ...backgroundMessages };
-    if (currentId) {
-      nextBackground[currentId] = messages;
-    }
-    // Opening a conversation clears its "finished" dot.
-    const { [id]: _seenDot, ...nextUnread } = unreadDone;
+    const leavingId = visibleConversationId(get(), currentId);
+    if (leavingId) nextBackground[leavingId] = messages;
+    const { [id]: _seenDot, ...nextUnread } = get().unreadDone;
 
     const cached = nextBackground[id];
     if (cached) {
       useHistoryStore.getState().setActive(id);
       const conv = useHistoryStore.getState().conversations.find((c) => c.id === id);
       useAssistantsStore.getState().setActive(conv?.assistantId ?? null);
-      set({ messages: cached, backgroundMessages: nextBackground, unreadDone: nextUnread });
+      set({
+        messages: cached,
+        backgroundMessages: nextBackground,
+        unreadDone: nextUnread,
+        approvalSessionId: nextConvId(),
+      });
       return;
     }
 
     try {
       const detail = await historyApi.getConversation(id);
-      const loaded: Message[] = detail.messages.map((m) => ({
-        id: m.id,
-        role: asRole(m.role),
-        content: m.content,
-        status: asStatus(m.status),
-        reasoning: m.reasoning ?? undefined,
-        toolCalls: parseToolCalls(m.toolCalls),
-        modelName: m.modelName ?? undefined,
-        durationMs: m.durationMs ?? undefined,
-        usage:
-          m.inputTokens != null || m.outputTokens != null
-            ? {
-                inputTokens: m.inputTokens ?? undefined,
-                outputTokens: m.outputTokens ?? undefined,
-              }
-            : undefined,
-        versions: historyApi.parseVersionsJson(m.versionsJson),
-        activeVersion: m.activeVersion ?? 0,
-        attachments: historyApi.parseAttachmentsJson(m.attachmentsJson),
-      }));
+      if (useChatStore.getState().approvalSessionId !== navigationScope) return;
+      const loaded: Message[] = detail.messages.map(storedMessageToMessage);
+      const latest = get();
+      const latestLeavingId = visibleConversationId(latest, useHistoryStore.getState().activeId);
+      const latestBackground = { ...latest.backgroundMessages };
+      if (latestLeavingId) latestBackground[latestLeavingId] = latest.messages;
       useHistoryStore.getState().setActive(id);
       // Follow the conversation's assistant so the sidebar reflects what this
       // chat actually uses (P1-7).
       useAssistantsStore.getState().setActive(detail.conversation.assistantId ?? null);
       // Fresh server state wins over any leftover snapshot.
-      const { [id]: _staleSnapshot, ...restBackground } = nextBackground;
+      const { [id]: _staleSnapshot, ...restBackground } = latestBackground;
       set({
         messages: loaded,
         backgroundMessages: restBackground,
         unreadDone: nextUnread,
+        approvalSessionId: nextConvId(),
       });
     } catch (err) {
       console.error("加载会话失败:", err);
@@ -1584,10 +1694,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   startNewConversation: () => {
     const { messages, backgroundMessages, conversationNonce } = get();
-    const currentId = useHistoryStore.getState().activeId;
+    const currentId = visibleConversationId(get(), useHistoryStore.getState().activeId);
     const patch: Partial<ChatState> = {
       messages: [],
       conversationNonce: conversationNonce + 1,
+      approvalSessionId: nextConvId(),
     };
     // Keep the conversation being left in memory (including anything still
     // streaming) instead of dropping it.
