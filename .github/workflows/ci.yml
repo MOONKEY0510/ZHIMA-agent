@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Manual run for the (slower) installer build below.
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  frontend:
+    name: Frontend (typecheck · tests · build)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test -- --run
+
+      - name: Build
+        run: npm run build
+
+      # Size is a product feature for this app, so the budget is explicit: a
+      # heavy dependency cannot slip in unnoticed.
+      - name: Check bundle budget
+        shell: pwsh
+        run: |
+          $assets = "dist/assets"
+          $js = (Get-ChildItem $assets -Filter *.js | Measure-Object -Property Length -Sum).Sum
+          $kB = [math]::Round($js / 1KB, 1)
+          Write-Host "JS total: $kB kB"
+          if ($kB -gt 7500) {
+            Write-Error "JS bundle is $kB kB, over the 7500 kB budget. Split or drop something, or raise the budget deliberately."
+          }
+          Get-ChildItem $assets -Filter *.js |
+            Where-Object { $_.Length -gt 1.5MB } |
+            ForEach-Object {
+              Write-Warning ("Large chunk: {0} = {1} kB" -f $_.Name, [math]::Round($_.Length / 1KB, 1))
+            }
+
+  rust:
+    name: Rust (fmt · clippy · tests)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Format
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        working-directory: src-tauri
+        run: cargo test
+
+  bundle:
+    name: Windows installer (manual)
+    # Only on demand: it needs a full release build and is not a PR gate.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Updater artifacts need the minisign key, which only the release script
+      # holds; disabling them here keeps this job independent of secrets. The
+      # override goes through a file because a JSON string would have to survive
+      # both PowerShell and Tauri's argument parsing.
+      - name: Write build override
+        shell: pwsh
+        run: |
+          '{"bundle":{"createUpdaterArtifacts":false}}' | Set-Content tauri.ci.conf.json
+
+      - name: Build installer
+        run: npm run tauri:build -- --config tauri.ci.conf.json
+
+      - name: Report installer size
+        shell: pwsh
+        run: |
+          Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe |
+            ForEach-Object { Write-Host ("{0}: {1} MB" -f $_.Name, [math]::Round($_.Length / 1MB, 2)) }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: src-tauri/target/release/bundle/nsis/*.exe
