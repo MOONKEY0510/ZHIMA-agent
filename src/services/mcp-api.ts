@@ -36,6 +36,16 @@ export function listMcpServers(): Promise<McpView> {
   return invoke<McpView>("list_mcp_servers");
 }
 
+/**
+ * Start the enabled servers on demand (they no longer launch at app start).
+ *
+ * Idempotent: resolves immediately when tools are already cached or when no
+ * server is enabled, and a concurrent call never starts a second warm-up.
+ */
+export function warmMcpServers(): Promise<void> {
+  return invoke("warm_mcp_servers");
+}
+
 /** Create (empty id) or update a server; refreshes the tool list. */
 export function upsertMcpServer(server: McpServerConfig): Promise<McpView> {
   return invoke<McpView>("upsert_mcp_server", { server });

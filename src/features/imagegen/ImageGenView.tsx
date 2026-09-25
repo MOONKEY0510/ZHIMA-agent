@@ -27,6 +27,13 @@ const SIZE_OPTIONS = [
 
 const PRESET_SIZE_STRINGS = new Set(SIZE_OPTIONS.map((s) => `${s.w}x${s.h}`));
 
+/**
+ * The compatible `images/generations` convention carries one reference image
+ * in the `image` field, so the UI offers exactly that until a multi-image
+ * provider adapter exists.
+ */
+const MAX_REFERENCE_IMAGES = 1;
+
 function parseSize(value: string): { w: number; h: number } | null {
   const m = /^(\d+)\s*[x×X]\s*(\d+)$/.exec(value.trim());
   if (!m) return null;
@@ -151,7 +158,9 @@ export function ImageGenView() {
   const loadIntoWorkbench = (item: ImageGeneration) => {
     setSelected(item);
     setPrompt(item.prompt);
-    setReferenceImages(getReferenceImages(item));
+    // Older histories may carry several references; only the first is sent,
+    // so load exactly what the next generate call will actually use.
+    setReferenceImages(getReferenceImages(item).slice(0, MAX_REFERENCE_IMAGES));
     if (item.sizeLabel) {
       setCustomSize(item.sizeLabel);
     }
@@ -161,7 +170,7 @@ export function ImageGenView() {
     setError(null);
     try {
       const dataUrls = await Promise.all(files.map((f) => readFileAsDataUrl(f)));
-      setReferenceImages((prev) => [...prev, ...dataUrls].slice(0, 4));
+      setReferenceImages((prev) => [...prev, ...dataUrls].slice(0, MAX_REFERENCE_IMAGES));
     } catch (err) {
       setError(err instanceof Error ? err.message : "读取参考图失败");
     }
@@ -265,7 +274,7 @@ export function ImageGenView() {
             <div className="flex items-center justify-between">
               <label className="flex items-center gap-1.5 text-xs font-medium text-ink">
                 <ImagePlus size={13} /> 参考图
-                <span className="text-[10px] font-normal text-ink-2">（可选，最多 4 张）</span>
+                <span className="text-[10px] font-normal text-ink-2">（可选，当前支持 1 张）</span>
               </label>
               {referenceImages.length > 0 && (
                 <button

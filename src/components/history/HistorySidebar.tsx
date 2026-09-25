@@ -374,7 +374,9 @@ export function HistorySidebar() {
         {searchActive && !batchMode && (
           <div className="mb-1">
             <p className="px-2 pb-1 pt-2 text-[10px] uppercase tracking-wide text-ink-2">
-              消息内容 {searching ? "· 搜索中…" : `· ${hits.length}`}
+              {/* The backend query is capped at 30 hits; show it so a full list
+                  is not mistaken for "no more matches exist". */}
+              消息内容 {searching ? "· 搜索中…" : `· ${hits.length}/30`}
             </p>
             {!searching && hits.length === 0 && (
               <p className="px-2 py-2 text-[11px] text-ink-2">没有匹配的消息</p>

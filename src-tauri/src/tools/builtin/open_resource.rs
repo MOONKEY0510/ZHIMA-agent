@@ -7,10 +7,12 @@ use serde_json::{json, Value};
 pub fn definition() -> ToolDefinition {
     ToolDefinition {
         name: "open_resource".into(),
-        description: "使用系统默认程序打开公开网页 URL 或用户指定的本地文件路径。".into(),
+        // Only http/https is accepted at run time; the description matches that
+        // so the model never plans to open a local path with this tool.
+        description: "使用系统默认浏览器打开公开网页 URL（http/https）。本地文件请使用读取类工具，本工具不会打开本地路径。".into(),
         parameters: json!({
             "type": "object",
-            "properties": { "target": { "type": "string", "description": "http/https URL 或已知本地文件路径" } },
+            "properties": { "target": { "type": "string", "description": "http/https URL" } },
             "required": ["target"]
         }),
         risk_level: "external_action".into(),

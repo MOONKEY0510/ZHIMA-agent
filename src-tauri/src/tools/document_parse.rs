@@ -19,6 +19,12 @@ use zip::ZipArchive;
 pub const MAX_DOCUMENT_BYTES: u64 = 20 * 1024 * 1024;
 /// Characters kept from one document (the agent tool caps at the same size).
 pub const MAX_TEXT_CHARS: usize = 100_000;
+/// One XML part may not expand beyond this.  The archive itself is already
+/// capped at 20 MiB compressed; a single entry is the realistic zip-bomb
+/// vector, and document text is truncated far below this anyway.
+const MAX_ZIP_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
+/// How many slides / worksheets one document may contribute.
+const MAX_ARCHIVE_ENTRIES: usize = 256;
 
 /// Which file extensions can be parsed.
 pub fn is_supported(name: &str) -> bool {
@@ -112,10 +118,16 @@ pub fn truncate_chars(text: &str, max: usize) -> (String, bool) {
 /* ---------------- office formats (zip + XML) ---------------- */
 
 /// Read one entry of a ZIP container as UTF-8 text.
+///
+/// The declared size is checked first and the read is capped again, because a
+/// hostile archive can lie about the former.
 fn zip_text(archive: &mut ZipArchive<std::io::Cursor<&[u8]>>, entry: &str) -> Option<String> {
-    let mut file = archive.by_name(entry).ok()?;
+    let file = archive.by_name(entry).ok()?;
+    if file.size() > MAX_ZIP_ENTRY_BYTES {
+        return None;
+    }
     let mut raw = Vec::new();
-    file.read_to_end(&mut raw).ok()?;
+    file.take(MAX_ZIP_ENTRY_BYTES).read_to_end(&mut raw).ok()?;
     Some(String::from_utf8_lossy(&raw).into_owned())
 }
 
@@ -134,6 +146,9 @@ fn sorted_entries(archive: &ZipArchive<std::io::Cursor<&[u8]>>, prefix: &str) ->
             .parse::<u64>()
             .unwrap_or(0)
     });
+    // A workbook or deck with thousands of parts contributes nothing useful
+    // (the extracted text is truncated later) but would keep the loop busy.
+    names.truncate(MAX_ARCHIVE_ENTRIES);
     names
 }
 

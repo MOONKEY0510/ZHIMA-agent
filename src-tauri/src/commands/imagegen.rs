@@ -15,6 +15,8 @@ use crate::storage::{config::ConfigStore, secrets};
 const MAX_IMAGE_RESPONSE_BYTES: usize = 20 * 1024 * 1024; // 20 MB
 /// Upper bound on the base64 `image_data` accepted when persisting history.
 const MAX_IMAGE_DATA_BYTES: usize = 20 * 1024 * 1024; // 20 MB
+/// The compatible `image` field carries one reference; more is rejected.
+const MAX_REFERENCE_IMAGES: usize = 1;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,8 +78,12 @@ pub async fn generate_image(
     });
 
     if let Some(refs) = request.reference_images {
-        if !refs.is_empty() {
-            let first = refs.into_iter().next().unwrap();
+        // The compatible request shape carries a single `image`; refuse extra
+        // references instead of silently generating from only the first one.
+        if refs.len() > MAX_REFERENCE_IMAGES {
+            return Err(format!("当前仅支持 {MAX_REFERENCE_IMAGES} 张参考图"));
+        }
+        if let Some(first) = refs.into_iter().next() {
             let b64 = first
                 .strip_prefix("data:")
                 .and_then(|s| s.split_once(',').map(|(_, data)| data.to_string()))

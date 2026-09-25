@@ -58,7 +58,9 @@ import { PROVIDER_PRESETS, type ProviderPreset } from "./provider-presets";
 import { DIAGRAM_STYLE_OPTIONS } from "../../lib/mermaid-theme";
 import { useWindowStore } from "../../stores/window-store";
 import {
+  assistantToolPolicies,
   isBuiltinAssistant,
+  serializeToolPolicies,
   type AssistantView,
 } from "../../services/assistants-api";
 import {
@@ -108,6 +110,7 @@ import {
   setMcpServerEnabled,
   testMcpServer,
   upsertMcpServer,
+  warmMcpServers,
   type McpServerConfig,
   type McpServerView,
   type McpToolInfo,
@@ -1232,10 +1235,28 @@ function AssistantForm({
   const [prompt, setPrompt] = useState(initial.systemPrompt);
   const [providerId, setProviderId] = useState(initial.providerId ?? "");
   const [modelKey, setModelKey] = useState(initial.modelKey ?? "");
+  // Tool-policy overrides: only the tools listed here differ from the global
+  // policy; the stricter of the two always wins at chat time.
+  const [policies, setPolicies] = useState<Record<string, ToolPolicy>>(() =>
+    assistantToolPolicies(initial),
+  );
+  const [tools, setTools] = useState<ToolInfo[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const models = providers.find((p) => p.id === providerId)?.models ?? [];
+
+  useEffect(() => {
+    let cancelled = false;
+    listTools()
+      .then((list) => {
+        if (!cancelled) setTools(list);
+      })
+      .catch((err) => console.error("获取工具列表失败:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const submit = async () => {
     setSaving(true);
@@ -1250,6 +1271,7 @@ function AssistantForm({
         // A pinned model only makes sense together with a provider.
         providerId: providerId || null,
         modelKey: providerId ? modelKey || null : null,
+        toolPoliciesJson: serializeToolPolicies(policies),
       });
       onDone();
     } catch (err) {
@@ -1359,6 +1381,53 @@ function AssistantForm({
           />
         </div>
       </div>
+
+      <details className="rounded-btn border border-line px-3 py-2">
+        <summary className="cursor-pointer text-xs text-ink-2">
+          工具策略（可选）
+          {Object.keys(policies).length > 0 && (
+            <span className="ml-1 text-accent">已设置 {Object.keys(policies).length} 项</span>
+          )}
+        </summary>
+        <p className="mt-1.5 text-[11px] leading-4 text-ink-2">
+          未设置的跟随全局设置；与全局冲突时始终采用更严格的一项（全局禁用无法被助手放开）。
+        </p>
+        <div className="mt-2 space-y-1.5">
+          {tools.length === 0 ? (
+            <p className="text-[11px] text-ink-2">正在加载工具列表…</p>
+          ) : (
+            tools.map((tool) => (
+              <div key={tool.name} className="flex items-center gap-2">
+                <span
+                  className="min-w-0 flex-1 truncate text-[11px] text-ink"
+                  title={tool.description}
+                >
+                  {tool.name}
+                </span>
+                <Dropdown
+                  value={policies[tool.name] ?? ""}
+                  onChange={(value) =>
+                    setPolicies((prev) => {
+                      const next = { ...prev };
+                      if (!value) delete next[tool.name];
+                      else next[tool.name] = value as ToolPolicy;
+                      return next;
+                    })
+                  }
+                  className="w-auto min-w-[6.5rem]"
+                  options={[
+                    { value: "", label: "跟随全局" },
+                    ...POLICY_OPTIONS.map((option) => ({
+                      value: option.value,
+                      label: option.label,
+                    })),
+                  ]}
+                />
+              </div>
+            ))
+          )}
+        </div>
+      </details>
 
       <div className="flex items-center justify-end gap-2">
         <button
@@ -2291,6 +2360,11 @@ function McpSection() {
 
   useEffect(() => {
     void refresh();
+    // Servers start on demand, so opening the panel is the trigger. The list
+    // is re-read once they are up, so the tools appear without a manual reload.
+    void warmMcpServers()
+      .then(() => refresh())
+      .catch(() => undefined);
   }, []);
 
   const run = async (label: string, fn: () => Promise<void>) => {
@@ -3520,11 +3594,13 @@ const RISK_LABEL: Record<string, { text: string; tone: "auto" | "warn" }> = {
   external_read: { text: "只读外部", tone: "auto" },
   sensitive_read: { text: "敏感读取 · 需确认", tone: "warn" },
   external_action: { text: "外部动作 · 需确认", tone: "warn" },
+  mcp: { text: "MCP 服务器 · 每次确认", tone: "warn" },
 };
 
 const POLICY_OPTIONS: { value: ToolPolicy; label: string; hint: string }[] = [
-  { value: "allow", label: "默认允许", hint: "按工具自身设定自动执行" },
-  { value: "confirm", label: "每次确认", hint: "每次调用前都需要你确认" },
+  { value: "allow", label: "按工具默认", hint: "按工具自身设定确认或执行" },
+  { value: "confirm", label: "每次确认", hint: "普通工具调用每次都需确认" },
+  { value: "always_allow", label: "永久允许", hint: "普通调用免确认；敏感数据外发仍需确认" },
   { value: "disabled", label: "禁用", hint: "不会提供给模型" },
 ];
 
@@ -3742,7 +3818,10 @@ function GeneralTab() {
 
       <ProxySection />
 
-      <SettingsSection title="会话历史" description="控制是否持久化对话记录到本地数据库">
+      <SettingsSection
+        title="会话历史"
+        description="控制是否持久化对话记录到本地数据库（侧栏最多列出最近 200 个会话，消息搜索最多返回 30 条命中）"
+      >
         <FormRow label="本地会话历史" description="关闭后对话仅保留在内存中，重启后丢失">
           <Dropdown
             value={historyEnabled ? "on" : "off"}

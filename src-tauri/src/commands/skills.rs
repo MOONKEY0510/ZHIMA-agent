@@ -1,4 +1,4 @@
-//! User skills CRUD + import (自定义技能, v19).
+//! User skills CRUD + import (自定义技能, v20).
 //!
 //! Thin wrappers over [`Database`]; ids for user-created skills are minted
 //! here so the frontend never has to invent identifiers (same pattern as
@@ -14,6 +14,12 @@ use tauri::State;
 
 use crate::storage::database::Database;
 use crate::storage::skills::{new_skill_id, parse_skill_markdown, Skill, SkillDraft};
+
+/// Caps for a `.zip` skill package: one Markdown instruction file is all a
+/// skill needs, so anything larger is refused instead of being decompressed.
+const MAX_SKILL_ZIP_ENTRIES: usize = 256;
+const MAX_SKILL_ENTRY_BYTES: u64 = 2 * 1024 * 1024; // 2 MiB
+const MAX_SKILL_TOTAL_BYTES: u64 = 8 * 1024 * 1024; // 8 MiB
 
 #[tauri::command]
 pub fn list_skills(db: State<'_, Database>) -> Result<Vec<Skill>, String> {
@@ -158,8 +164,13 @@ fn read_zip_skill(path: &str) -> Result<Vec<SkillDraft>, String> {
     let mut archive =
         zip::ZipArchive::new(file).map_err(|_| "不是有效的 zip 压缩包".to_string())?;
 
+    if archive.len() > MAX_SKILL_ZIP_ENTRIES {
+        return Err("压缩包内文件过多，无法作为技能导入".into());
+    }
+
     let mut skill_md: Option<String> = None;
     let mut first_md: Option<String> = None;
+    let mut total_bytes: u64 = 0;
     for index in 0..archive.len() {
         let Ok(mut entry) = archive.by_index(index) else {
             continue;
@@ -172,11 +183,25 @@ fn read_zip_skill(path: &str) -> Result<Vec<SkillDraft>, String> {
         if !(lower.ends_with(".md") || lower.ends_with(".markdown")) {
             continue;
         }
+        // Skip oversized parts (declared or actual) instead of decompressing.
+        if entry.size() > MAX_SKILL_ENTRY_BYTES {
+            continue;
+        }
 
         // Non-UTF-8 content degrades gracefully rather than failing the file.
         let mut bytes = Vec::new();
-        if entry.read_to_end(&mut bytes).is_err() {
+        if entry
+            .by_ref()
+            .take(MAX_SKILL_ENTRY_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .is_err()
+            || bytes.len() as u64 > MAX_SKILL_ENTRY_BYTES
+        {
             continue;
+        }
+        total_bytes += bytes.len() as u64;
+        if total_bytes > MAX_SKILL_TOTAL_BYTES {
+            return Err("压缩包解压后过大，无法作为技能导入".into());
         }
         let text = String::from_utf8_lossy(&bytes).into_owned();
 

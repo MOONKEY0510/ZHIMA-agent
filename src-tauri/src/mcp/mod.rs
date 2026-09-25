@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -62,6 +63,8 @@ pub struct McpManager {
     sessions: Mutex<HashMap<String, Session>>,
     busy: Mutex<std::collections::HashSet<String>>,
     tools: Mutex<Vec<McpToolInfo>>,
+    /// Guards [`McpManager::ensure_warm`] against overlapping warm-ups.
+    warming: AtomicBool,
 }
 
 impl McpManager {
@@ -72,6 +75,27 @@ impl McpManager {
     /// Tool list from the last refresh (no I/O) — what the registry uses.
     pub fn cached_tools(&self) -> Vec<McpToolInfo> {
         self.tools.lock().unwrap().clone()
+    }
+
+    /// Warm the tool cache once, without blocking the caller and without
+    /// starting a second warm-up while one is in flight.
+    ///
+    /// Servers are launched on demand rather than at app start, so every
+    /// trigger — first send, opening the settings panel, the post-launch
+    /// idle moment — goes through here. An empty cache plus a concurrent
+    /// trigger would otherwise spawn every server twice.
+    pub async fn ensure_warm(&self, servers: &[McpServerConfig]) {
+        if !self.cached_tools().is_empty() {
+            return;
+        }
+        if self.warming.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let errors = self.refresh(servers).await;
+        self.warming.store(false, Ordering::SeqCst);
+        for error in errors {
+            eprintln!("MCP 服务器启动失败：{error}");
+        }
     }
 
     /// Spawn/refresh every enabled server and cache the discovered tools.

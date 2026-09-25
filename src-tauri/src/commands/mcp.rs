@@ -2,7 +2,7 @@
 //! tool list.
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::mcp::McpToolInfo;
 use crate::state::AppState;
@@ -165,15 +165,45 @@ pub async fn set_mcp_server_enabled(
     Ok(build_view(&config, &state))
 }
 
-/// Best-effort refresh used at startup so the tool list is warm.
+/// Best-effort refresh used for the post-launch idle warm-up.
 pub async fn refresh_from_config(config: &ConfigStore, state: &AppState) {
     let servers = config.read(|cfg| cfg.mcp_servers.clone());
     if servers.iter().any(|server| server.enabled) {
-        let errors = state.mcp.refresh(&servers).await;
-        for error in errors {
-            eprintln!("MCP 服务器启动失败：{error}");
-        }
+        state.mcp.ensure_warm(&servers).await;
     }
+}
+
+/// Start enabled MCP servers in the background (never blocks the caller).
+///
+/// Servers are no longer launched at app start: a cold start should not pay for
+/// child processes the user may never touch. This is the on-demand trigger —
+/// used when the settings panel opens and when a chat turn is sent — so a
+/// server added mid-session becomes available without a restart. The current
+/// turn keeps running with whatever is already cached.
+pub fn warm_in_background(window: &tauri::Window) {
+    let handle = window.app_handle().clone();
+    tauri::async_runtime::spawn(async move {
+        let config = handle.state::<ConfigStore>();
+        let state = handle.state::<AppState>();
+        let servers = config.read(|cfg| cfg.mcp_servers.clone());
+        if servers.iter().any(|server| server.enabled) {
+            state.mcp.ensure_warm(&servers).await;
+        }
+    });
+}
+
+/// Frontend trigger: warm the servers when the MCP panel is opened.
+#[tauri::command]
+pub async fn warm_mcp_servers(
+    config: State<'_, ConfigStore>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let servers = config.read(|cfg| cfg.mcp_servers.clone());
+    if !servers.iter().any(|server| server.enabled) {
+        return Ok(());
+    }
+    state.mcp.ensure_warm(&servers).await;
+    Ok(())
 }
 
 fn new_server_id() -> String {
