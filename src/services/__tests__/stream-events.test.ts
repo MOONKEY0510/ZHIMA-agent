@@ -125,6 +125,28 @@ describe("DeltaBuffer incremental rendering", () => {
     expect(useChatStore.getState().messages[0]?.content).toBe("你好");
   });
 
+  it("scales the per-frame budget with the backlog", () => {
+    // Live deltas keep the typing feel; a large backlog drains much faster.
+    expect(DeltaBuffer.budgetFor(100)).toBe(48);
+    expect(DeltaBuffer.budgetFor(1000)).toBe(128);
+    expect(DeltaBuffer.budgetFor(4000)).toBe(512);
+    expect(DeltaBuffer.budgetFor(10000)).toBe(2048);
+    expect(DeltaBuffer.budgetFor(50000)).toBe(8192);
+  });
+
+  it("catches up with a large buffered answer in a handful of frames", () => {
+    const buffer = new DeltaBuffer();
+    const text = "x".repeat(20000); // the old fixed 48/frame needed ~417 frames
+
+    buffer.handle(delta(text));
+    buffer.handle(finish());
+    const frames = drainAllFrames();
+
+    expect(frames).toBeLessThanOrEqual(20);
+    const state = useChatStore.getState();
+    expect(state.messages[0]).toMatchObject({ content: text, status: "done" });
+  });
+
   it("flushes all buffered text immediately on error", () => {
     const buffer = new DeltaBuffer();
     buffer.handle(delta("partial answer"));

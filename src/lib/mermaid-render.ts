@@ -1,35 +1,56 @@
 /**
  * Mermaid rendering core (画图模块).
  *
- * The mermaid bundle (~1 MB) and the ELK layout engine are loaded lazily the
- * first time a `mermaid` code block appears — messages without diagrams never
- * pay for them (same pattern as the KaTeX chunk in `components/markdown`).
+ * The mermaid bundle (~1 MB) is loaded lazily the first time a `mermaid` code
+ * block appears — messages without diagrams never pay for it (same pattern as
+ * the KaTeX chunk in `components/markdown`).
  *
- * ELK produces noticeably cleaner edge routing on larger flowcharts; mermaid
- * silently falls back to its default layout for diagram types ELK does not
- * support, so it is safe to leave enabled.
+ * ELK (~1.4 MB) is loaded only for diagrams large enough to benefit from its
+ * edge routing. Loading it for every diagram made a single small flowchart
+ * fetch more than the whole app bundle; the built-in layout handles the common
+ * cases, and a wrong guess here costs layout quality, never correctness.
  */
 import type { MermaidConfig } from "mermaid";
 import { diagramSvgStyle, type DiagramTheme } from "./mermaid-theme";
 
 let modulePromise: Promise<typeof import("mermaid")> | null = null;
-let elkAvailable = false;
+let elkPromise: Promise<boolean> | null = null;
 
-/** Load mermaid (and the ELK layout loader) exactly once. */
+/** Load mermaid exactly once. */
 function loadMermaid(): Promise<typeof import("mermaid")> {
-  modulePromise ??= (async () => {
-    const mermaid = await import("mermaid");
+  modulePromise ??= import("mermaid");
+  return modulePromise;
+}
+
+/** Load and register ELK once; `false` means "stick to the default layout". */
+function loadElk(): Promise<boolean> {
+  elkPromise ??= (async () => {
     try {
-      const elk = await import("@mermaid-js/layout-elk");
+      const [elk, mermaid] = await Promise.all([
+        import("@mermaid-js/layout-elk"),
+        loadMermaid(),
+      ]);
       mermaid.default.registerLayoutLoaders(elk.default);
-      elkAvailable = true;
+      return true;
     } catch (error) {
       // Diagrams still render with the default layout engine.
       console.warn("ELK 布局引擎加载失败，已回退到默认布局:", error);
+      return false;
     }
-    return mermaid;
   })();
-  return modulePromise;
+  return elkPromise;
+}
+
+/**
+ * Whether a diagram is complex enough that ELK is worth its download.
+ *
+ * Deliberately a cheap text heuristic: the inputs are trusted-ish model output
+ * and the only cost of guessing wrong is layout quality.
+ */
+export function wantsElk(code: string): boolean {
+  const lines = code.split("\n").filter((line) => line.trim().length > 0).length;
+  const edges = (code.match(/-->|---|==>|-\.->|-->>|--x|--o/g) ?? []).length;
+  return lines >= 24 || edges >= 18;
 }
 
 let renderSeq = 0;
@@ -45,11 +66,12 @@ export async function renderMermaidDiagram(
   theme: DiagramTheme,
 ): Promise<string> {
   const mermaid = (await loadMermaid()).default;
+  const useElk = wantsElk(code) && (await loadElk());
   const config: MermaidConfig = {
     startOnLoad: false,
     securityLevel: "strict",
     ...theme.config,
-    ...(elkAvailable ? { layout: "elk" } : {}),
+    ...(useElk ? { layout: "elk" } : {}),
     flowchart: {
       htmlLabels: false,
       curve: "basis",

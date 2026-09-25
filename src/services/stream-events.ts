@@ -32,14 +32,39 @@ export class DeltaBuffer {
   /** Events that arrived ahead of a missing lower sequence. */
   private queuedEvents = new Map<string, Map<number, ChatStreamEvent>>();
   /**
-   * Maximum characters applied to the UI per animation frame, per request.
+   * Characters applied to the UI per animation frame for a live stream.
    *
    * Real streaming endpoints deliver a handful of chars per event, so they
-   * are unaffected (the buffer is already drained each frame). A burst —
-   * either a whole response arriving at once or a backlog while the window
-   * was hidden — is spread over frames instead of jumping to completion.
+   * are unaffected (the buffer is already drained each frame).
    */
-  private static readonly MAX_CHARS_PER_FRAME = 48;
+  private static readonly MIN_CHARS_PER_FRAME = 48;
+  /** Hard ceiling, so one frame never renders an unbounded amount of markdown. */
+  private static readonly MAX_CHARS_PER_FRAME = 8192;
+  /**
+   * A gap longer than this between frames means the WebView stopped painting
+   * (hidden or occluded window). The backlog then lands in one pass on return
+   * instead of being replayed frame by frame.
+   */
+  private static readonly RESUME_AFTER_MS = 500;
+  /** Timestamp of the last frame that rendered something (0 before the first). */
+  private lastFlushAt = 0;
+
+  /**
+   * Per-frame budget for one request, scaled with its pending backlog.
+   *
+   * A buffering relay can deliver the whole answer in a single event; keeping
+   * the small live-stream budget would then leave the UI typing out an answer
+   * the model finished seconds ago. The budget grows in steps so a long
+   * response catches up in a fraction of the frames while short deltas still
+   * look like typing.
+   */
+  static budgetFor(backlog: number): number {
+    if (backlog <= 256) return DeltaBuffer.MIN_CHARS_PER_FRAME;
+    if (backlog <= 1024) return 128;
+    if (backlog <= 4096) return 512;
+    if (backlog <= 16384) return 2048;
+    return DeltaBuffer.MAX_CHARS_PER_FRAME;
+  }
 
   handle(event: ChatStreamEvent) {
     const rid = event.requestId;
@@ -99,7 +124,7 @@ export class DeltaBuffer {
         break;
 
       case "tool_pending":
-        store.pendingToolCall(event.requestId, event.callId, event.name, event.summary);
+        store.pendingToolCall(event.requestId, event.callId, event.name, event.summary, event.canRemember);
         break;
 
       case "tool_rejected":
@@ -158,12 +183,19 @@ export class DeltaBuffer {
 
   private flushNow(force: boolean) {
     const store = useChatStore.getState();
+    const now = performance.now();
+    // The first frame keeps the incremental feel; only a real pause means the
+    // window was hidden and its backlog should land in one go.
+    const paused =
+      this.lastFlushAt !== 0 && now - this.lastFlushAt > DeltaBuffer.RESUME_AFTER_MS;
+    this.lastFlushAt = now;
+    const drainAll = force || paused;
 
-    // Apply buffered deltas, throttled to MAX_CHARS_PER_FRAME per request per
-    // frame. `force` (error termination) drains everything at once so the
-    // partial answer plus the error message are shown together.
-    this.drain(this.pending, force, (rid, text) => store.appendDelta(rid, text));
-    this.drain(this.pendingReasoning, force, (rid, text) => store.appendReasoning(rid, text));
+    // Apply buffered deltas with a per-request frame budget. `force` (error
+    // termination) and a resumed window drain everything at once, so a partial
+    // answer is never shown next to its error message in pieces.
+    this.drain(this.pending, drainAll, (rid, text) => store.appendDelta(rid, text));
+    this.drain(this.pendingReasoning, drainAll, (rid, text) => store.appendReasoning(rid, text));
 
     // A deferred finish fires once its deltas have all been rendered.
     if (this.pendingFinish.size > 0) {
@@ -186,10 +218,10 @@ export class DeltaBuffer {
     }
   }
 
-  /** Consume up to `MAX_CHARS_PER_FRAME` characters from one buffer. */
+  /** Consume up to this request's per-frame budget from one buffer. */
   private drain(
     buffer: Map<string, string>,
-    force: boolean,
+    drainAll: boolean,
     apply: (requestId: string, text: string) => void,
   ) {
     for (const [requestId, text] of [...buffer.entries()]) {
@@ -197,7 +229,9 @@ export class DeltaBuffer {
         buffer.delete(requestId);
         continue;
       }
-      const take = force ? text.length : Math.min(text.length, DeltaBuffer.MAX_CHARS_PER_FRAME);
+      const take = drainAll
+        ? text.length
+        : Math.min(text.length, DeltaBuffer.budgetFor(text.length));
       apply(requestId, text.slice(0, take));
       const rest = text.slice(take);
       if (rest.length > 0) {
