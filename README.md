@@ -159,6 +159,12 @@ node scripts/release-update.mjs     # 构建 + minisign 签名 + 生成 latest.j
 安装包（NSIS）输出到 `src-tauri/target/release/bundle/nsis/`，发布产物汇总到 `release/updates/`。
 脚本支持通过环境变量自动部署到静态服务器（暂存 → 大小校验 → 原子替换），详见脚本头部注释。
 
+GitHub Release：先打 tag 并推送（`git tag -a v2.5.0 -m "…" && git push origin v2.5.0`），
+再执行 `node scripts/github-release.mjs` 创建 Release 并上传安装包与签名，说明自动取自
+`release/release-notes.txt` 的对应版本段（该脚本为本地发布辅助脚本，不入库）。
+
+GitHub Releases 页面：<https://github.com/MOONKEY0510/ZHIMA-agent/releases>
+
 ## 🧪 测试与检查
 
 ```bash
