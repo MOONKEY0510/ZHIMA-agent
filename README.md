@@ -207,3 +207,9 @@ npm run check                       # 两者一起跑
 ![设置 · 外观与工具](./assets/screenshots/Snipaste_2026-09-01_16-39-44.png)
 
 ![设置 · 通用](./assets/screenshots/Snipaste_2026-09-01_16-39-53.png)
+
+## ⭐ Star 趋势
+
+[![Star History Chart](https://api.star-history.com/image?repos=MOONKEY0510/ZHIMA-agent&type=Date&legend=top-left)](https://star-history.com/#MOONKEY0510/ZHIMA-agent&Date)
+
+如果芝麻对你有用，欢迎点个 Star ⭐
