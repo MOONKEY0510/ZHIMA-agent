@@ -196,4 +196,12 @@ export interface ProvidersStateView {
   useSystemProxy: boolean;
 }
 
-export type ThemeMode = "system" | "light" | "dark" | "warm" | "rose" | "spring";
+export type ThemeMode =
+  | "system"
+  | "light"
+  | "dark"
+  | "paper"
+  | "paper-dark"
+  | "warm"
+  | "rose"
+  | "spring";

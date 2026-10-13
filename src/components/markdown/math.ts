@@ -33,10 +33,32 @@ export interface MathPlugins {
  * `$$` inside prose is left alone.
  */
 export function normalizeDisplayMath(content: string): string {
-  return content.replace(
+  return convertLatexDelimiters(content).replace(
     /^[ \t]*\$\$([^\n]+)\$\$[ \t]*$/gm,
     (_match: string, body: string) => `$$\n${body.trim()}\n$$`,
   );
+}
+
+/**
+ * Some models emit LaTeX's own `\( … \)` / `\[ … \]` delimiters instead of
+ * `$ … $` / `$$ … $$`. remark-math only understands the dollar form, so
+ * without this the formula renders as literal text (e.g. a stray `\[` and
+ * `\boxed{29}\]` left in the message). Converted to the dollar form here,
+ * skipping fenced/inline code so backslashes in actual code are untouched.
+ */
+function convertLatexDelimiters(content: string): string {
+  const codeSpanOrFence = /(```[\s\S]*?```|`[^`\n]*`)/g;
+  return content
+    .split(codeSpanOrFence)
+    .map((part, index) =>
+      // Odd indices are the code spans/fences captured by the split regex.
+      index % 2 === 1
+        ? part
+        : part
+            .replace(/\\\[([\s\S]+?)\\\]/g, (_m, body: string) => `$$${body}$$`)
+            .replace(/\\\(([\s\S]+?)\\\)/g, (_m, body: string) => `$${body}$`),
+    )
+    .join("");
 }
 
 let loaded: MathPlugins | null = null;

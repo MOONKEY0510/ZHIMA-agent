@@ -68,6 +68,20 @@ describe("Markdown", () => {
     expect(normalizeDisplayMath("文字 $$x$$ 文字")).toBe("文字 $$x$$ 文字");
   });
 
+  it("converts LaTeX \\[ \\] and \\( \\) delimiters to the dollar form", () => {
+    // Surrounding spaces are trimmed by the same multi-line expansion that
+    // normalizes a standalone `$$…$$` line.
+    expect(normalizeDisplayMath("\\[ \\boxed{29} \\]")).toBe("$$\n\\boxed{29}\n$$");
+    expect(normalizeDisplayMath("这段文字里 \\(a+b\\) 是公式")).toBe(
+      "这段文字里 $a+b$ 是公式",
+    );
+    // Backslashes inside code must not be touched.
+    expect(normalizeDisplayMath("`\\[not math\\]`")).toBe("`\\[not math\\]`");
+    expect(normalizeDisplayMath("```\n\\(also not math\\)\n```")).toBe(
+      "```\n\\(also not math\\)\n```",
+    );
+  });
+
   it("renders inline and display formulas via katex", async () => {
     const { container } = render(
       <Markdown content={"行内 $E=mc^2$ 与块级公式：\n\n$$\\int_0^1 x\\,dx$$"} />,

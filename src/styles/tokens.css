@@ -1,6 +1,17 @@
 /* Design tokens — plan §4.2 */
 
 :root {
+  /* Font stacks are theme-independent: serif is used sparingly (empty-state
+   * greeting, markdown h1/h2) and relies on fonts already on the OS, so the
+   * installer gains no weight from it. */
+  --cf-font-sans:
+    "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC",
+    system-ui, -apple-system, sans-serif;
+  --cf-font-serif: Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
+  --cf-font-mono: "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
+}
+
+:root {
   --cf-bg: #f7f7f8;
   --cf-panel: #ffffff;
   --cf-panel-2: #f3f3f5;
@@ -46,6 +57,84 @@
   color-scheme: dark;
 }
 
+/* --- Shared fallbacks referenced across themes --------------------------
+ * These three were referenced by components (status chips, warning banners)
+ * but never defined, so every theme silently fell back to a hardcoded color.
+ * Defined once here; themes below override them when the hue needs to shift. */
+:root {
+  --cf-success-weak: #e6f4ea;
+  --cf-danger-weak: #fbeae7;
+  --cf-warn-bg: #fbf3df;
+  --cf-text-3: #9ca3af;
+  --cf-hover: #ececef;
+}
+[data-theme="dark"] {
+  --cf-success-weak: #16311f;
+  --cf-danger-weak: #3a211d;
+  --cf-warn-bg: #3a3220;
+  --cf-text-3: #6b6b6b;
+  --cf-hover: #2f2f2f;
+}
+
+/* --- Paper themes (Claude-style redesign) --------------------------------
+ * Warm, low-saturation "paper" palette. Opt-in: existing users keep their
+ * current theme (including "system") until they pick this explicitly. */
+[data-theme="paper"] {
+  --cf-bg: #faf9f5;
+  --cf-panel: #ffffff;
+  --cf-panel-2: #f3f1ea;
+  --cf-text: #1f1e1d;
+  --cf-text-2: #73726c;
+  --cf-text-3: #a3a198;
+  --cf-border: #e8e6dc;
+  --cf-accent: #c96442;
+  --cf-accent-fg: #ffffff;
+  --cf-success: #4f7d5e;
+  --cf-danger: #b3463a;
+  --cf-success-weak: #e6f4ea;
+  --cf-danger-weak: #fbeae7;
+  --cf-warn-bg: #fbf3df;
+  --cf-code-bg: #f5f4ef;
+  --cf-user-bubble: #f0eee6;
+  --cf-hover: #f0eee6;
+  --cf-avatar-bg: #ece9df;
+  --cf-avatar-fg: #6b5a4a;
+  --hl-keyword: #8250df;
+  --hl-string: #4f7d5e;
+  --hl-number: #a1540f;
+  --hl-title: #3a6ea5;
+  --hl-attr: #a1540f;
+  color-scheme: light;
+}
+
+[data-theme="paper-dark"] {
+  --cf-bg: #262624;
+  --cf-panel: #30302e;
+  --cf-panel-2: #1f1e1d;
+  --cf-text: #f5f4ee;
+  --cf-text-2: #9c9a92;
+  --cf-text-3: #6f6d66;
+  --cf-border: #3d3d3a;
+  --cf-accent: #d97757;
+  --cf-accent-fg: #ffffff;
+  --cf-success: #6bb588;
+  --cf-danger: #e08271;
+  --cf-success-weak: #1e3326;
+  --cf-danger-weak: #3a2220;
+  --cf-warn-bg: #3a3220;
+  --cf-code-bg: #1f1e1d;
+  --cf-user-bubble: #141413;
+  --cf-hover: #3a3a37;
+  --cf-avatar-bg: #3d3d3a;
+  --cf-avatar-fg: #d8d5cc;
+  --hl-keyword: #d2a8ff;
+  --hl-string: #7ee787;
+  --hl-number: #ffa657;
+  --hl-title: #79c0ff;
+  --hl-attr: #ffa657;
+  color-scheme: dark;
+}
+
 /* --- Extended themes (v1.1) --------------------------------------------- */
 
 /* Warm — warm beige tones, cozy reading feel */
@@ -64,6 +153,8 @@
   --cf-user-bubble: #f0e6d6;
   --cf-avatar-bg: #e8dcc8;
   --cf-avatar-fg: #6b4e2e;
+  --cf-text-3: #ab9a84;
+  --cf-hover: #f0e6d6;
   --hl-keyword: #7c3aed;
   --hl-string: #4d7c0f;
   --hl-number: #9a3412;
@@ -88,6 +179,8 @@
   --cf-user-bubble: #f3e2ea;
   --cf-avatar-bg: #ecd6df;
   --cf-avatar-fg: #8e3a5e;
+  --cf-text-3: #c0a0ac;
+  --cf-hover: #f3e2ea;
   --hl-keyword: #7c3aed;
   --hl-string: #4d7c0f;
   --hl-number: #9a3412;
@@ -112,6 +205,8 @@
   --cf-user-bubble: #f9e8f0;
   --cf-avatar-bg: #dceefb;
   --cf-avatar-fg: #5287b5;
+  --cf-text-3: #a9bdd4;
+  --cf-hover: #eef7ff;
   --hl-keyword: #8d70c9;
   --hl-string: #529579;
   --hl-number: #c88763;

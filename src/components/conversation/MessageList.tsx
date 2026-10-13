@@ -234,14 +234,19 @@ export function MessageList() {
         }}
         itemContent={(_index, row) => (
           <div
-            className={`px-3 pb-5 transition-colors duration-500 ${
+            className={`px-4 pb-5 transition-colors duration-500 sm:px-6 ${
               messagesOf(row).some((m) => m.id === highlightId)
                 ? "rounded-input bg-[color-mix(in_srgb,var(--cf-accent)_10%,transparent)]"
                 : ""
             }`}
           >
             {row.kind === "single" ? (
-              <MessageItem message={row.message} streaming={streaming} />
+              // Single-answer turns sit in a centred reading column — the
+              // width Claude-style prose reads best at (plan §4.1). Side-by-
+              // side multi-model turns below intentionally stay full width.
+              <div className="mx-auto max-w-[720px]">
+                <MessageItem message={row.message} streaming={streaming} />
+              </div>
             ) : (
               // Multi-model answers to one prompt, side by side (P1-6).
               <div

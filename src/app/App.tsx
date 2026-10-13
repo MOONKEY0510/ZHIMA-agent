@@ -28,7 +28,6 @@ import {
   HEAD_NUDGE_PX,
   TAIL_NUDGE_PX,
   WATER_HEAD,
-  WATER_RIPPLE,
   WATER_RISE,
   WATER_SHARPEN,
   WATER_SINK,
@@ -143,13 +142,6 @@ export default function App() {
   const tail = useSpring({
     y: shown ? 0 : TAIL_NUDGE_PX,
     config: shown ? WATER_TAIL : WATER_SINK,
-    immediate: reducedMotion.current,
-  });
-
-  /** Aurora ripple along the bottom edge, spreading once the water lands. */
-  const ripple = useSpring({
-    scaleX: shown ? 1 : 0,
-    config: WATER_RIPPLE,
     immediate: reducedMotion.current,
   });
 
@@ -278,18 +270,6 @@ export default function App() {
           filter: shell.blur.to((b) => (b > 0.05 ? `blur(${b}px)` : "none")),
         }}
       >
-        {/* Highlight sweeping across the top edge. A wide gradient that is
-            translated rather than a background-position animation, so the
-            movement is composited instead of repainting every frame. */}
-        <div aria-hidden="true" className="cf-sheen pointer-events-none absolute inset-x-0 top-0 z-20 h-14" />
-
-        {/* Aurora ripple hugging the bottom edge. */}
-        <animated.div
-          aria-hidden="true"
-          className="cf-ripple pointer-events-none absolute inset-x-0 bottom-0 z-20 h-px origin-center"
-          style={{ transform: ripple.scaleX.to((x) => `scaleX(${x})`) }}
-        />
-
         {/* Header and body ride the shell, plus a few pixels of their own so
             the surface flows instead of moving like a rigid plate.  They carry
             no opacity or scale of their own — the shell owns those. */}

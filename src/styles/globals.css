@@ -16,13 +16,7 @@
   }
 
   body {
-    font-family:
-      "Segoe UI",
-      "PingFang SC",
-      "Microsoft YaHei",
-      system-ui,
-      -apple-system,
-      sans-serif;
+    font-family: var(--cf-font-sans);
     font-size: 14px;
     color: var(--cf-text);
     overflow: hidden;
@@ -137,7 +131,7 @@
   z-index: -1;
   pointer-events: none;
   content: "";
-  background: color-mix(in srgb, var(--cf-panel) 84%, transparent);
+  background: color-mix(in srgb, var(--cf-panel) 92%, transparent);
   backdrop-filter: blur(2px);
 }
 /* NOTE: the overlay uses a NEGATIVE z-index so it sits under the content.
@@ -155,6 +149,9 @@
 .cf-window-shell.cf-shell--settled {
   backdrop-filter: blur(24px) saturate(1.4);
   -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  /* Crisp inner edge against the transparent OS window — important now
+     that the top/bottom decorative sheens are gone (Claude-style redesign). */
+  box-shadow: inset 0 0 0 1px var(--cf-border);
 }
 
 /* While the water is moving: the shell is inert (a half-transparent window must
@@ -164,43 +161,6 @@
 .cf-window-shell.cf-shell--in-flight {
   pointer-events: none;
   will-change: transform, opacity, filter;
-}
-
-/* Highlight sweeping across the top edge.  A wide diagonal gradient band that
-   is translated left-to-right by a CSS animation; the movement is composited
-   on the element's own layer so it never triggers a repaint of the content
-   below. */
-.cf-sheen {
-  background: linear-gradient(
-    105deg,
-    transparent 30%,
-    rgb(255 255 255 / 14%) 47%,
-    rgb(255 255 255 / 28%) 50%,
-    rgb(255 255 255 / 14%) 53%,
-    transparent 70%
-  );
-  background-size: 250% 100%;
-  animation: cf-sheen-flow 4.5s ease-in-out infinite;
-  mask-image: linear-gradient(to bottom, rgb(0 0 0 / 55%), transparent);
-  -webkit-mask-image: linear-gradient(to bottom, rgb(0 0 0 / 55%), transparent);
-}
-@keyframes cf-sheen-flow {
-  0% { background-position: 180% 0; }
-  100% { background-position: -80% 0; }
-}
-
-/* Aurora ripple hugging the bottom edge.  The scaleX is driven by a spring in
-   App.tsx; the colour band is static so only the transform animates. */
-.cf-ripple {
-  background: linear-gradient(
-    90deg,
-    transparent,
-    var(--cf-accent) 30%,
-    color-mix(in srgb, var(--cf-accent) 60%, var(--cf-success)) 50%,
-    var(--cf-accent) 70%,
-    transparent
-  );
-  opacity: 0.35;
 }
 
 /* --- Markdown body ------------------------------------------------------- */
