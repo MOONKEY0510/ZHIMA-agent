@@ -163,6 +163,26 @@
   will-change: transform, opacity, filter;
 }
 
+/* --- Shared popover entrance (components/ui/Menu.tsx) -------------------- */
+.cf-menu-pop {
+  animation: cf-menu-pop-in 140ms ease-out;
+}
+@keyframes cf-menu-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cf-menu-pop {
+    animation: none;
+  }
+}
+
 /* --- Markdown body ------------------------------------------------------- */
 .md-body {
   user-select: text;
