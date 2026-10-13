@@ -8,5 +8,15 @@ import * as matchers from "@testing-library/jest-dom/matchers";
 // that is not yet initialised during setup-file execution.
 expect.extend(matchers);
 
-// jsdom provides requestAnimationFrame; nothing else needs global patching.
+// jsdom provides requestAnimationFrame; ResizeObserver is the one browser
+// API it does not implement, so components that size themselves against
+// their container (e.g. the empty-state suggestion row) need this stub.
+if (typeof globalThis.ResizeObserver === "undefined") {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
+
 // Tauri bridge modules are mocked per test file where they are exercised.

@@ -138,10 +138,10 @@ export function ModelPicker() {
         onClick={openPicker}
         title={`本对话的模型：${label}（切换只影响当前对话）`}
         aria-expanded={open}
-        className={`flex h-7 max-w-[10rem] items-center gap-1 rounded-full border px-2 text-[11px] transition-colors ${
+        className={`flex h-7 max-w-[8rem] items-center gap-1 rounded-full border px-2 text-ui transition-colors ${
           open
             ? "border-[color-mix(in_srgb,var(--cf-accent)_45%,transparent)] bg-accent/10 text-accent"
-            : "border-line text-ink-2 hover:bg-panel hover:text-ink"
+            : "border-line text-ink-2 hover:bg-hover hover:text-ink"
         }`}
       >
         <span className="truncate">{label}</span>
@@ -153,8 +153,9 @@ export function ModelPicker() {
           {/* Click-away layer covering the whole window */}
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
 
-          {/* Opens upward: the composer sits at the bottom of the window. */}
-          <div className="absolute bottom-8 left-0 z-40 flex max-h-[min(70vh,30rem)] w-[min(88vw,26rem)] flex-col overflow-hidden rounded-input border border-line bg-panel shadow-lg">
+          {/* Opens upward and right-aligned: the picker now sits on the
+              composer's right edge, next to the send button. */}
+          <div className="cf-menu-pop absolute bottom-8 right-0 z-40 flex max-h-[min(70vh,30rem)] w-[min(88vw,26rem)] flex-col overflow-hidden rounded-menu border border-line bg-panel shadow-menu">
             <div className="flex items-center gap-2 border-b border-line px-3 py-2">
               <Search size={13} className="text-ink-2" />
               <input

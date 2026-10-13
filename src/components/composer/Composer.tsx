@@ -75,8 +75,9 @@ const QUICK_ACTIONS: { id: string; label: string; instruction: string }[] = [
 
 /* Selection-capture helpers live in lib/selection-capture.ts (unit-tested). */
 
-/** Kept low enough that the input + toolbar always fit the floating window. */
-const MAX_INPUT_HEIGHT = 112;
+/** Matches the textarea's `max-h` class below. Kept modest so the input
+ *  never crowds out the toolbar in the 260px-tall floating window. */
+const MAX_INPUT_HEIGHT = 130;
 const MAX_IMAGES = 4;
 const THINKING_EFFORT_OPTIONS: { value: ThinkingEffort; label: string; hint: string }[] = [
   { value: "low", label: "低", hint: "更快响应" },
@@ -173,6 +174,23 @@ export function Composer() {
       textareaRef.current?.focus();
     }
   }, [conversationNonce]);
+
+  // Empty-state suggestion chips (翻译/解释/总结/润色) load their preset into
+  // the composer via this one-shot signal instead of reaching into Composer's
+  // internal state directly.
+  const composerPrefill = useChatStore((s) => s.composerPrefill);
+  useEffect(() => {
+    if (composerPrefill === null) return;
+    setText(composerPrefill);
+    useChatStore.getState().clearComposerPrefill();
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    });
+  }, [composerPrefill]);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -608,18 +626,18 @@ export function Composer() {
   const canSend = (text.trim().length > 0 || images.length > 0 || docs.length > 0) && !streaming;
 
   return (
-    <div className="cf-print-hide relative shrink-0 border-t border-line px-3 py-2.5">
+    <div className="cf-print-hide relative shrink-0 px-3 pb-3 pt-1.5">
       {/* Selected text captured by the hotkey (P1-5).  One compact row: the
           text itself already sits in the input box below, so repeating it (or
           a hint line) would only eat the little vertical space the floating
           window has. */}
       {selection && (
         <div
-          className="mb-2 flex flex-wrap items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5"
+          className="mx-auto mb-2 flex max-w-[760px] flex-wrap items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5"
           title="文字已追加到输入框，可直接编辑发送；选择动作会套用对应指令（回答将写回剪贴板）。"
         >
           <Sparkles size={12} className="shrink-0 text-accent" />
-          <span className="shrink-0 text-[11px] text-ink">
+          <span className="shrink-0 text-meta text-ink">
             已获取选中文本 · {selection.length} 字
           </span>
           {QUICK_ACTIONS.map((action) => (
@@ -627,7 +645,7 @@ export function Composer() {
               key={action.id}
               type="button"
               onClick={() => runSelectionAction(action)}
-              className="rounded-full border border-line px-2 py-0.5 text-[11px] text-ink transition-colors hover:bg-panel"
+              className="rounded-full border border-line px-2 py-0.5 text-meta text-ink transition-colors hover:bg-panel"
             >
               {action.label}
             </button>
@@ -645,7 +663,7 @@ export function Composer() {
 
       {/* Preset picker dropdown */}
       {showPresets && filteredPresets.length > 0 && (
-        <div className="mb-1.5 overflow-hidden rounded-btn border border-line bg-panel shadow-lg">
+        <div className="mx-auto mb-1.5 max-w-[760px] overflow-hidden rounded-menu border border-line bg-panel shadow-menu">
           {filteredPresets.map((p, i) => (
             <button
               key={p.id}
@@ -654,11 +672,11 @@ export function Composer() {
                 applyPreset(p);
               }}
               onMouseEnter={() => setPresetIndex(i)}
-              className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors ${
-                i === presetIndex ? "bg-panel-2 text-ink" : "text-ink-2"
+              className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-ui transition-colors ${
+                i === presetIndex ? "bg-hover text-ink" : "text-ink-2"
               }`}
             >
-              <span className="shrink-0 font-mono text-[11px] text-accent">{p.command}</span>
+              <span className="shrink-0 font-mono text-meta text-accent">{p.command}</span>
               <span className="truncate">{p.name}</span>
             </button>
           ))}
@@ -670,111 +688,112 @@ export function Composer() {
           of the small floating window. */}
       {toolsOpen && (
         <div className="absolute bottom-full left-0 right-0 z-30 mb-1.5 px-3">
-          <ToolsPanel
-            enabled={enableTools}
-            onToggle={(v) => setEnableTools(v)}
-            onClose={() => setToolsOpen(false)}
-          />
+          <div className="mx-auto max-w-[760px]">
+            <ToolsPanel
+              enabled={enableTools}
+              onToggle={(v) => setEnableTools(v)}
+              onClose={() => setToolsOpen(false)}
+            />
+          </div>
         </div>
       )}
 
-      {/* Multi-model comparison targets (P1-6) */}
-      {comparing && (
-        <div className="mb-2 flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1">
-          <span className="shrink-0 text-[11px] text-ink-2">对比</span>
-          <span className="min-w-0 flex-1 truncate text-[11px] text-ink" title={compareLabel}>
-            {compareLabel}
-          </span>
-          <button
-            type="button"
-            onClick={() => setCompareTargets([])}
-            title="退出对比模式"
-            className="grid h-4 w-4 shrink-0 place-items-center rounded text-ink-2 transition-colors hover:bg-panel hover:text-ink"
-          >
-            <X size={11} />
-          </button>
-        </div>
-      )}
-
-      {/* Manually activated skills: stay active for this conversation until
-          removed (自定义技能). */}
-      {activeSkills.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {activeSkills.map((skill) => (
-            <span
-              key={skill.id}
-              className="flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1 text-[11px] text-ink"
-              title={skill.description || skill.name}
-            >
-              <SkillAvatar name={skill.name} size={14} />
-              <span className="max-w-[10rem] truncate">{skill.name}</span>
-              <button
-                type="button"
-                onClick={() => toggleSkill(skill)}
-                title="取消激活"
-                className="grid h-3.5 w-3.5 shrink-0 place-items-center rounded text-ink-2 transition-colors hover:text-danger"
-              >
-                <X size={10} />
-              </button>
+      <div className="mx-auto max-w-[760px]">
+        {/* Multi-model comparison targets (P1-6) */}
+        {comparing && (
+          <div className="mb-2 flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1">
+            <span className="shrink-0 text-meta text-ink-2">对比</span>
+            <span className="min-w-0 flex-1 truncate text-meta text-ink" title={compareLabel}>
+              {compareLabel}
             </span>
-          ))}
-        </div>
-      )}
-
-      {/* Document attachments (P1-8) */}
-      {docs.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {docs.map((doc, idx) => (
-            <span
-              key={`${doc.name}-${idx}`}
-              className="flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1 text-[11px] text-ink"
-              title={doc.name}
+            <button
+              type="button"
+              onClick={() => setCompareTargets([])}
+              title="退出对比模式"
+              className="grid h-4 w-4 shrink-0 place-items-center rounded text-ink-2 transition-colors hover:bg-panel hover:text-ink"
             >
-              <FileText size={11} className="shrink-0 text-ink-2" />
-              <span className="max-w-[11rem] truncate">{doc.name}</span>
-              <span className="shrink-0 text-ink-2">{formatChars(doc.chars)}</span>
-              <button
-                type="button"
-                onClick={() => removeDocument(idx)}
-                title="移除附件"
-                className="grid h-3.5 w-3.5 shrink-0 place-items-center rounded text-ink-2 transition-colors hover:text-danger"
-              >
-                <X size={10} />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-      {docNotice && (
-        <p
-          className={`mb-2 text-[11px] ${docNotice.ok ? "text-ink-2" : "text-danger"}`}
-        >
-          {docNotice.text}
-        </p>
-      )}
+              <X size={11} />
+            </button>
+          </div>
+        )}
 
-      {/* Image previews */}
-      {images.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {images.map((img, idx) => (
-            <div key={idx} className="group relative">
-              <img
-                src={img}
-                alt={`附件 ${idx + 1}`}
-                className="h-14 w-14 rounded-btn border border-line object-cover"
-              />
-              <button
-                onClick={() => removeImage(idx)}
-                className="absolute -right-1 -top-1 grid h-4 w-4 place-items-center rounded-full bg-danger text-white opacity-0 transition-opacity group-hover:opacity-100"
+        {/* Manually activated skills: stay active for this conversation until
+            removed (自定义技能). */}
+        {activeSkills.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {activeSkills.map((skill) => (
+              <span
+                key={skill.id}
+                className="flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1 text-meta text-ink"
+                title={skill.description || skill.name}
               >
-                <X size={9} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+                <SkillAvatar name={skill.name} size={14} />
+                <span className="max-w-[10rem] truncate">{skill.name}</span>
+                <button
+                  type="button"
+                  onClick={() => toggleSkill(skill)}
+                  title="取消激活"
+                  className="grid h-3.5 w-3.5 shrink-0 place-items-center rounded text-ink-2 transition-colors hover:text-danger"
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
 
-      <div className="rounded-input border border-line bg-panel-2 px-3 py-2 focus-within:border-[var(--cf-text-2)]">
+        {/* Document attachments (P1-8) */}
+        {docs.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {docs.map((doc, idx) => (
+              <span
+                key={`${doc.name}-${idx}`}
+                className="flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1 text-meta text-ink"
+                title={doc.name}
+              >
+                <FileText size={11} className="shrink-0 text-ink-2" />
+                <span className="max-w-[11rem] truncate">{doc.name}</span>
+                <span className="shrink-0 text-ink-2">{formatChars(doc.chars)}</span>
+                <button
+                  type="button"
+                  onClick={() => removeDocument(idx)}
+                  title="移除附件"
+                  className="grid h-3.5 w-3.5 shrink-0 place-items-center rounded text-ink-2 transition-colors hover:text-danger"
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        {docNotice && (
+          <p className={`mb-2 text-meta ${docNotice.ok ? "text-ink-2" : "text-danger"}`}>
+            {docNotice.text}
+          </p>
+        )}
+
+        {/* Image previews */}
+        {images.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {images.map((img, idx) => (
+              <div key={idx} className="group relative">
+                <img
+                  src={img}
+                  alt={`附件 ${idx + 1}`}
+                  className="h-14 w-14 rounded-btn border border-line object-cover"
+                />
+                <button
+                  onClick={() => removeImage(idx)}
+                  className="absolute -right-1 -top-1 grid h-4 w-4 place-items-center rounded-full bg-danger text-white opacity-0 transition-opacity group-hover:opacity-100"
+                >
+                  <X size={9} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+      <div className="rounded-composer border border-line bg-panel px-4 py-3 shadow-composer transition-shadow duration-150 focus-within:shadow-composer-focus">
         <input
           ref={fileRef}
           type="file"
@@ -796,19 +815,17 @@ export function Composer() {
           onPaste={onPaste}
           rows={1}
           placeholder="输入问题，Enter 发送，Shift+Enter 换行，Esc 隐藏"
-          className="max-h-[112px] w-full resize-none bg-transparent text-sm leading-5 text-ink outline-none placeholder:text-ink-2"
+          className="max-h-[130px] w-full resize-none bg-transparent text-body text-ink outline-none placeholder:text-ink-3"
         />
-        <div className="mt-1.5 flex items-center justify-between gap-2">
+        <div className="mt-2 flex items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-center gap-1">
-            {/* Model selector (对话级模型): binds to the current conversation */}
-            <ModelPicker />
             {/* Thinking toggle and effort picker */}
             <div className="relative flex shrink-0 items-center">
           <div
-            className={`flex h-7 shrink-0 items-center rounded-full border text-[11px] transition-colors ${
+            className={`flex h-7 shrink-0 items-center rounded-full border text-ui transition-colors ${
               enableThinking
                 ? "border-[color-mix(in_srgb,var(--cf-accent)_45%,transparent)] bg-accent/10 text-accent"
-                : "border-line text-ink-2 hover:bg-panel hover:text-ink"
+                : "border-line text-ink-2 hover:bg-hover hover:text-ink"
             }`}
           >
             <button
@@ -844,8 +861,8 @@ export function Composer() {
             </button>
           </div>
           {thinkingMenuOpen && (
-            <div className="absolute bottom-8 left-0 z-40 w-36 overflow-hidden rounded-btn border border-line bg-panel p-1 shadow-lg">
-              <p className="px-2 py-1 text-[10px] font-medium text-ink-2">思考等级</p>
+            <div className="cf-menu-pop absolute bottom-8 left-0 z-40 w-36 overflow-hidden rounded-menu border border-line bg-panel p-1 shadow-menu">
+              <p className="px-2 py-1 text-meta font-medium text-ink-2">思考等级</p>
               {THINKING_EFFORT_OPTIONS.map((option) => (
                 <button
                   key={option.value}
@@ -854,14 +871,14 @@ export function Composer() {
                     setThinkingMenuOpen(false);
                     void setDefaultThinkingEffort(option.value);
                   }}
-                  className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-[11px] transition-colors ${
+                  className={`flex w-full items-center justify-between rounded-btn px-2 py-1.5 text-left text-ui transition-colors ${
                     thinkingEffort === option.value
-                      ? "bg-accent/15 text-accent"
-                      : "text-ink hover:bg-panel-2"
+                      ? "bg-[color-mix(in_srgb,var(--cf-accent)_12%,transparent)] text-accent"
+                      : "text-ink hover:bg-hover"
                   }`}
                 >
                   <span>{option.label}</span>
-                  <span className="text-[10px] text-ink-2">{option.hint}</span>
+                  <span className="text-meta text-ink-2">{option.hint}</span>
                 </button>
               ))}
             </div>
@@ -873,10 +890,10 @@ export function Composer() {
           disabled={streaming}
           title={webSearch ? "关闭联网搜索" : "开启联网搜索（回答前先搜索网络）"}
           aria-pressed={webSearch}
-          className={`flex h-7 shrink-0 items-center gap-1 rounded-full border px-2.5 text-[11px] transition-colors disabled:opacity-30 ${
+          className={`flex h-7 shrink-0 items-center gap-1 rounded-full border px-2.5 text-ui transition-colors disabled:opacity-30 ${
             webSearch
               ? "border-[color-mix(in_srgb,var(--cf-accent)_45%,transparent)] bg-accent/10 text-accent"
-              : "border-line text-ink-2 hover:bg-panel hover:text-ink"
+              : "border-line text-ink-2 hover:bg-hover hover:text-ink"
           }`}
         >
           <Globe size={13} />
@@ -890,8 +907,8 @@ export function Composer() {
             title="添加附件：图片或文档（也可以直接把文件拖进窗口）"
             aria-expanded={attachMenuOpen}
             disabled={comparing}
-            className={`grid h-7 w-7 place-items-center rounded-md transition-colors disabled:opacity-30 ${
-              attachMenuOpen ? "bg-panel text-ink" : "text-ink-2 hover:bg-panel hover:text-ink"
+            className={`grid h-7 w-7 place-items-center rounded-btn transition-colors disabled:opacity-30 ${
+              attachMenuOpen ? "bg-hover text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
             }`}
           >
             {docBusy ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
@@ -899,7 +916,7 @@ export function Composer() {
           {attachMenuOpen && (
             <>
               <div className="fixed inset-0 z-30" onClick={() => setAttachMenuOpen(false)} />
-              <div className="absolute bottom-8 left-0 z-40 w-36 overflow-hidden rounded-btn border border-line bg-panel p-1 shadow-lg">
+              <div className="cf-menu-pop absolute bottom-8 left-0 z-40 w-36 overflow-hidden rounded-menu border border-line bg-panel p-1 shadow-menu">
                 <button
                   type="button"
                   disabled={images.length >= MAX_IMAGES}
@@ -907,12 +924,12 @@ export function Composer() {
                     setAttachMenuOpen(false);
                     fileRef.current?.click();
                   }}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+                  className="flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-left text-ui text-ink transition-colors hover:bg-hover disabled:opacity-40"
                 >
                   <ImageIcon size={13} className="shrink-0 text-ink-2" />
                   添加图片
                   {images.length > 0 && (
-                    <span className="ml-auto text-[10px] text-ink-2">
+                    <span className="ml-auto text-meta text-ink-2">
                       {images.length}/{MAX_IMAGES}
                     </span>
                   )}
@@ -924,7 +941,7 @@ export function Composer() {
                     setAttachMenuOpen(false);
                     void addDocument();
                   }}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+                  className="flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-left text-ui text-ink transition-colors hover:bg-hover disabled:opacity-40"
                 >
                   <FileText size={13} className="shrink-0 text-ink-2" />
                   添加文档
@@ -946,10 +963,10 @@ export function Composer() {
             }}
             title="选择技能：选中的技能对当前对话持续生效"
             aria-expanded={skillsOpen}
-            className={`flex h-7 shrink-0 items-center gap-1 rounded-full border px-2.5 text-[11px] transition-colors ${
+            className={`flex h-7 shrink-0 items-center gap-1 rounded-full border px-2.5 text-ui transition-colors ${
               activeSkills.length > 0
                 ? "border-[color-mix(in_srgb,var(--cf-accent)_45%,transparent)] bg-accent/10 text-accent"
-                : "border-line text-ink-2 hover:bg-panel hover:text-ink"
+                : "border-line text-ink-2 hover:bg-hover hover:text-ink"
             }`}
           >
             <Wrench size={12} />
@@ -958,7 +975,7 @@ export function Composer() {
           {skillsOpen && (
             <>
               <div className="fixed inset-0 z-30" onClick={() => setSkillsOpen(false)} />
-              <div className="absolute bottom-8 left-0 z-40 w-72 overflow-hidden rounded-btn border border-line bg-panel shadow-lg">
+              <div className="cf-menu-pop absolute bottom-8 left-0 z-40 w-72 overflow-hidden rounded-menu border border-line bg-panel shadow-menu">
                 <div className="border-b border-line p-1.5">
                   <input
                     autoFocus
@@ -966,7 +983,7 @@ export function Composer() {
                     onChange={(e) => setSkillQuery(e.target.value)}
                     placeholder="搜索技能"
                     spellCheck={false}
-                    className="w-full rounded-md border border-line bg-panel-2 px-2 py-1 text-[11px] text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]"
+                    className="w-full rounded-btn border border-line bg-panel-2 px-2 py-1 text-ui text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-[var(--cf-text-2)]"
                   />
                 </div>
                 <div className="max-h-60 overflow-y-auto p-1">
@@ -986,19 +1003,19 @@ export function Composer() {
                           key={skill.id}
                           type="button"
                           onClick={() => toggleSkill(skill)}
-                          className={`flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
-                            active ? "bg-accent/10" : "hover:bg-panel-2"
+                          className={`flex w-full items-start gap-2 rounded-btn px-2 py-1.5 text-left transition-colors ${
+                            active ? "bg-[color-mix(in_srgb,var(--cf-accent)_10%,transparent)]" : "hover:bg-hover"
                           }`}
                         >
                           <SkillAvatar name={skill.name} />
                           <span className="min-w-0 flex-1">
                             <span
-                              className={`block truncate text-xs ${active ? "font-medium text-accent" : "text-ink"}`}
+                              className={`block truncate text-ui ${active ? "font-medium text-accent" : "text-ink"}`}
                             >
                               {skill.name}
                             </span>
                             {skill.description && (
-                              <span className="mt-0.5 line-clamp-2 block text-[10px] leading-4 text-ink-2">
+                              <span className="mt-0.5 line-clamp-2 block text-meta leading-4 text-ink-2">
                                 {skill.description}
                               </span>
                             )}
@@ -1010,7 +1027,7 @@ export function Composer() {
                       );
                     })}
                   {availableSkills.length === 0 && (
-                    <p className="px-2 py-3 text-center text-[11px] text-ink-2">
+                    <p className="px-2 py-3 text-center text-ui text-ink-2">
                       还没有技能，先导入或创建一个
                     </p>
                   )}
@@ -1022,7 +1039,7 @@ export function Composer() {
                       setSkillsOpen(false);
                       useWindowStore.getState().openSettings("skills");
                     }}
-                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-ui text-ink-2 transition-colors hover:bg-hover hover:text-ink"
                   >
                     <SettingsIcon size={12} />
                     管理技能（导入 / 新建）
@@ -1041,13 +1058,13 @@ export function Composer() {
             }}
             disabled={streaming}
             title="快捷操作（剪贴板 / 文件）"
-            className="grid h-7 w-7 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel hover:text-ink disabled:opacity-30"
+            className="grid h-7 w-7 place-items-center rounded-btn text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-30"
           >
             <ClipboardPaste size={15} />
           </button>
           {clipboardOpen && (
-            <div className="absolute bottom-8 right-0 z-40 w-48 overflow-hidden rounded-btn border border-line bg-panel shadow-lg">
-              <p className="border-b border-line bg-panel-2 px-2.5 py-1.5 text-[10px] font-medium text-ink-2">
+            <div className="cf-menu-pop absolute bottom-8 right-0 z-40 w-48 overflow-hidden rounded-menu border border-line bg-panel shadow-menu">
+              <p className="border-b border-line bg-panel-2 px-2.5 py-1.5 text-meta font-medium text-ink-2">
                 剪贴板快捷操作
               </p>
               {CLIPBOARD_ACTIONS.map((action) => (
@@ -1055,12 +1072,12 @@ export function Composer() {
                   key={action.id}
                   onClick={() => void runClipboardAction(action)}
                   disabled={clipboardBusy}
-                  className="block w-full px-2.5 py-1.5 text-left text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-50"
+                  className="block w-full px-2.5 py-1.5 text-left text-ui text-ink transition-colors hover:bg-hover disabled:opacity-50"
                 >
                   {action.label}
                 </button>
               ))}
-              <p className="border-b border-t border-line bg-panel-2 px-2.5 py-1.5 text-[10px] font-medium text-ink-2">
+              <p className="border-b border-t border-line bg-panel-2 px-2.5 py-1.5 text-meta font-medium text-ink-2">
                 文件批处理
               </p>
               {FILE_ACTIONS.map((action) => (
@@ -1068,7 +1085,7 @@ export function Composer() {
                   key={action.id}
                   onClick={() => void pickFilesForAction(action)}
                   disabled={clipboardBusy}
-                  className="block w-full px-2.5 py-1.5 text-left text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-50"
+                  className="block w-full px-2.5 py-1.5 text-left text-ui text-ink transition-colors hover:bg-hover disabled:opacity-50"
                 >
                   {action.label}
                 </button>
@@ -1076,14 +1093,17 @@ export function Composer() {
             </div>
           )}
           {clipboardHint && (
-            <div className="absolute bottom-8 right-0 z-40 w-56 rounded-btn border border-line bg-panel px-2.5 py-1.5 text-[11px] text-ink-2 shadow-lg">
+            <div className="cf-menu-pop absolute bottom-8 right-0 z-40 w-56 rounded-menu border border-line bg-panel px-2.5 py-1.5 text-ui text-ink-2 shadow-menu">
               {clipboardHint}
             </div>
           )}
         </div>
           </div>
-          {/* Right side: agent tools + send */}
-          <div className="flex shrink-0 items-center gap-0.5">
+          {/* Right side: model picker, agent tools, send — grouped together so
+              the primary action always sits in the same corner (Claude-style
+              composer: options drift left, commit controls anchor right). */}
+          <div className="flex shrink-0 items-center gap-1">
+          <ModelPicker />
           <button
             onClick={() => setEnableTools((value) => !value)}
             disabled={streaming || comparing}
@@ -1095,8 +1115,8 @@ export function Composer() {
                   : "开启 Agent 工具"
             }
             aria-pressed={enableTools}
-            className={`relative grid h-7 w-7 place-items-center rounded-md transition-colors disabled:opacity-30 ${
-              enableTools ? "bg-accent text-accent-fg" : "text-ink-2 hover:bg-panel hover:text-ink"
+            className={`relative grid h-7 w-7 place-items-center rounded-btn transition-colors disabled:opacity-30 ${
+              enableTools ? "bg-accent text-accent-fg" : "text-ink-2 hover:bg-hover hover:text-ink"
             }`}
           >
             <Wrench size={15} />
@@ -1111,7 +1131,7 @@ export function Composer() {
             disabled={streaming}
             title={toolsOpen ? "收起 Agent 工具详情" : "展开 Agent 工具详情"}
             aria-expanded={toolsOpen}
-            className="grid h-7 w-5 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel hover:text-ink disabled:opacity-30"
+            className="grid h-7 w-5 place-items-center rounded-btn text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-30"
           >
             <ChevronUp size={13} className={toolsOpen ? "" : "rotate-180 transition-transform"} />
           </button>
@@ -1119,22 +1139,23 @@ export function Composer() {
           <button
             onClick={stop}
             title="停止生成"
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition-opacity hover:opacity-85"
+            className="ml-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition-opacity hover:opacity-90"
           >
-            <Square size={11} fill="currentColor" />
+            <Square size={12} fill="currentColor" />
           </button>
         ) : (
           <button
             onClick={submit}
             disabled={!canSend}
             title="发送（Enter）"
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition-opacity hover:opacity-85 disabled:opacity-30"
+            className="ml-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent text-accent-fg transition-opacity hover:opacity-90 disabled:bg-ink-3 disabled:opacity-100"
           >
-            <ArrowUp size={15} />
+            <ArrowUp size={16} />
           </button>
         )}
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

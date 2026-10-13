@@ -339,6 +339,12 @@ interface ChatState {
    */
   focusMessageId: string | null;
   /**
+   * Text the composer should load into its input and focus (set by the
+   * empty-state suggestion chips). Cleared once the composer has applied it,
+   * mirroring `focusMessageId` above — a one-shot signal, not persisted state.
+   */
+  composerPrefill: string | null;
+  /**
    * Models picked for the next multi-model comparison (P1-6). Empty means a
    * normal single-model send.
    */
@@ -371,6 +377,8 @@ interface ChatState {
   focusMessage: (messageId: string) => void;
   /** Called by the message list once the focus request has been handled. */
   clearFocusMessage: () => void;
+  setComposerPrefill: (text: string) => void;
+  clearComposerPrefill: () => void;
 
   send: (
     text: string,
@@ -578,6 +586,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   lastSendOptions: null,
   clipboardWriteback: null,
   focusMessageId: null,
+  composerPrefill: null,
   compareTargets: [],
   backgroundMessages: {},
   unreadDone: {},
@@ -587,6 +596,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setCompareTargets: (targets) => set({ compareTargets: targets }),
   focusMessage: (messageId) => set({ focusMessageId: messageId }),
   clearFocusMessage: () => set({ focusMessageId: null }),
+  setComposerPrefill: (text) => set({ composerPrefill: text }),
+  clearComposerPrefill: () => set({ composerPrefill: null }),
 
   send: async (
     text,

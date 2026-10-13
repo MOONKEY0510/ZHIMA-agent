@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { isPrinting, subscribePrinting } from "../../lib/print";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
@@ -13,6 +13,7 @@ import {
   Globe,
   Pencil,
   RefreshCw,
+  Sparkles,
   Square,
   Wrench,
 } from "lucide-react";
@@ -27,7 +28,7 @@ import { useHistoryStore } from "../../services/history-store";
 import { createMemory } from "../../services/memory-api";
 import { useProvidersStore } from "../../stores/providers-store";
 import { useWindowStore } from "../../stores/window-store";
-import { useSettingsStore, type AvatarShape } from "../../stores/settings-store";
+import { useSettingsStore, DEFAULT_PRESETS, type AvatarShape } from "../../stores/settings-store";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Markdown } from "../markdown/Markdown";
 import { StreamingMarkdown } from "../markdown/StreamingMarkdown";
@@ -282,20 +283,72 @@ export function MessageList() {
   );
 }
 
+/** Greeting copy by time of day — kept short so it fits the floating window. */
+function greeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 6) return "夜深了";
+  if (hour < 12) return "早上好";
+  if (hour < 18) return "下午好";
+  return "晚上好";
+}
+
+/** Suggestion chips fill the composer via a one-shot store signal instead of
+ *  reaching into Composer's internal state (see chat-store `composerPrefill`). */
+const SUGGESTIONS = DEFAULT_PRESETS.slice(0, 4);
+
 const EmptyState = memo(function EmptyState() {
   const providerCount = useProvidersStore((s) => s.providers.length);
   const openSettings = useWindowStore((s) => s.openSettings);
+  const fullMode = useWindowStore((s) => s.fullMode);
+
+  // The floating window can be as short as ~260px; the suggestion row is
+  // dropped below that so the greeting never gets pushed into the composer.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [compact, setCompact] = useState(!fullMode);
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const height = entries[0]?.contentRect.height ?? 0;
+      setCompact(height < 220);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-1.5 px-6 text-center">
-      <p className="text-sm text-ink-2">有什么可以帮你的？直接输入问题，让我这个桌面小助手来协助你。</p>
-      {providerCount === 0 && (
+    <div ref={containerRef} className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
+      <div className="flex flex-col items-center gap-1.5">
+        <Sparkles size={compact ? 18 : 22} className="text-accent" />
+        <p className={`font-serif text-ink ${compact ? "text-title" : "text-display"}`}>
+          {greeting()}
+        </p>
+        {!compact && (
+          <p className="text-ui text-ink-2">有什么想问的？直接输入，或者试试下面的建议。</p>
+        )}
+      </div>
+
+      {providerCount === 0 ? (
         <button
           onClick={() => openSettings()}
-          className="mt-1 rounded-btn border border-line px-3 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
+          className="rounded-btn border border-line bg-panel px-3.5 py-1.5 text-ui text-ink transition-colors hover:bg-hover"
         >
           先配置服务商
         </button>
+      ) : (
+        !compact && (
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            {SUGGESTIONS.map((preset) => (
+              <button
+                key={preset.id}
+                onClick={() => useChatStore.getState().setComposerPrefill(`${preset.content}\n`)}
+                className="rounded-full border border-line px-3 py-1.5 text-ui text-ink-2 transition-colors hover:border-[color-mix(in_srgb,var(--cf-accent)_35%,var(--cf-border))] hover:bg-hover hover:text-ink"
+              >
+                {preset.name}
+              </button>
+            ))}
+          </div>
+        )
       )}
     </div>
   );
