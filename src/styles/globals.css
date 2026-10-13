@@ -208,17 +208,19 @@
   line-height: 1.35;
 }
 .md-body h1 {
-  font-size: 1.25em;
+  font-size: 1.35em;
+  font-family: var(--cf-font-serif);
 }
 .md-body h2 {
-  font-size: 1.15em;
+  font-size: 1.2em;
+  font-family: var(--cf-font-serif);
 }
 .md-body h3 {
   font-size: 1.05em;
 }
 .md-body ul,
 .md-body ol {
-  margin: 0.45em 0;
+  margin: 0.5em 0;
   padding-left: 1.4em;
 }
 .md-body ul {
@@ -228,27 +230,31 @@
   list-style: decimal;
 }
 .md-body li {
-  margin: 0.2em 0;
+  margin: 0.25em 0;
 }
 .md-body blockquote {
   margin: 0.6em 0;
   padding: 0.1em 0.9em;
-  border-left: 3px solid var(--cf-border);
+  border-left: 2px solid var(--cf-border);
   color: var(--cf-text-2);
 }
 .md-body a {
-  color: var(--cf-success);
+  color: var(--cf-accent);
   text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--cf-accent) 40%, transparent);
   text-underline-offset: 2px;
   cursor: pointer;
+}
+.md-body a:hover {
+  text-decoration-color: var(--cf-accent);
 }
 .md-body code:not(pre code) {
   padding: 0.12em 0.4em;
   border-radius: 5px;
   background: var(--cf-code-bg);
-  border: 1px solid var(--cf-border);
+  color: color-mix(in srgb, var(--cf-accent) 70%, var(--cf-text));
   font-size: 13px;
-  font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+  font-family: var(--cf-font-mono);
 }
 .md-body pre {
   margin: 0.6em 0;
@@ -264,7 +270,7 @@
 .md-body pre code {
   font-size: 13px;
   line-height: 1.55;
-  font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+  font-family: var(--cf-font-mono);
   white-space: pre;
 }
 .md-body table {
@@ -277,10 +283,10 @@
 .md-body th,
 .md-body td {
   padding: 5px 10px;
-  border: 1px solid var(--cf-border);
+  border: none;
+  border-bottom: 1px solid var(--cf-border);
 }
 .md-body th {
-  background: var(--cf-panel-2);
   font-weight: 600;
 }
 .md-body hr {

@@ -130,19 +130,19 @@ function PreBlock({ children }: { children?: ReactNode }) {
   };
 
   return (
-    <pre>
-      <div className="flex items-center justify-between border-b border-line px-3 py-1.5">
-        <span className="text-[11px] uppercase tracking-wide text-ink-2">
+    <pre className="group/code">
+      <div className="flex items-center justify-between px-3 py-1.5">
+        <span className="text-meta text-ink-2">
           {language || "code"}
           {canCollapse && (
-            <span className="ml-1.5 text-ink-2/60">· {lineCount} 行</span>
+            <span className="ml-1.5 text-ink-3">· {lineCount} 行</span>
           )}
         </span>
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/code:opacity-100">
           {canCollapse && (
             <button
               onClick={() => setCollapsed(!collapsed)}
-              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+              className="flex items-center gap-1 rounded-btn px-1.5 py-0.5 text-meta text-ink-2 transition-colors hover:bg-hover hover:text-ink"
             >
               <ChevronDown
                 size={11}
@@ -153,7 +153,7 @@ function PreBlock({ children }: { children?: ReactNode }) {
           )}
           <button
             onClick={() => void copy()}
-            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+            className="flex items-center gap-1 rounded-btn px-1.5 py-0.5 text-meta text-ink-2 transition-colors hover:bg-hover hover:text-ink"
           >
             {copied ? <Check size={11} className="text-success" /> : <Copy size={11} />}
             {copied ? "已复制" : "复制"}
@@ -174,7 +174,7 @@ function PreBlock({ children }: { children?: ReactNode }) {
       {canCollapse && collapsed && (
         <button
           onClick={() => setCollapsed(false)}
-          className="w-full border-t border-line py-1 text-center text-[11px] text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+          className="w-full border-t border-line py-1 text-center text-meta text-ink-2 transition-colors hover:bg-hover hover:text-ink"
         >
           展开剩余 {lineCount - COLLAPSE_THRESHOLD} 行
         </button>

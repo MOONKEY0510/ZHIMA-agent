@@ -65,7 +65,7 @@ function Dropdown({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center justify-between gap-2 rounded-btn border border-line bg-panel-2 px-1.5 py-1 text-left text-[11px] text-ink outline-none transition-colors hover:bg-panel focus:border-[var(--cf-text-2)]"
+        className="flex items-center justify-between gap-2 rounded-btn border border-line bg-panel-2 px-1.5 py-1 text-left text-ui text-ink outline-none transition-colors hover:bg-panel focus:border-[var(--cf-text-2)]"
       >
         <span>{selected?.label ?? value}</span>
         <ChevronDown
@@ -74,7 +74,7 @@ function Dropdown({
         />
       </button>
       {open && (
-        <div className="absolute z-50 mt-1 min-w-full overflow-hidden rounded-btn border border-line bg-panel py-1 shadow-lg">
+        <div className="cf-menu-pop absolute z-50 mt-1 min-w-full overflow-hidden rounded-menu border border-line bg-panel py-1 shadow-menu">
           {options.map((option) => (
             <button
               key={option.value}
@@ -83,10 +83,10 @@ function Dropdown({
                 onChange(option.value);
                 setOpen(false);
               }}
-              className={`block w-full whitespace-nowrap px-2 py-1 text-left text-[11px] transition-colors ${
+              className={`block w-full whitespace-nowrap px-2 py-1 text-left text-ui transition-colors ${
                 option.value === value
                   ? "bg-accent/15 text-accent"
-                  : "text-ink hover:bg-panel-2"
+                  : "text-ink hover:bg-hover"
               }`}
             >
               {option.label}
@@ -358,6 +358,10 @@ function avatarRadius(shape: AvatarShape): string {
   return shape === "circle" ? "50%" : shape === "rounded" ? "28%" : "20%";
 }
 
+/* Avatars are deliberately small (20px): Claude-style prose puts the weight
+ * on the text, not on a per-message portrait. */
+const AVATAR_SIZE = "h-5 w-5";
+
 /** AI avatar — shows custom image if set, otherwise shape + color fallback. */
 function AiAvatar() {
   const shape = useSettingsStore((s) => s.aiAvatar);
@@ -370,7 +374,7 @@ function AiAvatar() {
       <img
         src={image}
         alt="AI"
-        className="h-7 w-7 shrink-0 select-none object-cover"
+        className={`${AVATAR_SIZE} mt-0.5 shrink-0 select-none object-cover`}
         style={{ borderRadius: radius }}
       />
     );
@@ -378,7 +382,7 @@ function AiAvatar() {
 
   return (
     <div
-      className="flex h-7 w-7 shrink-0 select-none items-center justify-center text-[11px] font-bold text-white"
+      className={`flex ${AVATAR_SIZE} mt-0.5 shrink-0 select-none items-center justify-center text-meta font-bold text-white`}
       style={{ backgroundColor: color, borderRadius: radius }}
     >
       AI
@@ -398,7 +402,7 @@ function UserAvatar() {
       <img
         src={image}
         alt="Me"
-        className="h-7 w-7 shrink-0 select-none object-cover"
+        className={`${AVATAR_SIZE} mt-0.5 shrink-0 select-none object-cover`}
         style={{ borderRadius: radius }}
       />
     );
@@ -406,7 +410,7 @@ function UserAvatar() {
 
   return (
     <div
-      className="flex h-7 w-7 shrink-0 select-none items-center justify-center text-[11px] font-bold text-white"
+      className={`flex ${AVATAR_SIZE} mt-0.5 shrink-0 select-none items-center justify-center text-meta font-bold text-white`}
       style={{ backgroundColor: color, borderRadius: radius }}
     >
       我
@@ -444,7 +448,7 @@ const MessageItem = memo(function MessageItem({
 
         {/* Web search status / sources */}
         {message.searchingQuery && (
-          <div className="mb-1 flex items-center gap-1.5 py-1 text-xs text-ink-2">
+          <div className="mb-1 flex items-center gap-1.5 py-1 text-ui text-ink-2">
             <Globe size={12} className="animate-pulse text-accent" />
             正在搜索：{message.searchingQuery}
           </div>
@@ -456,7 +460,7 @@ const MessageItem = memo(function MessageItem({
         {/* Local knowledge base hint (P1-9) */}
         {message.kbHits != null && message.kbHits > 0 && (
           <div
-            className="mb-1 flex items-center gap-1.5 py-0.5 text-[11px] text-ink-2"
+            className="mb-1 flex items-center gap-1.5 py-0.5 text-meta text-ink-2"
             title={message.kbTitles?.join("\n")}
           >
             <Bookmark size={11} className="text-accent" />
@@ -468,7 +472,7 @@ const MessageItem = memo(function MessageItem({
         )}
 
         {message.content.length > 0 && (
-          <div className="md-body select-text text-sm">
+          <div className="md-body select-text text-body">
             {isStreamingThis ? (
               <StreamingMarkdown content={message.content} caret />
             ) : (
@@ -484,26 +488,26 @@ const MessageItem = memo(function MessageItem({
           message.content.trim().length <= 2 &&
           !message.reasoning &&
           message.status === "done" && (
-            <p className="mt-1 text-[11px] leading-4 text-ink-2">
+            <p className="mt-1 text-meta leading-4 text-ink-2">
               模型返回异常简短。常见原因：当前模型行为、系统提示词要求“简洁”，或最大输出长度被限制。可尝试切换模型或检查设置 → 模型设置。
             </p>
           )}
 
         {isStreamingThis && message.content.length === 0 && !message.searchingQuery && (
-          <div className="flex items-center gap-1.5 py-1 text-xs text-ink-2">
+          <div className="flex items-center gap-1.5 py-1 text-ui text-ink-2">
             <span className="stream-caret" />
             正在思考…
           </div>
         )}
 
         {message.status === "error" && (
-          <div className="mt-1 rounded-btn border border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--cf-danger)_8%,transparent)] px-3 py-2 text-xs leading-5 text-danger">
+          <div className="mt-1 rounded-btn border border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] bg-[var(--cf-danger-weak)] px-3 py-2 text-ui leading-5 text-danger">
             <p>{message.error ?? "请求失败"}</p>
             {message.retryable && (
               <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                 <button
                   onClick={() => void useChatStore.getState().regenerate(message.id)}
-                  className="inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-0.5 text-xs text-ink transition-colors hover:bg-panel-2"
+                  className="inline-flex items-center gap-1 rounded-btn border border-line bg-panel px-2 py-0.5 text-ui text-ink transition-colors hover:bg-hover"
                 >
                   <RefreshCw size={11} /> 重试
                 </button>
@@ -512,7 +516,7 @@ const MessageItem = memo(function MessageItem({
                     onClick={() =>
                       void useChatStore.getState().regenerate(message.id, { disableTools: true })
                     }
-                    className="inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-0.5 text-xs text-ink transition-colors hover:bg-panel-2"
+                    className="inline-flex items-center gap-1 rounded-btn border border-line bg-panel px-2 py-0.5 text-ui text-ink transition-colors hover:bg-hover"
                     title="关闭 Agent 工具后重新提问，常用于工具调用失败时的恢复"
                   >
                     <Wrench size={11} className="opacity-60" /> 不使用工具重试
@@ -524,7 +528,7 @@ const MessageItem = memo(function MessageItem({
         )}
 
         {message.status === "cancelled" && message.content.length > 0 && (
-          <p className="mt-1 text-xs text-ink-2">已停止生成</p>
+          <p className="mt-1 text-ui text-ink-2">已停止生成</p>
         )}
 
         {/* Per-column stop: a multi-model turn runs several streams at once,
@@ -538,7 +542,7 @@ const MessageItem = memo(function MessageItem({
               );
               if (requestId) useChatStore.getState().stopStream(requestId);
             }}
-            className="mt-1.5 flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+            className="mt-1.5 flex items-center gap-1 rounded-btn border border-line px-2 py-0.5 text-meta text-ink-2 transition-colors hover:bg-hover hover:text-ink"
           >
             <Square size={10} /> 停止
           </button>
@@ -577,7 +581,7 @@ function SourcesBlock({ sources }: { sources: SearchResult[] }) {
     <div className="mb-1.5">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 rounded-md px-1 py-0.5 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+        className="flex items-center gap-1 rounded-btn px-1 py-0.5 text-ui text-ink-2 transition-colors hover:bg-hover hover:text-ink"
       >
         <Globe size={11} />
         {sources.length} 个来源
@@ -596,15 +600,15 @@ function SourcesBlock({ sources }: { sources: SearchResult[] }) {
                 e.preventDefault();
                 void openUrl(s.url);
               }}
-              className="group flex items-start gap-2 rounded-md px-1 py-0.5 transition-colors hover:bg-panel"
+              className="group flex items-start gap-2 rounded-btn px-1 py-0.5 transition-colors hover:bg-panel"
               title={s.url}
             >
-              <span className="mt-0.5 shrink-0 font-mono text-[10px] text-accent">
+              <span className="mt-0.5 shrink-0 font-mono text-meta text-accent">
                 [{i + 1}]
               </span>
               <span className="min-w-0">
-                <span className="block truncate text-xs text-ink">{s.title}</span>
-                <span className="block truncate text-[11px] text-ink-2">{s.snippet}</span>
+                <span className="block truncate text-ui text-ink">{s.title}</span>
+                <span className="block truncate text-meta text-ink-2">{s.snippet}</span>
               </span>
             </a>
           ))}
@@ -640,22 +644,26 @@ function ToolCallsBlock({
     : running
       ? "正在调用工具"
       : `已调用 ${doneCount}/${toolCalls.length} 个工具`;
+  // A short "which tools" summary next to the status, so the collapsed row
+  // carries real information instead of just a count (Claude-style redesign).
+  const toolNames = Array.from(new Set(toolCalls.map((c) => c.name))).join("、");
 
   return (
     <div className="mb-1.5">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 rounded-md px-1 py-0.5 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+        className="flex min-w-0 items-center gap-1 rounded-btn px-1 py-0.5 text-ui text-ink-2 transition-colors hover:bg-hover hover:text-ink"
       >
-        <Wrench size={11} className={running || pending ? "animate-pulse text-accent" : ""} />
-        {statusText}
+        <Wrench size={12} className={running || pending ? "animate-pulse text-accent" : ""} />
+        <span className="shrink-0">{statusText}</span>
+        {toolNames && <span className="min-w-0 truncate text-ink-3">· {toolNames}</span>}
         <ChevronRight
           size={11}
-          className={`transition-transform ${open ? "rotate-90" : ""}`}
+          className={`shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
         />
       </button>
       {open && (
-        <div className="mt-1 space-y-1.5 rounded-btn border border-line bg-panel-2 p-2">
+        <div className="mt-1 space-y-1.5 rounded-menu border border-line bg-panel-2 p-2">
           {toolCalls.map((call, index) => (
             <div key={call.callId}>
               <ToolCallRow call={call} requestId={requestId} index={index} />
@@ -711,14 +719,14 @@ function ToolCallRow({
   };
 
   return (
-    <div className="rounded-md px-1 py-1 text-[11px]">
+    <div className="rounded-btn px-1 py-1 text-ui">
       <div className="flex items-center gap-1.5 text-ink">
         <span
-          className={`grid h-4 w-4 shrink-0 place-items-center rounded-full text-[9px] ${
+          className={`grid h-4 w-4 shrink-0 place-items-center rounded-full text-meta ${
             done
-              ? "bg-[var(--cf-success-weak,#e6f9ef)] text-[var(--cf-success,#16a34a)]"
+              ? "bg-[var(--cf-success-weak)] text-success"
               : call.status === "error"
-                ? "bg-[var(--cf-danger-weak,#fde)] text-danger"
+                ? "bg-[var(--cf-danger-weak)] text-danger"
                 : "bg-panel-2 text-ink-2"
           }`}
         >
@@ -737,7 +745,7 @@ function ToolCallRow({
           <div className="mt-2 flex flex-wrap items-center gap-1">
             <button
               onClick={() => approve("once")}
-              className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-accent-fg transition-colors hover:opacity-90"
+              className="inline-flex items-center gap-1 rounded-btn bg-accent px-2 py-1 text-ui font-medium text-accent-fg transition-colors hover:opacity-90"
               title="仅允许这一次"
             >
               <Check size={11} /> 仅一次
@@ -746,14 +754,14 @@ function ToolCallRow({
               <>
                 <button
                   onClick={() => approve("session")}
-                  className="inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2"
+                  className="inline-flex items-center gap-1 rounded-btn border border-line bg-panel px-2 py-1 text-ui text-ink transition-colors hover:bg-hover"
                   title="当前聊天中不再询问此工具；外发数据仍需单次确认"
                 >
                   本次会话允许
                 </button>
                 <button
                   onClick={() => approve("always")}
-                  className="inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2"
+                  className="inline-flex items-center gap-1 rounded-btn border border-line bg-panel px-2 py-1 text-ui text-ink transition-colors hover:bg-hover"
                   title="永久免除普通工具确认，可在设置中撤销；外发仍需单次确认"
                 >
                   永久允许
@@ -762,7 +770,7 @@ function ToolCallRow({
             )}
             <button
               onClick={reject}
-              className="inline-flex items-center gap-1 rounded-md border border-line bg-panel px-2 py-1 text-[11px] text-danger transition-colors hover:bg-panel-2"
+              className="inline-flex items-center gap-1 rounded-btn border border-line bg-panel px-2 py-1 text-ui text-danger transition-colors hover:bg-hover"
             >
               <XIcon size={11} /> 拒绝
             </button>
@@ -776,7 +784,7 @@ function ToolCallRow({
             <>
               <button
                 onClick={() => setResultOpen((v) => !v)}
-                className="mt-1 flex items-center gap-1 text-[10px] text-ink-2 transition-colors hover:text-ink"
+                className="mt-1 flex items-center gap-1 text-meta text-ink-2 transition-colors hover:text-ink"
               >
                 <ChevronRight
                   size={11}
@@ -843,10 +851,10 @@ function ReasoningBlock({ text, defaultOpen = false }: { text: string; defaultOp
   const formattedText = formatReasoningMarkdown(text);
 
   return (
-    <div className="mb-1.5">
+    <div className="mb-2">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 rounded-md px-1 py-0.5 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+        className="flex items-center gap-1 rounded-btn px-1 py-0.5 text-ui text-ink-2 transition-colors hover:bg-hover hover:text-ink"
       >
         <ChevronRight
           size={11}
@@ -855,8 +863,8 @@ function ReasoningBlock({ text, defaultOpen = false }: { text: string; defaultOp
         思考过程
       </button>
       {open && (
-        <div className="mt-1 max-h-48 select-text overflow-y-auto whitespace-pre-wrap rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-[11px] leading-5 text-ink-2">
-          {formattedText}
+        <div className="mt-1.5 max-h-80 select-text overflow-y-auto border-l-2 border-line pl-3 text-ui leading-6 text-ink-2">
+          <Markdown content={formattedText} />
         </div>
       )}
     </div>
@@ -916,7 +924,7 @@ const UserMessage = memo(function UserMessage({
   };
 
   const iconBtn =
-    "grid h-5 w-5 place-items-center rounded-md text-ink-2 opacity-0 transition-opacity hover:bg-panel-2 hover:text-ink group-hover:opacity-100 disabled:opacity-30 disabled:hover:bg-transparent";
+    "grid h-7 w-7 place-items-center rounded-btn text-ink-2 opacity-0 transition-opacity hover:bg-hover hover:text-ink group-hover:opacity-100 disabled:opacity-30 disabled:hover:bg-transparent";
 
   return (
     <div className="group flex justify-end gap-2" data-message-id={message.id}>
@@ -942,7 +950,7 @@ const UserMessage = memo(function UserMessage({
               rows={Math.min(10, Math.max(2, draft.split("\n").length))}
               autoFocus
               spellCheck={false}
-              className="w-full resize-none bg-transparent text-sm leading-6 text-ink outline-none"
+              className="w-full resize-none bg-transparent text-body text-ink outline-none"
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   e.preventDefault();
@@ -954,19 +962,19 @@ const UserMessage = memo(function UserMessage({
               }}
             />
             <div className="mt-1.5 flex items-center gap-1.5">
-              <span className="mr-auto text-[10px] text-ink-2">
+              <span className="mr-auto text-meta text-ink-2">
                 保存后自动重新生成回复（Ctrl+Enter 保存）
               </span>
               <button
                 onClick={() => setEditing(false)}
-                className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-ink-2 transition-colors hover:bg-panel"
+                className="rounded-btn border border-line px-2 py-0.5 text-ui text-ink-2 transition-colors hover:bg-panel"
               >
                 取消
               </button>
               <button
                 onClick={() => void save()}
                 disabled={saving || !draft.trim()}
-                className="rounded-btn bg-accent px-2.5 py-0.5 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+                className="rounded-btn bg-accent px-2.5 py-0.5 text-ui font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
               >
                 {saving ? "保存中…" : "保存"}
               </button>
@@ -982,7 +990,7 @@ const UserMessage = memo(function UserMessage({
                 type="button"
                 onClick={() => setShowAttachmentText((v) => !v)}
                 title={showAttachmentText ? "收起附件内容" : "查看附件内容"}
-                className="flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel"
+                className="flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1 text-ui text-ink transition-colors hover:bg-panel"
               >
                 <FileText size={11} className="shrink-0 text-ink-2" />
                 <span className="max-w-[12rem] truncate">{block.name}</span>
@@ -990,28 +998,28 @@ const UserMessage = memo(function UserMessage({
               </button>
             ))}
             {userPrompt.length > 0 && (
-              <div className="select-text whitespace-pre-wrap rounded-input rounded-br-md bg-[var(--cf-user-bubble)] px-3 py-2 text-sm leading-6">
+              <div className="select-text whitespace-pre-wrap rounded-bubble bg-[var(--cf-user-bubble)] px-4 py-2.5 text-body">
                 {userPrompt}
               </div>
             )}
             {showAttachmentText && (
-              <pre className="max-h-64 w-full select-text overflow-auto whitespace-pre-wrap rounded-input border border-line bg-panel-2 px-3 py-2 text-[11px] leading-5 text-ink-2">
+              <pre className="max-h-64 w-full select-text overflow-auto whitespace-pre-wrap rounded-input border border-line bg-panel-2 px-3 py-2 text-meta leading-5 text-ink-2">
                 {attachmentBlocks.map((block) => block.text).join("\n\n")}
               </pre>
             )}
           </div>
         ) : (
           message.content.length > 0 && (
-            <div className="select-text whitespace-pre-wrap rounded-input rounded-br-md bg-[var(--cf-user-bubble)] px-3 py-2 text-sm leading-6">
+            <div className="select-text whitespace-pre-wrap rounded-bubble bg-[var(--cf-user-bubble)] px-4 py-2.5 text-body">
               {message.content}
             </div>
           )
         )}
 
         {!editing && (
-          <div className="mt-0.5 flex justify-end">
+          <div className="mt-1 flex justify-end">
             <button className={iconBtn} title="复制消息" onClick={() => void copy()}>
-              {copied ? <Check size={11} className="text-success" /> : <Copy size={11} />}
+              {copied ? <Check size={14} className="text-success" /> : <Copy size={14} />}
             </button>
             <button
               className={iconBtn}
@@ -1019,14 +1027,14 @@ const UserMessage = memo(function UserMessage({
               onClick={startEdit}
               disabled={streaming}
             >
-              <Pencil size={11} />
+              <Pencil size={14} />
             </button>
             <button
               className={iconBtn}
               title="从这里创建分支（新会话，原会话保留）"
               onClick={() => void useChatStore.getState().branchFrom(message.id)}
             >
-              <GitBranch size={11} />
+              <GitBranch size={14} />
             </button>
           </div>
         )}
@@ -1066,10 +1074,10 @@ function VersionSwitcher({
   };
 
   const btn =
-    "grid h-4 w-4 place-items-center rounded text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent";
+    "grid h-4 w-4 place-items-center rounded text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent";
 
   return (
-    <div className="mt-1 flex items-center gap-0.5 text-[10px] text-ink-2" title="切换历史版本">
+    <div className="mt-1 flex items-center gap-0.5 text-meta text-ink-2" title="切换历史版本">
       <button
         className={btn}
         onClick={() => go(current - 1)}
@@ -1168,21 +1176,21 @@ function MessageActions({
   };
 
   const btn =
-    "grid h-6 w-6 place-items-center rounded-md text-ink-2 opacity-0 transition-opacity hover:bg-panel-2 hover:text-ink group-hover:opacity-100";
+    "grid h-7 w-7 place-items-center rounded-btn text-ink-2 opacity-0 transition-opacity hover:bg-hover hover:text-ink group-hover:opacity-100";
 
   const hasUsage = usage && (usage.inputTokens != null || usage.outputTokens != null);
 
   return (
-    <div className="mt-1">
+    <div className="mt-1.5">
       <div className="flex items-center gap-0.5">
         <button className={btn} title="复制纯文本" onClick={() => void copyPlain()}>
-          {copied === "plain" ? <Check size={12} className="text-success" /> : <Copy size={12} />}
+          {copied === "plain" ? <Check size={14} className="text-success" /> : <Copy size={14} />}
         </button>
         <button className={btn} title="复制 Markdown" onClick={() => void copyMarkdown()}>
           {copied === "md" ? (
-            <Check size={12} className="text-success" />
+            <Check size={14} className="text-success" />
           ) : (
-            <FileText size={12} />
+            <FileText size={14} />
           )}
         </button>
         <button
@@ -1190,20 +1198,20 @@ function MessageActions({
           title="重新生成（当前回答会保留为历史版本）"
           onClick={() => void useChatStore.getState().regenerate(messageId)}
         >
-          <RefreshCw size={12} />
+          <RefreshCw size={14} />
         </button>
         <button className={btn} title="记住这条（保存为长期记忆）" onClick={openMemo}>
-          <Bookmark size={12} />
+          <Bookmark size={14} />
         </button>
         <button
           className={btn}
           title="从这里继续（创建分支）"
           onClick={() => useChatStore.getState().branchFrom(messageId)}
         >
-          <GitBranch size={12} />
+          <GitBranch size={14} />
         </button>
         {(hasUsage || modelName || durationMs) && (
-          <span className="ml-1 flex items-center gap-1.5 text-[10px] text-ink-2 opacity-0 transition-opacity group-hover:opacity-100">
+          <span className="ml-1 flex items-center gap-1.5 text-meta text-ink-2 opacity-0 transition-opacity group-hover:opacity-100">
             {modelName && <span className="truncate max-w-[120px]">{modelName}</span>}
             {durationMs != null && (
               <span>{(durationMs / 1000).toFixed(1)}s</span>
@@ -1222,14 +1230,14 @@ function MessageActions({
         )}
       </div>
       {memOpen && (
-        <div className="mt-1.5 rounded-btn border border-line bg-panel px-2.5 py-2">
-          <p className="mb-1 text-[11px] font-medium text-ink">保存为长期记忆</p>
+        <div className="mt-1.5 rounded-menu border border-line bg-panel px-2.5 py-2 shadow-menu">
+          <p className="mb-1 text-ui font-medium text-ink">保存为长期记忆</p>
           <textarea
             value={memValue}
             onChange={(e) => setMemValue(e.target.value)}
             rows={3}
             maxLength={500}
-            className="w-full resize-none rounded-btn border border-line bg-panel-2 px-2 py-1.5 text-[11px] leading-4 text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]"
+            className="w-full resize-none rounded-btn border border-line bg-panel-2 px-2 py-1.5 text-ui leading-5 text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-[var(--cf-text-2)]"
             placeholder="编辑要记住的内容（如用户偏好、工作背景等）"
           />
           <div className="mt-1.5 flex items-center gap-1.5">
@@ -1248,18 +1256,18 @@ function MessageActions({
             <button
               onClick={() => void saveMemory()}
               disabled={memBusy}
-              className="flex items-center gap-1 rounded-btn bg-accent px-2 py-1 text-[11px] font-medium text-accent-fg transition-colors hover:opacity-90 disabled:opacity-50"
+              className="flex items-center gap-1 rounded-btn bg-accent px-2 py-1 text-ui font-medium text-accent-fg transition-colors hover:opacity-90 disabled:opacity-50"
             >
               {memDone ? <Check size={11} /> : memBusy ? "保存中…" : "确认保存"}
             </button>
             <button
               onClick={() => setMemOpen(false)}
-              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel-2"
+              className="rounded-btn border border-line px-2 py-1 text-ui text-ink-2 transition-colors hover:bg-hover"
             >
               取消
             </button>
           </div>
-          {memError && <p className="mt-1.5 text-[11px] text-danger">{memError}</p>}
+          {memError && <p className="mt-1.5 text-ui text-danger">{memError}</p>}
         </div>
       )}
     </div>
