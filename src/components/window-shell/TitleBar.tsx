@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Download, ImageIcon, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Settings, X, Palette, Minus } from "lucide-react";
-import { useActiveStreaming, useChatStore } from "../../stores/chat-store";
+import { Download, ImageIcon, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, Settings, X, Minus } from "lucide-react";
+import { useChatStore } from "../../stores/chat-store";
 import { useHistoryStore } from "../../services/history-store";
 import { useWindowStore } from "../../stores/window-store";
 import { useSettingsStore } from "../../stores/settings-store";
@@ -11,7 +11,9 @@ import { printConversation, withExpandedList } from "../../lib/print";
 import type { ThemeMode } from "../../types";
 
 const THEMES: { value: ThemeMode; label: string; preview: string[] }[] = [
-  { value: "system", label: "系统", preview: ["#f7f7f8", "#171717"] },
+  { value: "system", label: "跟随系统", preview: ["#f7f7f8", "#171717"] },
+  { value: "paper", label: "纸感", preview: ["#faf9f5", "#c96442"] },
+  { value: "paper-dark", label: "纸感·深色", preview: ["#262624", "#d97757"] },
   { value: "light", label: "浅色", preview: ["#ffffff", "#e5e7eb"] },
   { value: "dark", label: "深色", preview: ["#212121", "#3a3a3a"] },
   { value: "warm", label: "暖色", preview: ["#fffaf3", "#8b5e3c"] },
@@ -23,6 +25,10 @@ const THEMES: { value: ThemeMode; label: string; preview: string[] }[] = [
  * Custom drag region + window controls for the frameless window.
  * Buttons remain clickable inside the drag region because only elements
  * carrying `data-tauri-drag-region` participate in dragging.
+ *
+ * The right side was eight icon buttons in a row; the redesign folds the
+ * second-order actions (export, theme, mode switch, settings) into one
+ * overflow menu so the chrome reads as quiet as the content below it.
  */
 export function TitleBar() {
   const view = useWindowStore((s) => s.view);
@@ -33,9 +39,6 @@ export function TitleBar() {
   const switchToImage = useWindowStore((s) => s.switchToImage);
   const switchToChat = useWindowStore((s) => s.switchToChat);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
-  // The displayed conversation's own busy state: other conversations may keep
-  // generating in the background without disabling these controls.
-  const streaming = useActiveStreaming();
   const activeConversationId = useHistoryStore((s) => s.activeId);
   const activeTitle = useHistoryStore(
     (s) => s.conversations.find((c) => c.id === activeConversationId)?.title ?? null,
@@ -46,23 +49,23 @@ export function TitleBar() {
 
   const messages = useChatStore((s) => s.messages);
 
-  // Export menu state (P1-11): Markdown, PNG snapshot, print-to-PDF.
-  const [exportOpen, setExportOpen] = useState(false);
+  // Overflow menu state: export actions, theme picker, mode switch, settings.
+  const [menuOpen, setMenuOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  const exportRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!exportOpen) return;
+    if (!menuOpen) return;
     const onDocClick = (event: MouseEvent) => {
-      if (!exportRef.current?.contains(event.target as Node)) setExportOpen(false);
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
     };
     window.addEventListener("mousedown", onDocClick);
     return () => window.removeEventListener("mousedown", onDocClick);
-  }, [exportOpen]);
+  }, [menuOpen]);
 
   const runExport = async (action: () => void | Promise<unknown>) => {
-    setExportOpen(false);
+    setMenuOpen(false);
     setExportError(null);
     setExportBusy(true);
     try {
@@ -90,9 +93,10 @@ export function TitleBar() {
 
   const isMainView = view === "chat" || view === "image";
   const btn =
-    "grid h-6 w-6 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink";
+    "grid h-7 w-7 place-items-center rounded-btn text-ink-2 transition-colors hover:bg-hover hover:text-ink";
   const menuItemCls =
-    "block w-full px-2.5 py-1.5 text-left text-xs text-ink transition-colors hover:bg-panel-2";
+    "flex w-full items-center gap-2 rounded-btn px-2 py-1.5 text-left text-ui text-ink transition-colors hover:bg-hover";
+  const menuLabelCls = "px-2 pb-0.5 pt-1.5 text-meta text-ink-2";
 
   return (
     // Print stylesheet hides this bar so only the conversation reaches paper.
@@ -102,7 +106,7 @@ export function TitleBar() {
         {view === "settings" ? (
           <button
             onClick={closeSettings}
-            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+            className="flex items-center gap-1 rounded-btn px-1.5 py-0.5 text-ui text-ink-2 transition-colors hover:bg-hover hover:text-ink"
           >
             返回对话
           </button>
@@ -110,13 +114,13 @@ export function TitleBar() {
           // The conversation title lives here now; the model selector moved
           // into the composer (对话级模型).
           <span
-            className="block max-w-[40vw] truncate px-1.5 text-xs text-ink-2"
+            className="block max-w-[40vw] truncate px-1.5 text-ui text-ink-2"
             title={activeTitle ?? "新对话"}
           >
             {activeTitle ?? "新对话"}
           </span>
         ) : (
-          <span className="px-1.5 text-xs text-ink-2">图像生成</span>
+          <span className="px-1.5 text-ui text-ink-2">图像生成</span>
         )}
       </div>
 
@@ -136,7 +140,7 @@ export function TitleBar() {
               }
             }}
           >
-            <Plus size={14} />
+            <Plus size={15} />
           </button>
         )}
 
@@ -147,79 +151,109 @@ export function TitleBar() {
             title={fullMode ? "退出完整会话模式" : "展开完整会话（含历史记录）"}
             onClick={toggleFullMode}
           >
-            {fullMode ? <PanelLeftClose size={14} /> : <PanelLeftOpen size={14} />}
+            {fullMode ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
           </button>
         )}
 
-        {/* Export menu: Markdown / PNG / PDF (P1-11) */}
-        {view === "chat" && messages.some((m) => m.content.length > 0) && (
-          <div className="relative" ref={exportRef}>
-            <button
-              className={btn}
-              title={exportBusy ? "正在导出…" : "导出对话"}
-              disabled={streaming || exportBusy}
-              onClick={() => setExportOpen((v) => !v)}
-            >
-              <Download size={13} className={exportBusy ? "animate-pulse" : undefined} />
-            </button>
-            {exportOpen && (
-              <div className="absolute right-0 top-7 z-30 w-44 overflow-hidden rounded-btn border border-line bg-panel py-1 shadow-lg">
-                <button
-                  className={menuItemCls}
-                  onClick={() => void runExport(() => exportChat())}
-                >
-                  导出为 Markdown
-                </button>
-                <button
-                  className={menuItemCls}
-                  onClick={() => void runExport(exportImage)}
-                >
-                  导出为图片（PNG）
-                </button>
-                <button
-                  className={menuItemCls}
-                  onClick={() => void runExport(() => printConversation())}
-                >
-                  打印 / 另存为 PDF
-                </button>
+        {/* Overflow menu: export, theme, mode switch, settings. */}
+        <div className="relative" ref={menuRef}>
+          <button
+            className={btn}
+            title={exportBusy ? "正在导出…" : "更多"}
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            <MoreHorizontal size={15} className={exportBusy ? "animate-pulse" : undefined} />
+          </button>
+          {menuOpen && (
+            <div className="cf-menu-pop absolute right-0 top-8 z-50 w-44 overflow-hidden rounded-menu border border-line bg-panel p-1 shadow-menu">
+              {view === "chat" && messages.some((m) => m.content.length > 0) && (
+                <>
+                  <p className={menuLabelCls}>导出</p>
+                  <button
+                    className={menuItemCls}
+                    onClick={() => void runExport(() => exportChat())}
+                  >
+                    <Download size={13} className="shrink-0 text-ink-2" />
+                    导出为 Markdown
+                  </button>
+                  <button
+                    className={menuItemCls}
+                    onClick={() => void runExport(exportImage)}
+                  >
+                    <Download size={13} className="shrink-0 text-ink-2" />
+                    导出为图片（PNG）
+                  </button>
+                  <button
+                    className={menuItemCls}
+                    onClick={() => void runExport(() => printConversation())}
+                  >
+                    <Download size={13} className="shrink-0 text-ink-2" />
+                    打印 / 另存为 PDF
+                  </button>
+                  <div className="my-1 h-px bg-line" />
+                </>
+              )}
+
+              <p className={menuLabelCls}>主题</p>
+              <div className="grid grid-cols-4 gap-1 px-1 pb-1">
+                {THEMES.map((t) => (
+                  <ThemeSwatch key={t.value} theme={t} />
+                ))}
               </div>
-            )}
-            {exportError && (
-              <p className="absolute right-0 top-7 z-30 mt-24 w-56 rounded-btn border border-line bg-panel px-2 py-1 text-[11px] text-danger shadow-lg">
-                {exportError}
-              </p>
-            )}
-          </div>
-        )}
+              <div className="my-1 h-px bg-line" />
 
-        <ThemeButton />
+              {view === "chat" ? (
+                <button
+                  className={menuItemCls}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    switchToImage();
+                  }}
+                >
+                  <ImageIcon size={13} className="shrink-0 text-ink-2" />
+                  文生图模式
+                </button>
+              ) : view === "image" ? (
+                <button
+                  className={menuItemCls}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    switchToChat();
+                  }}
+                >
+                  <MessageSquare size={13} className="shrink-0 text-ink-2" />
+                  对话模式
+                </button>
+              ) : null}
 
-        {/* Mode switch: chat <-> image */}
-        {view === "chat" ? (
-          <button className={btn} title="文生图模式" onClick={switchToImage}>
-            <ImageIcon size={13} />
-          </button>
-        ) : (
-          view === "image" && (
-            <button className={btn} title="对话模式" onClick={switchToChat}>
-              <MessageSquare size={13} />
-            </button>
-          )
-        )}
-
-        {/* Settings */}
-        {isMainView && (
-          <button className={btn} title="设置" onClick={() => openSettings()}>
-            <Settings size={13} />
-          </button>
-        )}
+              {isMainView && (
+                <button
+                  className={menuItemCls}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    openSettings();
+                  }}
+                >
+                  <Settings size={13} className="shrink-0 text-ink-2" />
+                  设置
+                </button>
+              )}
+            </div>
+          )}
+          {exportError && (
+            <p className="absolute right-0 top-8 z-50 mt-24 w-56 rounded-menu border border-line bg-panel px-2 py-1 text-ui text-danger shadow-menu">
+              {exportError}
+            </p>
+          )}
+        </div>
 
         <button
           className={btn}
           title="最小化"
           onClick={() => void minimizeWindow()}
         >
-          <Minus size={14} />
+          <Minus size={15} />
         </button>
         <button
           className={btn}
@@ -229,54 +263,31 @@ export function TitleBar() {
             else requestHide();
           }}
         >
-          <X size={14} />
+          <X size={15} />
         </button>
       </div>
     </div>
   );
 }
 
-/** Compact theme switcher that lives in the title bar. */
-function ThemeButton() {
-  const theme = useSettingsStore((s) => s.theme);
+/** One theme swatch inside the overflow menu. */
+function ThemeSwatch({ theme: t }: { theme: (typeof THEMES)[number] }) {
+  const current = useSettingsStore((s) => s.theme);
   const setTheme = useSettingsStore((s) => s.setTheme);
-  const [open, setOpen] = useState(false);
 
   return (
-    <div className="relative">
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-7 z-50 flex gap-1.5 rounded-btn border border-line bg-panel p-2 shadow-lg">
-            {THEMES.map((t) => (
-              <button
-                key={t.value}
-                onClick={() => {
-                  void setTheme(t.value);
-                  setOpen(false);
-                }}
-                title={t.label}
-                className={`flex flex-col items-center gap-1 rounded-btn px-2 py-1.5 transition-colors hover:bg-panel-2 ${
-                  theme === t.value ? "ring-1 ring-[var(--cf-accent)]" : ""
-                }`}
-              >
-                <span className="flex h-5 w-5 overflow-hidden rounded-full border border-line">
-                  <span className="flex-1" style={{ backgroundColor: t.preview[0] }} />
-                  <span className="flex-1" style={{ backgroundColor: t.preview[1] }} />
-                </span>
-                <span className="text-[9px] text-ink-2">{t.label}</span>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-      <button
-        onClick={() => setOpen(!open)}
-        title="切换主题"
-        className="grid h-6 w-6 place-items-center rounded-md text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
-      >
-        <Palette size={13} />
-      </button>
-    </div>
+    <button
+      onClick={() => void setTheme(t.value)}
+      title={t.label}
+      className={`flex flex-col items-center gap-1 rounded-btn px-1 py-1.5 transition-colors hover:bg-hover ${
+        current === t.value ? "ring-1 ring-[var(--cf-accent)]" : ""
+      }`}
+    >
+      <span className="flex h-5 w-5 overflow-hidden rounded-full border border-line">
+        <span className="flex-1" style={{ backgroundColor: t.preview[0] }} />
+        <span className="flex-1" style={{ backgroundColor: t.preview[1] }} />
+      </span>
+      <span className="text-meta text-ink-2">{t.label}</span>
+    </button>
   );
 }

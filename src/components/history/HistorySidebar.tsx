@@ -14,6 +14,17 @@ import { AssistantIcon } from "../assistant/AssistantIcon";
 /** Minimum query length before the backend full-text search is consulted. */
 const MIN_SEARCH_CHARS = 2;
 
+/** Bucket a conversation's last update into a coarse date group. */
+function dateGroup(updatedAt: number): string {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  if (updatedAt >= todayStart) return "今天";
+  if (updatedAt >= todayStart - 86400000) return "昨天";
+  if (updatedAt >= todayStart - 7 * 86400000) return "7 天内";
+  if (updatedAt >= todayStart - 30 * 86400000) return "30 天内";
+  return "更早";
+}
+
 /**
  * Conversation history sidebar for the full conversation mode (plan §3.2):
  * full-text message search, title filter, switch, rename, delete, batch
@@ -186,10 +197,35 @@ export function HistorySidebar() {
     startNewConversation();
   };
 
+  // Date-grouped list: pinned first (own group), then coarse recency buckets.
+  // Search mode keeps the flat filtered list so results read as one ranked set.
+  const grouped = useMemo(() => {
+    if (searchActive) return [] as { label: string; items: typeof filtered }[];
+    const groups: { label: string; items: typeof filtered }[] = [];
+    const push = (label: string, items: typeof filtered) => {
+      if (items.length > 0) groups.push({ label, items });
+    };
+    push("置顶", filtered.filter((c) => c.pinned));
+    const rest = filtered.filter((c) => !c.pinned);
+    const byLabel = new Map<string, typeof filtered>();
+    for (const c of rest) {
+      const label = dateGroup(c.updatedAt);
+      const bucket = byLabel.get(label) ?? [];
+      bucket.push(c);
+      byLabel.set(label, bucket);
+    }
+    for (const label of ["今天", "昨天", "7 天内", "30 天内", "更早"]) {
+      push(label, byLabel.get(label) ?? []);
+    }
+    return groups;
+  }, [filtered, searchActive]);
+
+  const listMode: "search" | "groups" = searchActive ? "search" : "groups";
+
   return (
     <aside
       className={`cf-print-hide flex shrink-0 flex-col border-r border-line bg-panel-2 transition-all duration-200 ease-out ${
-        collapsed ? "w-10 items-center" : "w-56"
+        collapsed ? "w-10 items-center" : "w-64"
       }`}
     >
       {collapsed ? (
@@ -197,16 +233,16 @@ export function HistorySidebar() {
           <button
             onClick={() => setCollapsed(false)}
             title="展开历史记录"
-            className="grid h-6 w-6 place-items-center rounded-btn border border-line bg-panel text-ink-2 transition-colors hover:text-ink"
+            className="grid h-7 w-7 place-items-center rounded-btn border border-line bg-panel text-ink-2 transition-colors hover:bg-hover hover:text-ink"
           >
-            <PanelLeftOpen size={13} />
+            <PanelLeftOpen size={14} />
           </button>
           <button
             onClick={newConversation}
             title="新对话"
-            className="grid h-6 w-6 place-items-center rounded-btn border border-line bg-panel text-ink-2 transition-colors hover:text-ink"
+            className="grid h-7 w-7 place-items-center rounded-btn border border-line bg-panel text-ink-2 transition-colors hover:bg-hover hover:text-ink"
           >
-            <Plus size={13} />
+            <Plus size={14} />
           </button>
         </div>
       ) : (
@@ -221,7 +257,7 @@ export function HistorySidebar() {
                 aria-haspopup="listbox"
                 aria-expanded={pickerOpen}
                 title={activeAssistant?.description ?? "选择助手"}
-                className="flex w-full items-center gap-1.5 rounded-btn border border-line bg-panel px-2 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
+                className="flex w-full items-center gap-1.5 rounded-btn border border-line bg-panel px-2 py-1 text-ui text-ink transition-colors hover:bg-hover"
               >
                 {activeAssistant ? (
                   <AssistantIcon
@@ -251,7 +287,7 @@ export function HistorySidebar() {
                   <div
                     role="listbox"
                     aria-label="选择助手"
-                    className="absolute left-3 right-3 z-50 mt-1 max-h-72 overflow-y-auto rounded-btn border border-line bg-panel py-1 shadow-lg"
+                    className="cf-menu-pop absolute left-3 right-3 z-50 mt-1 max-h-72 overflow-y-auto rounded-menu border border-line bg-panel py-1 shadow-menu"
                   >
                     <AssistantOption
                       selected={assistantId === null}
@@ -292,39 +328,39 @@ export function HistorySidebar() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="搜索会话或消息内容…"
-                className="w-full bg-transparent text-xs text-ink outline-none placeholder:text-ink-2"
+                className="w-full bg-transparent text-ui text-ink outline-none placeholder:text-ink-3"
               />
             </div>
             {batchMode ? (
               <button
                 onClick={exitBatch}
                 title="退出批量选择"
-                className="grid h-6 w-6 shrink-0 place-items-center rounded-btn border border-line bg-panel text-ink-2 transition-colors hover:text-ink"
+                className="grid h-7 w-7 shrink-0 place-items-center rounded-btn border border-line bg-panel text-ink-2 transition-colors hover:bg-hover hover:text-ink"
               >
-                <X size={13} />
+                <X size={14} />
               </button>
             ) : (
               <>
                 <button
                   onClick={newConversation}
                   title="新对话"
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded-btn border border-line bg-panel text-ink-2 transition-colors hover:text-ink"
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded-btn border border-line bg-panel text-ink-2 transition-colors hover:bg-hover hover:text-ink"
                 >
-                  <Plus size={13} />
+                  <Plus size={14} />
                 </button>
                 <button
                   onClick={() => setBatchMode(true)}
                   title="批量选择"
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded-btn border border-line bg-panel text-ink-2 transition-colors hover:text-ink"
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded-btn border border-line bg-panel text-ink-2 transition-colors hover:bg-hover hover:text-ink"
                 >
-                  <CheckSquare size={13} />
+                  <CheckSquare size={14} />
                 </button>
                 <button
                   onClick={() => setCollapsed(true)}
                   title="收起历史记录"
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded-btn border border-line bg-panel text-ink-2 transition-colors hover:text-ink"
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded-btn border border-line bg-panel text-ink-2 transition-colors hover:bg-hover hover:text-ink"
                 >
-                  <PanelLeftClose size={13} />
+                  <PanelLeftClose size={14} />
                 </button>
               </>
             )}
@@ -332,7 +368,7 @@ export function HistorySidebar() {
 
       {/* Batch selection toolbar */}
       {batchMode && (
-        <div className="flex items-center gap-2 border-b border-line px-3 py-1.5 text-[11px] text-ink-2">
+        <div className="flex items-center gap-2 border-b border-line px-3 py-1.5 text-ui text-ink-2">
           <span className="shrink-0">已选 {selected.size}</span>
           <button onClick={selectAll} className="text-ink hover:underline">
             全选
@@ -345,7 +381,7 @@ export function HistorySidebar() {
               <span className="flex items-center gap-1">
                 <button
                   onClick={() => void batchDelete()}
-                  className="rounded bg-danger px-1.5 py-0.5 text-[11px] text-white"
+                  className="rounded-btn bg-danger px-1.5 py-0.5 text-ui text-white"
                 >
                   确认删除
                 </button>
@@ -362,7 +398,7 @@ export function HistorySidebar() {
                 disabled={selected.size === 0}
                 className="flex items-center gap-1 text-danger disabled:opacity-30"
               >
-                <Trash2 size={11} /> 删除
+                <Trash2 size={12} /> 删除
               </button>
             )}
           </span>
@@ -371,15 +407,15 @@ export function HistorySidebar() {
 
       <div ref={listRef} className="flex-1 overflow-y-auto px-2 pb-2">
         {/* Full-text hits over message content (P0-2) */}
-        {searchActive && !batchMode && (
+        {listMode === "search" && !batchMode && (
           <div className="mb-1">
-            <p className="px-2 pb-1 pt-2 text-[10px] uppercase tracking-wide text-ink-2">
+            <p className="px-2 pb-1 pt-2 text-meta text-ink-2">
               {/* The backend query is capped at 30 hits; show it so a full list
                   is not mistaken for "no more matches exist". */}
               消息内容 {searching ? "· 搜索中…" : `· ${hits.length}/30`}
             </p>
             {!searching && hits.length === 0 && (
-              <p className="px-2 py-2 text-[11px] text-ink-2">没有匹配的消息</p>
+              <p className="px-2 py-2 text-ui text-ink-2">没有匹配的消息</p>
             )}
             {hits.map((hit) => (
               <button
@@ -387,18 +423,18 @@ export function HistorySidebar() {
                 type="button"
                 onClick={() => void openHit(hit)}
                 title={hit.conversationTitle}
-                className="mb-0.5 block w-full rounded-btn px-2 py-1.5 text-left transition-colors hover:bg-panel disabled:opacity-50"
+                className="mb-0.5 block w-full rounded-btn px-2 py-1.5 text-left transition-colors hover:bg-hover disabled:opacity-50"
               >
                 <span className="flex items-center gap-1.5">
                   <MessageSquare size={10} className="shrink-0 text-ink-2" />
-                  <span className="truncate text-[10px] text-ink-2">
+                  <span className="truncate text-meta text-ink-2">
                     {hit.conversationTitle || "新会话"}
                   </span>
-                  <span className="ml-auto shrink-0 text-[10px] text-ink-2">
+                  <span className="ml-auto shrink-0 text-meta text-ink-2">
                     {relativeTime(hit.createdAt)}
                   </span>
                 </span>
-                <span className="mt-0.5 line-clamp-2 block text-[11px] leading-4 text-ink">
+                <span className="mt-0.5 line-clamp-2 block text-ui leading-4 text-ink">
                   {hit.snippet}
                 </span>
               </button>
@@ -406,34 +442,35 @@ export function HistorySidebar() {
           </div>
         )}
 
-        {searchActive && !batchMode && filtered.length > 0 && (
-          <p className="px-2 pb-1 pt-1 text-[10px] uppercase tracking-wide text-ink-2">会话</p>
+        {listMode === "search" && !batchMode && filtered.length > 0 && (
+          <p className="px-2 pb-1 pt-1 text-meta text-ink-2">会话</p>
         )}
 
         {filtered.length === 0 && (
-          <p className="px-2 py-6 text-center text-xs text-ink-2">
+          <p className="px-2 py-6 text-center text-ui text-ink-2">
             {conversations.length === 0 ? "暂无会话记录" : "没有匹配的会话"}
           </p>
         )}
 
-        {filtered.map((c, index) => {
-          const active = c.id === activeId;
-          const renaming = renamingId === c.id;
-          const isSelected = selected.has(c.id);
-          // Multi-conversation state: is this row's conversation generating,
-          // and did it finish while the user was elsewhere?
-          const isGenerating = Object.values(streams).some(
-            (stream) => stream.conversationId === c.id,
-          );
-          const hasUnread = Boolean(unreadDone[c.id]);
-          // Pinned conversations come first; a thin rule separates the two
-          // groups once the list leaves them behind (P1-11.1).
-          const startsUnpinned = !c.pinned && index > 0 && filtered[index - 1].pinned;
+        {(listMode === "search" ? [{ label: "", items: filtered }] : grouped).map((group) => (
+          <Fragment key={group.label || "search"}>
+            {group.label && (
+              <p className="px-2 pb-1 pt-2.5 text-meta text-ink-2">{group.label}</p>
+            )}
+            {group.items.map((c) => {
+              const active = c.id === activeId;
+              const renaming = renamingId === c.id;
+              const isSelected = selected.has(c.id);
+              // Multi-conversation state: is this row's conversation generating,
+              // and did it finish while the user was elsewhere?
+              const isGenerating = Object.values(streams).some(
+                (stream) => stream.conversationId === c.id,
+              );
+              const hasUnread = Boolean(unreadDone[c.id]);
 
-          return (
-            <Fragment key={c.id}>
-              {startsUnpinned && <div className="mx-2 my-1 border-t border-line" />}
+              return (
             <div
+              key={c.id}
               data-conversation-id={c.id}
               onClick={() => {
                 if (batchMode) {
@@ -444,16 +481,12 @@ export function HistorySidebar() {
                 if (renaming || c.id === activeId) return;
                 void loadConversation(c.id);
               }}
-              className={`group mb-0.5 flex items-center gap-1.5 rounded-btn px-2 py-1.5 transition-colors ${
-                batchMode
-                  ? "cursor-pointer"
-                  : "cursor-pointer"
-              } ${
+              className={`group mb-0.5 flex h-8 cursor-pointer items-center gap-1.5 rounded-btn px-2 transition-colors ${
                 batchMode && isSelected
-                  ? "bg-panel shadow-sm ring-1 ring-[var(--cf-accent)]"
+                  ? "bg-hover ring-1 ring-[var(--cf-accent)]"
                   : active
-                    ? "bg-panel shadow-sm"
-                    : "hover:bg-panel"
+                    ? "bg-hover"
+                    : "hover:bg-hover"
               }`}
             >
               {batchMode && (
@@ -482,7 +515,7 @@ export function HistorySidebar() {
                         setRenamingId(null);
                       }
                     }}
-                    className="w-full rounded border border-line bg-panel-2 px-1 py-0.5 text-xs text-ink outline-none"
+                    className="w-full rounded-btn border border-line bg-panel px-1 py-0.5 text-ui text-ink outline-none"
                   />
                   <button
                     onClick={(e) => {
@@ -495,109 +528,105 @@ export function HistorySidebar() {
                   </button>
                 </div>
               ) : (
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1">
-                    <p
-                      className={`flex-1 truncate text-xs ${
-                        active ? "text-ink" : "text-ink-2"
-                      }`}
-                    >
-                      {c.title || "新会话"}
-                    </p>
-                    {/* 生成中：转圈；后台完成：圆点（打开后消失） */}
-                    {!batchMode && isGenerating && (
-                      <Loader2
-                        size={11}
-                        className="shrink-0 animate-spin text-accent"
-                        aria-label="正在生成"
-                      />
-                    )}
-                    {!batchMode && !isGenerating && hasUnread && (
-                      <span
-                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
-                        title="对话已完成，点击查看"
-                        aria-label="对话已完成"
-                      />
-                    )}
-                    {c.pinned && !batchMode && (
-                      <Pin
-                        size={10}
-                        className="shrink-0 text-accent group-hover:hidden"
-                        aria-label="已置顶"
-                      />
-                    )}
-                    {!batchMode && (
-                      <span className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void setPinned(c.id, !c.pinned);
-                          }}
-                          title={c.pinned ? "取消置顶" : "置顶会话"}
-                          className="grid h-5 w-5 place-items-center rounded text-ink-2 hover:text-ink"
-                        >
-                          {c.pinned ? <PinOff size={11} /> : <Pin size={11} />}
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            startRename(c.id, c.title);
-                          }}
-                          title="重命名"
-                          className="grid h-5 w-5 place-items-center rounded text-ink-2 hover:text-ink"
-                        >
-                          <Pencil size={11} />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openPromptEditor(c.id, c.systemPrompt);
-                          }}
-                          title="会话提示词"
-                          className="grid h-5 w-5 place-items-center rounded text-ink-2 hover:text-ink"
-                        >
-                          <FileText size={11} />
-                        </button>
-                        {confirmingId === c.id ? (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void remove(c.id).catch(() => undefined);
-                              setConfirmingId(null);
-                            }}
-                            title="确认删除"
-                            className="grid h-5 w-5 place-items-center rounded text-danger"
-                          >
-                            <Check size={11} />
-                          </button>
-                        ) : (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setConfirmingId(c.id);
-                            }}
-                            title="删除"
-                            className="grid h-5 w-5 place-items-center rounded text-ink-2 hover:text-danger"
-                          >
-                            <Trash2 size={11} />
-                          </button>
-                        )}
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-0.5 text-[10px] text-ink-2">
-                    {relativeTime(c.updatedAt)}
+                <div className="flex min-w-0 flex-1 items-center gap-1">
+                  <p
+                    className={`flex-1 truncate text-ui ${
+                      active ? "text-ink" : "text-ink-2"
+                    }`}
+                  >
+                    {c.title || "新会话"}
                   </p>
+                  {/* 生成中：转圈；后台完成：圆点（打开后消失） */}
+                  {!batchMode && isGenerating && (
+                    <Loader2
+                      size={11}
+                      className="shrink-0 animate-spin text-accent"
+                      aria-label="正在生成"
+                    />
+                  )}
+                  {!batchMode && !isGenerating && hasUnread && (
+                    <span
+                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                      title="对话已完成，点击查看"
+                      aria-label="对话已完成"
+                    />
+                  )}
+                  {c.pinned && !batchMode && (
+                    <Pin
+                      size={10}
+                      className="shrink-0 text-accent group-hover:hidden"
+                      aria-label="已置顶"
+                    />
+                  )}
+                  {!batchMode && (
+                    <span className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void setPinned(c.id, !c.pinned);
+                        }}
+                        title={c.pinned ? "取消置顶" : "置顶会话"}
+                        className="grid h-5 w-5 place-items-center rounded text-ink-2 hover:text-ink"
+                      >
+                        {c.pinned ? <PinOff size={11} /> : <Pin size={11} />}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startRename(c.id, c.title);
+                        }}
+                        title="重命名"
+                        className="grid h-5 w-5 place-items-center rounded text-ink-2 hover:text-ink"
+                      >
+                        <Pencil size={11} />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openPromptEditor(c.id, c.systemPrompt);
+                        }}
+                        title="会话提示词"
+                        className="grid h-5 w-5 place-items-center rounded text-ink-2 hover:text-ink"
+                      >
+                        <FileText size={11} />
+                      </button>
+                      {confirmingId === c.id ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void remove(c.id).catch(() => undefined);
+                            setConfirmingId(null);
+                          }}
+                          title="确认删除"
+                          className="grid h-5 w-5 place-items-center rounded text-danger"
+                        >
+                          <Check size={11} />
+                        </button>
+                      ) : (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmingId(c.id);
+                          }}
+                          title="删除"
+                          className="grid h-5 w-5 place-items-center rounded text-ink-2 hover:text-danger"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      )}
+                    </span>
+                  )}
                 </div>
               )}
             </div>
-            </Fragment>
-          );
-        })}
+              );
+            })}
+          </Fragment>
+        ))}
       </div>
 
       {!collapsed && !batchMode && confirmingId && (
-        <div className="border-t border-line px-3 py-2 text-[11px] text-ink-2">
+        <div className="border-t border-line px-3 py-2 text-ui text-ink-2">
           再次点击 ✓ 确认删除该会话
           <button
             onClick={() => setConfirmingId(null)}
@@ -611,7 +640,7 @@ export function HistorySidebar() {
       {/* Per-conversation system prompt editor */}
       {!collapsed && promptId && (
         <div className="border-t border-line px-3 py-2.5">
-          <p className="mb-1.5 flex items-center gap-1 text-[11px] font-medium text-ink">
+          <p className="mb-1.5 flex items-center gap-1 text-ui font-medium text-ink">
             <FileText size={12} className="text-accent" />
             会话提示词
           </p>
@@ -620,19 +649,19 @@ export function HistorySidebar() {
             onChange={(e) => setPromptValue(e.target.value)}
             rows={4}
             placeholder="此会话专属的 AI 角色设定，留空则使用全局默认系统提示词。"
-            className="w-full resize-none rounded-btn border border-line bg-panel-2 px-2 py-1.5 text-[11px] leading-4 text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]"
+            className="w-full resize-none rounded-btn border border-line bg-panel-2 px-2 py-1.5 text-ui leading-5 text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-[var(--cf-text-2)]"
           />
           <div className="mt-1.5 flex items-center gap-1.5">
             <button
               onClick={() => void savePrompt()}
-              className="flex items-center gap-1 rounded-btn bg-accent px-2 py-1 text-[11px] font-medium text-accent-fg transition-colors hover:opacity-90"
+              className="flex items-center gap-1 rounded-btn bg-accent px-2 py-1 text-ui font-medium text-accent-fg transition-colors hover:opacity-90"
             >
               {promptSaved && <Check size={11} />}
               {promptSaved ? "已保存" : "保存"}
             </button>
             <button
               onClick={() => setPromptId(null)}
-              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel-2"
+              className="rounded-btn border border-line px-2 py-1 text-ui text-ink-2 transition-colors hover:bg-hover"
             >
               关闭
             </button>
@@ -666,20 +695,20 @@ function AssistantOption({
       aria-selected={selected}
       onClick={onSelect}
       className={`flex w-full items-start gap-2 px-2.5 py-1.5 text-left transition-colors ${
-        selected ? "bg-accent/15" : "hover:bg-panel-2"
+        selected ? "bg-[color-mix(in_srgb,var(--cf-accent)_12%,transparent)]" : "hover:bg-hover"
       }`}
     >
       <span className="mt-0.5">{icon}</span>
       <span className="min-w-0 flex-1">
         <span
-          className={`block truncate text-xs ${
+          className={`block truncate text-ui ${
             selected ? "font-medium text-accent" : "text-ink"
           }`}
         >
           {name}
         </span>
         {description && (
-          <span className="mt-0.5 line-clamp-2 block text-[10px] leading-4 text-ink-2">
+          <span className="mt-0.5 line-clamp-2 block text-meta leading-4 text-ink-2">
             {description}
           </span>
         )}
