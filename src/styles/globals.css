@@ -26,6 +26,34 @@
   ::selection {
     background: color-mix(in srgb, var(--cf-text) 20%, transparent);
   }
+
+  /* Claude-style motion: short, soft, only transform + opacity. */
+  button,
+  [role="button"] {
+    transition-timing-function: cubic-bezier(0.22, 0.8, 0.36, 1);
+    transition-duration: 150ms;
+  }
+  button:active:not(:disabled),
+  [role="button"]:active:not([aria-disabled="true"]) {
+    transform: scale(0.98);
+  }
+
+  /* Focus ring: a soft halo in the accent color, not a hard outline. */
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--cf-accent) 25%, transparent);
+    border-color: var(--cf-accent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button:active:not(:disabled),
+  [role="button"]:active:not([aria-disabled="true"]) {
+    transform: none;
+  }
 }
 
 /* --- Scrollbars --------------------------------------------------------- */
