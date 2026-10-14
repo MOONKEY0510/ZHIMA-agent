@@ -38,14 +38,21 @@
     transform: scale(0.98);
   }
 
-  /* Focus ring: a soft halo in the accent color, not a hard outline. */
+  /* Focus ring: a soft halo in the accent color, not a hard outline.
+   * Applied selectively — bare textareas inside a styled card (e.g. the
+   * composer) manage their own visual state via the parent's
+   * focus-within ring, so we skip them here. */
   input:focus-visible,
-  textarea:focus-visible,
   select:focus-visible,
   button:focus-visible {
     outline: none;
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--cf-accent) 25%, transparent);
     border-color: var(--cf-accent);
+  }
+  textarea:focus-visible {
+    outline: none;
+    box-shadow: none;
+    border-color: inherit;
   }
 }
 
