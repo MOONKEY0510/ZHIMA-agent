@@ -214,6 +214,19 @@ const TABS: { id: SettingsTab; label: string; icon: typeof SettingsIcon }[] = [
   { id: "general", label: "通用", icon: Wrench },
 ];
 
+/* Sidebar grouping — Claude's settings page splits the list into two
+ * clusters: what the AI does, and how the app behaves. */
+const NAV_GROUPS: { label: string; tabs: SettingsTab[] }[] = [
+  {
+    label: "AI 行为",
+    tabs: ["models", "persona", "context", "tools", "skills", "integrations"],
+  },
+  {
+    label: "应用",
+    tabs: ["appearance", "data", "usage", "diagnostics", "general"],
+  },
+];
+
 export function SettingsPanel() {
   // The composer can request a specific section (e.g. "skills") when opening.
   const [tab, setTab] = useState<SettingsTab>(() => {
@@ -248,38 +261,44 @@ export function SettingsPanel() {
       {/* Settings sidebar */}
       <nav
         ref={navRef}
-        className="relative flex w-36 shrink-0 flex-col gap-0.5 border-r border-line bg-panel-2 px-2 py-3"
+        className="relative flex w-44 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-line bg-panel-2 px-3 py-3"
       >
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute left-2 right-2 rounded-btn bg-panel shadow-sm transition-[top,height] duration-300 ease-out"
+          className="pointer-events-none absolute left-3 right-3 rounded-btn bg-panel shadow-sm transition-[top,height] duration-300 ease-out"
           style={{ top: marker.top, height: marker.height }}
         />
-        {TABS.map((t) => {
-          const Icon = t.icon;
-          const active = tab === t.id;
-          return (
-            <button
-              key={t.id}
-              data-tab={t.id}
-              onClick={() => go(t.id)}
-              className={`relative z-10 flex items-center gap-2 rounded-btn px-2.5 py-1.5 text-ui transition-colors duration-200 ${
-                active ? "font-medium text-ink" : "text-ink-2 hover:text-ink"
-              }`}
-            >
-              <Icon size={14} />
-              <span className="min-w-0 flex-1 truncate">{t.label}</span>
-            </button>
-          );
-        })}
+        {NAV_GROUPS.map((group) => (
+          <div key={group.label}>
+            <p className="cf-settings-nav-group">{group.label}</p>
+            {group.tabs.map((tabId) => {
+              const t = TABS.find((x) => x.id === tabId)!;
+              const Icon = t.icon;
+              const active = tab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  data-tab={t.id}
+                  onClick={() => go(t.id)}
+                  className={`relative z-10 flex w-full items-center gap-2.5 rounded-btn px-2.5 py-1.5 text-ui transition-colors duration-200 ${
+                    active ? "font-medium text-ink" : "text-ink-2 hover:text-ink"
+                  }`}
+                >
+                  <Icon size={14} />
+                  <span className="min-w-0 flex-1 truncate text-left">{t.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        ))}
       </nav>
 
       {/* Tab content. Keyed by tab so every switch replays the enter
           animation from a clean mount. */}
-      <div className="min-w-0 flex-1 overflow-y-auto px-4 pb-6 pt-3">
+      <div className="min-w-0 flex-1 overflow-y-auto px-8 pb-8 pt-6">
         <div
           key={tab}
-          className={`cf-settings-page mx-auto w-full ${
+          className={`cf-settings-page mx-auto w-full max-w-2xl ${
             direction === 1 ? "cf-page-enter-next" : "cf-page-enter-prev"
           }`}
         >
