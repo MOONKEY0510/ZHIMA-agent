@@ -793,7 +793,7 @@ export function Composer() {
           </div>
         )}
 
-      <div className="rounded-composer border border-line bg-panel px-4 py-3 shadow-composer transition-shadow duration-150 focus-within:shadow-composer-focus">
+      <div className="rounded-composer border border-line bg-panel px-4 py-2.5 shadow-composer transition-shadow duration-150 focus-within:border-[color-mix(in_srgb,var(--cf-accent)_40%,var(--cf-border))] focus-within:shadow-composer-focus">
         <input
           ref={fileRef}
           type="file"
@@ -814,7 +814,7 @@ export function Composer() {
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           rows={1}
-          placeholder="输入问题，Enter 发送，Shift+Enter 换行，Esc 隐藏"
+          placeholder="输入问题…"
           className="max-h-[130px] w-full resize-none bg-transparent text-body text-ink outline-none placeholder:text-ink-3"
         />
         <div className="mt-2 flex items-center justify-between gap-2">
