@@ -119,7 +119,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="relative flex w-full max-w-lg flex-col rounded-xl border border-line bg-panel shadow-2xl"
+        className="relative flex w-full max-w-lg flex-col rounded-xl border border-line bg-panel shadow-menu"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-line px-4 py-3">

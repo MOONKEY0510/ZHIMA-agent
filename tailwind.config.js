@@ -41,9 +41,9 @@ export default {
         composer: "20px",
       },
       boxShadow: {
-        composer: "0 1px 2px rgb(0 0 0 / 4%), 0 4px 16px rgb(0 0 0 / 5%)",
-        "composer-focus": "0 1px 2px rgb(0 0 0 / 5%), 0 6px 24px rgb(0 0 0 / 8%)",
-        menu: "0 8px 28px rgb(0 0 0 / 12%), 0 0 0 1px var(--cf-border)",
+        composer: "0 1px 2px rgb(0 0 0 / 3%), 0 2px 8px rgb(0 0 0 / 4%)",
+        "composer-focus": "0 1px 2px rgb(0 0 0 / 4%), 0 4px 16px rgb(0 0 0 / 6%)",
+        menu: "0 4px 16px rgb(0 0 0 / 8%), 0 0 0 1px var(--cf-border)",
       },
     },
   },

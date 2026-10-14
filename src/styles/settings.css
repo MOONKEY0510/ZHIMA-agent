@@ -98,7 +98,7 @@
   border-color: var(--cf-accent);
   background: var(--cf-accent);
   color: var(--cf-accent-fg);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--cf-accent) 20%, transparent);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--cf-accent) 16%, transparent);
 }
 
 /* Template card used in Persona tab. */
@@ -117,7 +117,7 @@
 
 .cf-template-card:hover {
   border-color: color-mix(in srgb, var(--cf-accent) 55%, var(--cf-border));
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--cf-text-2) 10%, transparent);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--cf-text-2) 8%, transparent);
   transform: translateY(-1px);
 }
 
@@ -166,7 +166,7 @@
 
 .cf-provider-card.is-default {
   border-color: color-mix(in srgb, var(--cf-accent) 55%, var(--cf-border));
-  box-shadow: 0 2px 10px color-mix(in srgb, var(--cf-accent) 10%, transparent);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--cf-accent) 8%, transparent);
 }
 
 .cf-provider-badge {
@@ -190,7 +190,7 @@
   border: 1px solid var(--cf-border);
   border-radius: var(--rounded-input, 14px);
   background: color-mix(in srgb, var(--cf-panel) 94%, transparent);
-  box-shadow: 0 4px 14px color-mix(in srgb, var(--cf-text) 4%, transparent);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--cf-text) 4%, transparent);
 }
 
 /* Section container: title + description + card body. */
