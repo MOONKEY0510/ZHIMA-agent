@@ -814,7 +814,7 @@ export function Composer() {
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           rows={1}
-          placeholder="输入问题…"
+          placeholder="输入问题，Enter 发送，Shift+Enter 换行，Esc 隐藏"
           className="max-h-[130px] w-full resize-none bg-transparent text-body text-ink outline-none placeholder:text-ink-3"
         />
         <div className="mt-2 flex items-center justify-between gap-2">
