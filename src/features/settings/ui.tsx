@@ -41,12 +41,12 @@ export function Dropdown({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between gap-2 rounded-btn border border-transparent bg-transparent px-1.5 py-1 text-left text-[0.9375rem] leading-5 text-ink outline-none transition-colors hover:bg-hover focus:border-accent disabled:opacity-40"
+        className="flex w-full items-center justify-end gap-1 rounded-btn border border-transparent bg-transparent px-1.5 py-1 text-right text-[0.9375rem] leading-5 text-ink outline-none transition-colors hover:bg-hover focus:border-accent disabled:opacity-40"
       >
         <span className="truncate">{selected?.label ?? value}</span>
         <ChevronDown
-          size={14}
-          className={`shrink-0 text-ink-3 transition-transform ${open ? "rotate-180" : ""}`}
+          size={13}
+          className={`shrink-0 text-ink-3 transition-transform duration-150 ${open ? "rotate-180" : ""}`}
         />
       </button>
       {open && (
@@ -59,13 +59,16 @@ export function Dropdown({
                 onChange(option.value);
                 setOpen(false);
               }}
-              className={`block w-full px-2.5 py-1.5 text-left text-ui transition-colors ${
+              className={`flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-ui transition-colors ${
                 option.value === value
                   ? "bg-accent/15 text-accent"
                   : "text-ink hover:bg-hover"
               }`}
             >
-              {option.label}
+              <span>{option.label}</span>
+              {option.value === value && (
+                <span className="text-accent" aria-hidden="true">✓</span>
+              )}
             </button>
           ))}
         </div>
@@ -86,10 +89,10 @@ export function SectionHeader({ title, action }: { title: string; action?: React
 export function Notice({ ok, text }: { ok: boolean; text: string }) {
   return (
     <p
-      className={`rounded-btn border px-2.5 py-1.5 text-ui leading-5 ${
+      className={`rounded-btn border px-3 py-2 text-[0.8125rem] leading-5 ${
         ok
-          ? "border-[color-mix(in_srgb,var(--cf-success)_35%,transparent)] text-success"
-          : "border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] text-danger"
+          ? "border-[color-mix(in_srgb,var(--cf-success)_35%,transparent)] bg-[color-mix(in_srgb,var(--cf-success)_6%,transparent)] text-success"
+          : "border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--cf-danger)_6%,transparent)] text-danger"
       }`}
     >
       {text}

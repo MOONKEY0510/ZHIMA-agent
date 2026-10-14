@@ -92,12 +92,17 @@
   cursor: pointer;
   align-items: center;
   border-radius: 9999px;
-  background: color-mix(in srgb, var(--cf-text-2) 35%, transparent);
-  transition: background-color 180ms cubic-bezier(0.22, 0.8, 0.36, 1);
+  background: color-mix(in srgb, var(--cf-text-2) 30%, transparent);
+  transition: background-color 180ms cubic-bezier(0.22, 0.8, 0.36, 1),
+    box-shadow 180ms cubic-bezier(0.22, 0.8, 0.36, 1);
 }
 
 .cf-switch:hover {
-  background: color-mix(in srgb, var(--cf-text-2) 50%, transparent);
+  background: color-mix(in srgb, var(--cf-text-2) 45%, transparent);
+}
+
+.cf-switch:active {
+  transform: scale(0.96);
 }
 
 .cf-switch[aria-checked="true"] {
@@ -106,6 +111,11 @@
 
 .cf-switch[aria-checked="true"]:hover {
   filter: brightness(1.05);
+}
+
+.cf-switch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cf-accent) 22%, transparent);
 }
 
 .cf-switch-knob {
@@ -117,7 +127,7 @@
   border-radius: 9999px;
   background: var(--cf-panel);
   box-shadow: 0 1px 2px rgb(0 0 0 / 18%);
-  transition: transform 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 200ms cubic-bezier(0.34, 1.2, 0.64, 1);
 }
 
 .cf-switch[aria-checked="true"] .cf-switch-knob {
@@ -265,7 +275,7 @@
 
 .cf-input:focus {
   border-color: var(--cf-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cf-accent) 18%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cf-accent) 18%, transparent);
 }
 
 .cf-input:disabled {
@@ -294,20 +304,29 @@
   font-weight: 500;
   line-height: 1.3;
   transition: opacity 150ms cubic-bezier(0.22, 0.8, 0.36, 1),
-    background-color 150ms cubic-bezier(0.22, 0.8, 0.36, 1);
+    background-color 150ms cubic-bezier(0.22, 0.8, 0.36, 1),
+    transform 80ms cubic-bezier(0.22, 0.8, 0.36, 1);
 }
 
 .cf-btn-primary {
   background: var(--cf-accent);
   color: var(--cf-accent-fg);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--cf-accent) 20%, transparent);
 }
 
 .cf-btn-primary:hover:not(:disabled) {
   opacity: 0.92;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--cf-accent) 24%, transparent);
+}
+
+.cf-btn-primary:active:not(:disabled) {
+  transform: translateY(0.5px);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--cf-accent) 20%, transparent);
 }
 
 .cf-btn-primary:disabled {
   opacity: 0.4;
+  box-shadow: none;
 }
 
 .cf-btn-secondary {
@@ -318,6 +337,10 @@
 
 .cf-btn-secondary:hover:not(:disabled) {
   background: var(--cf-hover);
+}
+
+.cf-btn-secondary:active:not(:disabled) {
+  transform: translateY(0.5px);
 }
 
 .cf-btn-secondary:disabled {
