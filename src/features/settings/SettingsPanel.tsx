@@ -261,11 +261,11 @@ export function SettingsPanel() {
       {/* Settings sidebar */}
       <nav
         ref={navRef}
-        className="relative flex w-44 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-line bg-panel-2 px-3 py-3"
+        className="relative flex w-48 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-line bg-panel-2 px-3 py-4"
       >
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute left-3 right-3 rounded-btn bg-panel shadow-sm transition-[top,height] duration-300 ease-out"
+          className="pointer-events-none absolute left-3 right-3 rounded-btn bg-panel shadow-sm transition-[top,height] duration-200 ease-out"
           style={{ top: marker.top, height: marker.height }}
         />
         {NAV_GROUPS.map((group) => (
@@ -280,11 +280,11 @@ export function SettingsPanel() {
                   key={t.id}
                   data-tab={t.id}
                   onClick={() => go(t.id)}
-                  className={`relative z-10 flex w-full items-center gap-2.5 rounded-btn px-2.5 py-1.5 text-ui transition-colors duration-200 ${
+                  className={`relative z-10 flex w-full items-center gap-2.5 rounded-btn px-2.5 py-2 text-ui transition-colors duration-150 ${
                     active ? "font-medium text-ink" : "text-ink-2 hover:text-ink"
                   }`}
                 >
-                  <Icon size={14} />
+                  <Icon size={15} strokeWidth={active ? 2.25 : 1.75} />
                   <span className="min-w-0 flex-1 truncate text-left">{t.label}</span>
                 </button>
               );
