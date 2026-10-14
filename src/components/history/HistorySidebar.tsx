@@ -455,7 +455,7 @@ export function HistorySidebar() {
         {(listMode === "search" ? [{ label: "", items: filtered }] : grouped).map((group) => (
           <Fragment key={group.label || "search"}>
             {group.label && (
-              <p className="px-2 pb-1 pt-2.5 text-meta text-ink-2">{group.label}</p>
+              <p className="px-2 pb-1 pt-3 font-display text-meta text-ink-3">{group.label}</p>
             )}
             {group.items.map((c) => {
               const active = c.id === activeId;
@@ -481,11 +481,11 @@ export function HistorySidebar() {
                 if (renaming || c.id === activeId) return;
                 void loadConversation(c.id);
               }}
-              className={`group mb-0.5 flex h-8 cursor-pointer items-center gap-1.5 rounded-btn px-2 transition-colors ${
+              className={`group relative mb-0.5 flex h-8 cursor-pointer items-center gap-1.5 rounded-btn px-2 transition-colors ${
                 batchMode && isSelected
                   ? "bg-hover ring-1 ring-[var(--cf-accent)]"
                   : active
-                    ? "bg-hover"
+                    ? "bg-hover before:absolute before:left-0 before:top-1.5 before:h-5 before:w-0.5 before:rounded-full before:bg-[var(--cf-accent)]"
                     : "hover:bg-hover"
               }`}
             >

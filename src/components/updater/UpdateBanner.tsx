@@ -62,7 +62,7 @@ export function UpdateBanner() {
 
   return (
     <div className="absolute left-1/2 top-12 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2">
-      <div className="rounded-btn border border-line bg-panel-2 p-3 shadow-xl">
+      <div className="rounded-btn border border-line bg-panel-2 p-3 shadow-menu">
         {state.kind === "available" && (
           <>
             <div className="flex items-start gap-2">
