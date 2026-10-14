@@ -41,9 +41,9 @@ export function Dropdown({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-end gap-1 rounded-btn border border-transparent bg-transparent px-1.5 py-1 text-right text-[0.9375rem] leading-5 text-ink outline-none transition-colors hover:bg-hover focus:border-accent disabled:opacity-40"
+        className="flex w-full min-w-0 items-center justify-end gap-1 rounded-btn border border-transparent bg-transparent px-1.5 py-1 text-right text-[0.9375rem] leading-5 text-ink outline-none transition-colors hover:bg-hover focus:border-accent disabled:opacity-40"
       >
-        <span className="truncate">{selected?.label ?? value}</span>
+        <span className="min-w-0 truncate">{selected?.label ?? value}</span>
         <ChevronDown
           size={13}
           className={`shrink-0 text-ink-3 transition-transform duration-150 ${open ? "rotate-180" : ""}`}
@@ -194,7 +194,7 @@ export function FormRow({
         </label>
         {description && <p className="mt-1 text-[0.8125rem] leading-5 text-ink-2">{description}</p>}
       </div>
-      <div className="flex shrink-0 items-center justify-end gap-2">{children}</div>
+      <div className="flex min-w-0 max-w-[55%] shrink-0 items-center justify-end gap-2">{children}</div>
     </div>
   );
 }
