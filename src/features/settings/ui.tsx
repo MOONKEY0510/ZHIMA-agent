@@ -41,16 +41,16 @@ export function Dropdown({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between gap-2 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-left text-ui text-ink outline-none transition-colors hover:bg-panel focus:border-accent disabled:opacity-40"
+        className="flex w-full items-center justify-between gap-2 rounded-btn border border-transparent bg-transparent px-1.5 py-1 text-left text-[0.9375rem] leading-5 text-ink outline-none transition-colors hover:bg-hover focus:border-accent disabled:opacity-40"
       >
         <span className="truncate">{selected?.label ?? value}</span>
         <ChevronDown
           size={14}
-          className={`shrink-0 text-ink-2 transition-transform ${open ? "rotate-180" : ""}`}
+          className={`shrink-0 text-ink-3 transition-transform ${open ? "rotate-180" : ""}`}
         />
       </button>
       {open && (
-        <div className="cf-menu-pop absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-menu border border-line bg-panel py-1 shadow-menu">
+        <div className="cf-menu-pop absolute right-0 z-50 mt-1 max-h-60 min-w-full overflow-y-auto rounded-menu border border-line bg-panel py-1 shadow-menu">
           {options.map((option) => (
             <button
               key={option.value}
@@ -183,10 +183,13 @@ export function FormRow({
   return (
     <div className={`cf-form-row ${className ?? ""}`}>
       <div className="flex-1">
-        <label htmlFor={htmlFor} className="block text-ui font-medium text-ink">
+        <label
+          htmlFor={htmlFor}
+          className="block text-[0.9375rem] font-medium leading-5 text-ink"
+        >
           {label}
         </label>
-        {description && <p className="mt-1 text-meta text-ink-2">{description}</p>}
+        {description && <p className="mt-1 text-[0.8125rem] leading-5 text-ink-2">{description}</p>}
       </div>
       <div className="flex shrink-0 items-center justify-end gap-2">{children}</div>
     </div>
@@ -212,6 +215,41 @@ export function FormSwitch({
       title={label}
     >
       <span className="cf-switch-knob" />
+    </button>
+  );
+}
+
+/* Inline text button used for "edit / remove / test" actions inside
+ * settings rows. Claude renders these as plain colored text, not as
+ * bordered buttons, so the row stays quiet. */
+export function InlineAction({
+  onClick,
+  tone = "accent",
+  disabled,
+  children,
+  title,
+}: {
+  onClick: () => void;
+  tone?: "accent" | "danger" | "neutral";
+  disabled?: boolean;
+  children: React.ReactNode;
+  title?: string;
+}) {
+  const toneCls =
+    tone === "danger"
+      ? "text-danger hover:opacity-80"
+      : tone === "neutral"
+        ? "text-ink-2 hover:text-ink"
+        : "text-accent hover:opacity-80";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`rounded px-1 py-0.5 text-[0.9375rem] leading-5 transition-opacity disabled:opacity-40 ${toneCls}`}
+    >
+      {children}
     </button>
   );
 }
