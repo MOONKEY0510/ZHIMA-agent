@@ -124,7 +124,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
   return (
     <div className="group/diagram my-2 overflow-hidden rounded-xl border border-line bg-panel">
       <header className="flex items-center justify-between border-b border-line px-3 py-1.5">
-        <span className="text-[11px] uppercase tracking-wide text-ink-2">
+        <span className="text-ui uppercase tracking-wide text-ink-2">
           mermaid 图表
         </span>
         <div className="flex items-center gap-0.5">
@@ -197,7 +197,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
                 </div>
               </div>
             </div>
-            <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-panel-2 p-2.5 text-[11px] leading-relaxed text-ink-2">
+            <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-panel-2 p-2.5 text-ui leading-relaxed text-ink-2">
               {trimmed}
             </pre>
           </div>
@@ -410,7 +410,7 @@ function ToolButton({
       title={title}
       disabled={disabled}
       onClick={onClick}
-      className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink disabled:opacity-50"
+      className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-ui text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink disabled:opacity-50"
     >
       {children}
     </button>

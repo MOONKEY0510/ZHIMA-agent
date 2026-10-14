@@ -33,7 +33,7 @@ export function ImageHistorySidebar() {
                 setConfirmingClear(false);
                 setSelectedId(null);
               }}
-              className="rounded bg-danger px-1.5 py-0.5 text-[11px] text-white"
+              className="rounded bg-danger px-1.5 py-0.5 text-ui text-white"
             >
               确认清空
             </button>
@@ -48,7 +48,7 @@ export function ImageHistorySidebar() {
           <button
             onClick={() => history.length > 0 && setConfirmingClear(true)}
             disabled={history.length === 0}
-            className="text-[11px] text-danger disabled:opacity-30"
+            className="text-ui text-danger disabled:opacity-30"
           >
             清空
           </button>
@@ -77,7 +77,7 @@ export function ImageHistorySidebar() {
               />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-xs text-ink-2">{g.prompt || "（无提示词）"}</p>
-                <p className="mt-0.5 text-[10px] text-ink-2">
+                <p className="mt-0.5 text-meta text-ink-2">
                   {relativeTime(g.createdAt)}
                   {g.sizeLabel ? ` · ${g.sizeLabel}` : ""}
                 </p>
@@ -88,7 +88,7 @@ export function ImageHistorySidebar() {
                     e.stopPropagation();
                     void remove(g.id).then(() => setConfirmingId(null));
                   }}
-                  className="shrink-0 rounded bg-danger px-1 py-0.5 text-[10px] text-white"
+                  className="shrink-0 rounded bg-danger px-1 py-0.5 text-meta text-white"
                 >
                   确认
                 </button>

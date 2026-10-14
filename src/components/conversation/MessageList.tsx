@@ -65,7 +65,7 @@ function Dropdown({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center justify-between gap-2 rounded-btn border border-line bg-panel-2 px-1.5 py-1 text-left text-ui text-ink outline-none transition-colors hover:bg-panel focus:border-[var(--cf-text-2)]"
+        className="flex items-center justify-between gap-2 rounded-btn border border-line bg-panel-2 px-1.5 py-1 text-left text-ui text-ink outline-none transition-colors hover:bg-panel focus:border-accent"
       >
         <span>{selected?.label ?? value}</span>
         <ChevronDown
@@ -1237,7 +1237,7 @@ function MessageActions({
             onChange={(e) => setMemValue(e.target.value)}
             rows={3}
             maxLength={500}
-            className="w-full resize-none rounded-btn border border-line bg-panel-2 px-2 py-1.5 text-ui leading-5 text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-[var(--cf-text-2)]"
+            className="w-full resize-none rounded-btn border border-line bg-panel-2 px-2 py-1.5 text-ui leading-5 text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-accent"
             placeholder="编辑要记住的内容（如用户偏好、工作背景等）"
           />
           <div className="mt-1.5 flex items-center gap-1.5">

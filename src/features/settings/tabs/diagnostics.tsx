@@ -65,14 +65,14 @@ function DiagnosticsSection() {
         runs.length > 0 && (
           <button
             onClick={() => void clear()}
-            className="text-[11px] text-danger transition-colors hover:opacity-80"
+            className="text-ui text-danger transition-colors hover:opacity-80"
           >
             清空
           </button>
         )
       }
     >
-      {error && <p className="px-4 pt-2 text-[11px] text-danger">{error}</p>}
+      {error && <p className="px-4 pt-2 text-ui text-danger">{error}</p>}
       {!loaded ? (
         <p className="px-4 py-6 text-xs text-ink-2">加载中…</p>
       ) : runs.length === 0 ? (
@@ -85,7 +85,7 @@ function DiagnosticsSection() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span
-                    className={`rounded px-1.5 py-0.5 text-[10px] ${
+                    className={`rounded px-1.5 py-0.5 text-meta ${
                       r.status === "completed"
                         ? "bg-panel-2 text-success"
                         : r.status === "failed"
@@ -97,7 +97,7 @@ function DiagnosticsSection() {
                   </span>
                   <span className="truncate text-xs text-ink">{r.modelKey ?? "—"}</span>
                 </div>
-                <p className="mt-0.5 text-[11px] text-ink-2">
+                <p className="mt-0.5 text-ui text-ink-2">
                   {r.durationMs ? `耗时 ${(r.durationMs / 1000).toFixed(1)}s` : "耗时 —"}
                   {r.toolCount > 0 ? ` · 工具 ${r.toolCount}` : ""}
                   {r.retryCount > 0 ? ` · 重试 ${r.retryCount}` : ""}

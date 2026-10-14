@@ -118,7 +118,7 @@ export function UsageTab() {
           {!hasTokens && (
             <section className="cf-settings-section">
               <div className="cf-settings-section-body">
-                <p className="px-4 py-3 text-[11px] leading-5 text-ink-2">
+                <p className="px-4 py-3 text-ui leading-5 text-ink-2">
                   已有 {formatCount(stats.rounds)} 轮对话，但都没有 token 记录：升级前的历史数据不会补记，
                   之后的对话会自动累计。
                 </p>
@@ -152,7 +152,7 @@ export function UsageTab() {
                 {trendModels.map((model, index) => (
                   <span
                     key={`${model.modelName ?? "unknown"}-${index}`}
-                    className="flex max-w-[140px] items-center gap-1.5 text-[10px] text-ink-2"
+                    className="flex max-w-[140px] items-center gap-1.5 text-meta text-ink-2"
                   >
                     <span
                       className="h-2 w-2 shrink-0 rounded-full"
@@ -174,7 +174,7 @@ export function UsageTab() {
         <button
           type="button"
           onClick={() => void refresh()}
-          className="flex items-center gap-1.5 rounded-btn px-2.5 py-1.5 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+          className="flex items-center gap-1.5 rounded-btn px-2.5 py-1.5 text-ui text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
         >
           <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
           刷新
@@ -204,7 +204,7 @@ function Segmented<T extends string | number>({
           key={String(option.value)}
           type="button"
           onClick={() => onChange(option.value)}
-          className={`rounded-[6px] px-2 py-0.5 text-[11px] transition-colors ${
+          className={`rounded-[6px] px-2 py-0.5 text-ui transition-colors ${
             option.value === value
               ? "bg-panel text-ink shadow-sm"
               : "text-ink-2 hover:text-ink"
@@ -222,7 +222,7 @@ function EmptyState() {
     <div className="px-4 py-8 text-center">
       <BarChart3 size={22} className="mx-auto text-ink-2" />
       <p className="mt-2 text-xs text-ink">暂无用量数据</p>
-      <p className="mt-1 text-[11px] leading-5 text-ink-2">
+      <p className="mt-1 text-ui leading-5 text-ink-2">
         发一轮对话后，服务商返回的 token 用量会在这里累计；数据只保存在本机。
       </p>
     </div>
@@ -258,7 +258,7 @@ function StatStrip({
               <p className="truncate text-[13px] font-semibold tabular-nums text-ink" title={item.value}>
                 {item.value}
               </p>
-              <p className="mt-1 truncate text-[10px] text-ink-2">{item.label}</p>
+              <p className="mt-1 truncate text-meta text-ink-2">{item.label}</p>
             </div>
           ))}
         </div>
@@ -347,7 +347,7 @@ function ActivityHeatmap({
 
           {hover && (
             <div
-              className="pointer-events-none absolute z-10 -translate-x-1/2 rounded-btn border border-line bg-panel px-2 py-1 text-[10px] leading-4 text-ink shadow-lg"
+              className="pointer-events-none absolute z-10 -translate-x-1/2 rounded-btn border border-line bg-panel px-2 py-1 text-meta leading-4 text-ink shadow-lg"
               style={{
                 left: `${(((hover.weekIndex * CELL_STEP + CELL / 2) / width) * 100).toFixed(2)}%`,
                 top: `${(((hover.weekdayIndex * CELL_STEP + (hover.weekdayIndex < 2 ? CELL : 0)) / height) * 100).toFixed(2)}%`,
@@ -506,7 +506,7 @@ function TokenTrend({ trend }: { trend: ModelTrend }) {
 
       {active != null && tooltipRows.length > 0 && (
         <div
-          className="pointer-events-none absolute top-1 z-10 -translate-x-1/2 rounded-btn border border-line bg-panel px-2 py-1 text-[10px] leading-4 text-ink shadow-lg"
+          className="pointer-events-none absolute top-1 z-10 -translate-x-1/2 rounded-btn border border-line bg-panel px-2 py-1 text-meta leading-4 text-ink shadow-lg"
           style={{
             left: `${Math.min(92, Math.max(8, (x(active) / TREND_W) * 100)).toFixed(2)}%`,
             whiteSpace: "nowrap",
@@ -597,18 +597,18 @@ function ModelDonutCard({
                     className="flex items-start justify-between gap-2"
                   >
                     <div className="min-w-0">
-                      <p className="flex items-center gap-1.5 text-[11px] text-ink">
+                      <p className="flex items-center gap-1.5 text-ui text-ink">
                         <span
                           className="h-2 w-2 shrink-0 rounded-full"
                           style={{ background: modelColor(index) }}
                         />
                         <span className="truncate">{model.modelName ?? "未知模型"}</span>
                       </p>
-                      <p className="mt-0.5 pl-3.5 text-[10px] tabular-nums text-ink-2">
+                      <p className="mt-0.5 pl-3.5 text-meta tabular-nums text-ink-2">
                         {formatTokens(value)} tokens
                       </p>
                     </div>
-                    <span className="shrink-0 text-[11px] tabular-nums text-ink-2">
+                    <span className="shrink-0 text-ui tabular-nums text-ink-2">
                       {formatPercent(percent)}
                     </span>
                   </li>

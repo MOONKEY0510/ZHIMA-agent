@@ -113,7 +113,7 @@ function BackgroundImageSection({
               {uploading ? "上传中…" : image ? "更换背景图" : "上传背景图"}
             </button>
             {image && (
-              <button onClick={() => void onUpload(null)} className="text-[11px] text-danger hover:underline">
+              <button onClick={() => void onUpload(null)} className="text-ui text-danger hover:underline">
                 移除背景图
               </button>
             )}
@@ -129,7 +129,7 @@ function BackgroundImageSection({
               }}
             />
           </div>
-          {error && <p className="text-[11px] text-danger">{error}</p>}
+          {error && <p className="text-ui text-danger">{error}</p>}
         </div>
       </div>
     </SettingsSection>
@@ -235,18 +235,18 @@ function AvatarSettingsSection() {
         <div className="flex w-44 shrink-0 gap-5">
           <div className="flex flex-col items-center gap-1.5">
             <Preview image={aiAvatarImage} color={aiAvatarColor} label="AI" />
-            <span className="text-[10px] text-ink-2">AI</span>
+            <span className="text-meta text-ink-2">AI</span>
             <button
               onClick={() => aiFileRef.current?.click()}
               disabled={uploadingAi}
-              className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-ink transition-colors hover:bg-panel disabled:opacity-40"
+              className="rounded-btn border border-line px-2 py-0.5 text-ui text-ink transition-colors hover:bg-panel disabled:opacity-40"
             >
               {uploadingAi ? "上传中…" : aiAvatarImage ? "更换" : "上传"}
             </button>
             {aiAvatarImage && (
               <button
                 onClick={() => void setAiAvatarImage(null)}
-                className="text-[10px] text-danger hover:underline"
+                className="text-meta text-danger hover:underline"
               >
                 移除
               </button>
@@ -254,18 +254,18 @@ function AvatarSettingsSection() {
           </div>
           <div className="flex flex-col items-center gap-1.5">
             <Preview image={userAvatarImage} color={userAvatarColor} label="我" />
-            <span className="text-[10px] text-ink-2">我</span>
+            <span className="text-meta text-ink-2">我</span>
             <button
               onClick={() => userFileRef.current?.click()}
               disabled={uploadingUser}
-              className="rounded-btn border border-line px-2 py-0.5 text-[11px] text-ink transition-colors hover:bg-panel disabled:opacity-40"
+              className="rounded-btn border border-line px-2 py-0.5 text-ui text-ink transition-colors hover:bg-panel disabled:opacity-40"
             >
               {uploadingUser ? "上传中…" : userAvatarImage ? "更换" : "上传"}
             </button>
             {userAvatarImage && (
               <button
                 onClick={() => void setUserAvatarImage(null)}
-                className="text-[10px] text-danger hover:underline"
+                className="text-meta text-danger hover:underline"
               >
                 移除
               </button>
@@ -275,7 +275,7 @@ function AvatarSettingsSection() {
       </div>
 
       {uploadError && (
-        <p className="px-4 pb-2 text-[11px] text-danger">{uploadError}</p>
+        <p className="px-4 pb-2 text-ui text-danger">{uploadError}</p>
       )}
 
       <FormRow label="头像形状" description="使用自定义图片时形状仍生效">

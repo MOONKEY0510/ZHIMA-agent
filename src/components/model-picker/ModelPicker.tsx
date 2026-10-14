@@ -178,7 +178,7 @@ export function ModelPicker() {
                 type="button"
                 onClick={() => setCompareMode((v) => !v)}
                 title={`多选模型对比：同一问题同时发送给最多 ${MAX_COMPARE} 个模型`}
-                className={`shrink-0 rounded-btn border px-1.5 py-0.5 text-[11px] transition-colors ${
+                className={`shrink-0 rounded-btn border px-1.5 py-0.5 text-ui transition-colors ${
                   compareMode
                     ? "border-transparent bg-accent font-medium text-accent-fg"
                     : "border-line text-ink-2 hover:bg-panel-2 hover:text-ink"
@@ -236,7 +236,7 @@ export function ModelPicker() {
 
             {compareMode ? (
               <div className="flex items-center justify-between gap-2 border-t border-line px-3 py-2">
-                <span className="text-[11px] text-ink-2">
+                <span className="text-ui text-ink-2">
                   已选 {draft.length}/{MAX_COMPARE}
                 </span>
                 <div className="flex items-center gap-1.5">
@@ -244,7 +244,7 @@ export function ModelPicker() {
                     type="button"
                     onClick={() => setDraft([])}
                     disabled={draft.length === 0}
-                    className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 disabled:opacity-40"
+                    className="rounded-btn border border-line px-2 py-1 text-ui text-ink-2 transition-colors hover:bg-panel-2 disabled:opacity-40"
                   >
                     清空
                   </button>
@@ -256,7 +256,7 @@ export function ModelPicker() {
                       setCompareTargets(draft);
                       setOpen(false);
                     }}
-                    className="rounded-btn bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+                    className="rounded-btn bg-accent px-2.5 py-1 text-ui font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
                   >
                     开始对比
                   </button>
@@ -283,7 +283,7 @@ export function ModelPicker() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <p className="px-3 pb-0.5 pt-2 text-[11px] text-ink-2">{title}</p>
+      <p className="px-3 pb-0.5 pt-2 text-ui text-ink-2">{title}</p>
       {children}
     </div>
   );
@@ -337,7 +337,7 @@ function ModelRow({
         </span>
       )}
       <span className="flex-1 truncate">{model.displayName}</span>
-      {!provider.hasApiKey && <span className="text-[10px] text-danger">缺 Key</span>}
+      {!provider.hasApiKey && <span className="text-meta text-danger">缺 Key</span>}
       {!selectable && selected && <Check size={13} className="shrink-0 text-success" />}
     </div>
   );

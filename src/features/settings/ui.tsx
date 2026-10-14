@@ -41,7 +41,7 @@ export function Dropdown({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between gap-2 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-left text-ui text-ink outline-none transition-colors hover:bg-panel focus:border-[var(--cf-text-2)] disabled:opacity-40"
+        className="flex w-full items-center justify-between gap-2 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-left text-ui text-ink outline-none transition-colors hover:bg-panel focus:border-accent disabled:opacity-40"
       >
         <span className="truncate">{selected?.label ?? value}</span>
         <ChevronDown

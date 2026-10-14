@@ -71,7 +71,7 @@ export function UpdateBanner() {
                   发现新版本 v{state.update.version}
                 </p>
                 {state.update.body && (
-                  <p className="mt-1 line-clamp-3 whitespace-pre-wrap break-words text-[11px] leading-4 text-ink-2">
+                  <p className="mt-1 line-clamp-3 whitespace-pre-wrap break-words text-ui leading-4 text-ink-2">
                     {state.update.body}
                   </p>
                 )}
@@ -126,12 +126,12 @@ export function UpdateBanner() {
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
               <p className="text-xs font-semibold text-danger">更新失败</p>
-              <p className="mt-1 break-words text-[11px] leading-4 text-ink-2">
+              <p className="mt-1 break-words text-ui leading-4 text-ink-2">
                 {state.message}
               </p>
               <button
                 onClick={() => setState({ kind: "hidden" })}
-                className="mt-2 rounded-btn border border-line px-3 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel hover:text-ink"
+                className="mt-2 rounded-btn border border-line px-3 py-1 text-ui text-ink-2 transition-colors hover:bg-panel hover:text-ink"
               >
                 关闭
               </button>
@@ -249,7 +249,7 @@ export function UpdateSettingsCard() {
         )}
 
         {message && !update && (
-          <p className={`px-4 py-2 text-[11px] ${message.ok ? "text-success" : "text-danger"}`}>
+          <p className={`px-4 py-2 text-ui ${message.ok ? "text-success" : "text-danger"}`}>
             {message.text}
           </p>
         )}

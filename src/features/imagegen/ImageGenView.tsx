@@ -265,7 +265,7 @@ export function ImageGenView() {
               onKeyDown={onKeyDown}
               rows={4}
               placeholder="描述你想生成的图片，Enter 生成，Shift+Enter 换行"
-              className="resize-none rounded-input border border-line bg-panel px-3 py-2.5 text-sm leading-5 text-ink outline-none placeholder:text-ink-2 focus:border-[var(--cf-text-2)]"
+              className="resize-none rounded-input border border-line bg-panel px-3 py-2.5 text-sm leading-5 text-ink outline-none placeholder:text-ink-2 focus:border-accent"
             />
           </div>
 
@@ -274,12 +274,12 @@ export function ImageGenView() {
             <div className="flex items-center justify-between">
               <label className="flex items-center gap-1.5 text-xs font-medium text-ink">
                 <ImagePlus size={13} /> 参考图
-                <span className="text-[10px] font-normal text-ink-2">（可选，当前支持 1 张）</span>
+                <span className="text-meta font-normal text-ink-2">（可选，当前支持 1 张）</span>
               </label>
               {referenceImages.length > 0 && (
                 <button
                   onClick={() => setReferenceImages([])}
-                  className="text-[10px] text-ink-2 hover:text-danger"
+                  className="text-meta text-ink-2 hover:text-danger"
                 >
                   清空
                 </button>
@@ -309,7 +309,7 @@ export function ImageGenView() {
               }`}
             >
               <Upload size={18} className="text-ink-2" />
-              <span className="text-center text-[11px] text-ink-2">
+              <span className="text-center text-ui text-ink-2">
                 点击 / 拖拽 / 粘贴添加图片
               </span>
               <input
@@ -366,7 +366,7 @@ export function ImageGenView() {
               </button>
             </div>
             {!imageModel && (
-              <p className="text-[11px] text-danger">
+              <p className="text-ui text-danger">
                 未配置图像模型，请在设置 → 模型设置中配置
               </p>
             )}
@@ -383,7 +383,7 @@ export function ImageGenView() {
                   <button
                     key={key}
                     onClick={() => setCustomSize(key)}
-                    className={`rounded-md border px-1 py-1.5 text-[11px] transition-colors ${
+                    className={`rounded-md border px-1 py-1.5 text-ui transition-colors ${
                       active
                         ? "border-[var(--cf-accent)] bg-panel text-ink"
                         : "border-line bg-panel text-ink-2 hover:bg-panel-2"
@@ -407,9 +407,9 @@ export function ImageGenView() {
                 }}
                 placeholder="宽x高"
                 spellCheck={false}
-                className="flex-1 rounded-md border border-line bg-panel px-2 py-1 text-xs text-ink outline-none placeholder:text-ink-2 focus:border-[var(--cf-text-2)]"
+                className="flex-1 rounded-md border border-line bg-panel px-2 py-1 text-xs text-ink outline-none placeholder:text-ink-2 focus:border-accent"
               />
-              <span className="text-[10px] text-ink-2">自定义</span>
+              <span className="text-meta text-ink-2">自定义</span>
             </div>
           </div>
 
@@ -440,7 +440,7 @@ export function ImageGenView() {
           </button>
           <button
             onClick={switchToChat}
-            className="mt-2 w-full text-center text-[11px] text-ink-2 hover:text-ink hover:underline"
+            className="mt-2 w-full text-center text-ui text-ink-2 hover:text-ink hover:underline"
           >
             ← 返回对话模式
           </button>
@@ -466,7 +466,7 @@ export function ImageGenView() {
                 className="max-h-full max-w-full object-contain"
               />
               <div className="pointer-events-none absolute inset-0 flex items-start justify-end p-2 opacity-0 transition-opacity group-hover:opacity-100">
-                <span className="rounded-btn bg-panel px-2 py-1 text-[11px] text-ink shadow-sm">
+                <span className="rounded-btn bg-panel px-2 py-1 text-ui text-ink shadow-sm">
                   <Maximize2 size={11} className="inline align-text-bottom" /> 点击预览
                 </span>
               </div>
@@ -476,7 +476,7 @@ export function ImageGenView() {
               <p className="min-w-0 flex-1 truncate text-xs text-ink-2" title={selected.prompt}>
                 {selected.prompt}
                 {selected.sizeLabel && (
-                  <span className="ml-2 text-[10px] opacity-70">{selected.sizeLabel}</span>
+                  <span className="ml-2 text-meta opacity-70">{selected.sizeLabel}</span>
                 )}
               </p>
               <div className="flex shrink-0 items-center gap-1">

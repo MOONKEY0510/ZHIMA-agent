@@ -151,7 +151,7 @@ function StreamingTail({ text, caret }: { text: string; caret: boolean }) {
     return (
       <pre>
         <div className="flex items-center border-b border-line px-3 py-1.5">
-          <span className="text-[11px] uppercase tracking-wide text-ink-2">
+          <span className="text-ui uppercase tracking-wide text-ink-2">
             {language || "code"}
           </span>
         </div>

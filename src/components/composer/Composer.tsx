@@ -983,7 +983,7 @@ export function Composer() {
                     onChange={(e) => setSkillQuery(e.target.value)}
                     placeholder="搜索技能"
                     spellCheck={false}
-                    className="w-full rounded-btn border border-line bg-panel-2 px-2 py-1 text-ui text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-[var(--cf-text-2)]"
+                    className="w-full rounded-btn border border-line bg-panel-2 px-2 py-1 text-ui text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-accent"
                   />
                 </div>
                 <div className="max-h-60 overflow-y-auto p-1">
@@ -1216,10 +1216,10 @@ export function ToolsPanel({
   return (
     <div className="mb-1.5 max-h-[min(288px,58vh)] overflow-y-auto rounded-btn border border-line bg-panel p-2 shadow-lg">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[11px] font-medium text-ink">Agent 工具</p>
+        <p className="text-ui font-medium text-ink">Agent 工具</p>
         <div className="flex items-center gap-2">
           {tools && (
-            <span className="text-[10px] text-ink-2">
+            <span className="text-meta text-ink-2">
               {tools.length} 个工具 · {confirmCount} 个需确认 · {disabledCount} 个已禁用
             </span>
           )}
@@ -1238,8 +1238,8 @@ export function ToolsPanel({
       {/* Master toggle */}
       <div className="mt-1.5 flex items-center justify-between rounded-btn border border-line bg-panel-2 px-2 py-1.5">
         <div className="min-w-0">
-          <p className="text-[11px] text-ink">启用 Agent 工具</p>
-          <p className="truncate text-[10px] text-ink-2">
+          <p className="text-ui text-ink">启用 Agent 工具</p>
+          <p className="truncate text-meta text-ink-2">
             {enabled ? "模型可自动调用下方工具" : "模型只会直接回答，不会调用工具"}
           </p>
         </div>
@@ -1283,9 +1283,9 @@ export function ToolsPanel({
                 <Icon size={13} className="mt-0.5 shrink-0 text-accent" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
-                    <span className="truncate text-[11px] text-ink">{tool.name}</span>
+                    <span className="truncate text-ui text-ink">{tool.name}</span>
                     <span
-                      className={`shrink-0 rounded px-1 py-px text-[9px] ${
+                      className={`shrink-0 rounded px-1 py-px text-meta ${
                         risk.tone === "warn"
                           ? "bg-[var(--cf-warn-bg,var(--cf-danger-weak,#fde))] text-[var(--cf-danger)]"
                           : "bg-panel-2 text-ink-2"
@@ -1295,7 +1295,7 @@ export function ToolsPanel({
                     </span>
                     {policyText && (
                       <span
-                        className={`shrink-0 rounded px-1 py-px text-[9px] ${
+                        className={`shrink-0 rounded px-1 py-px text-meta ${
                           disabled
                             ? "bg-panel-2 text-ink-2"
                             : "bg-[var(--cf-warn-bg,var(--cf-danger-weak,#fde))] text-[var(--cf-danger)]"
@@ -1305,14 +1305,14 @@ export function ToolsPanel({
                       </span>
                     )}
                   </div>
-                  <p className="mt-0.5 text-[10px] leading-4 text-ink-2">{tool.description}</p>
+                  <p className="mt-0.5 text-meta leading-4 text-ink-2">{tool.description}</p>
                 </div>
               </div>
             );
           })}
         </div>
       ) : (
-        <p className="py-3 text-center text-[10px] text-ink-2">正在加载工具列表…</p>
+        <p className="py-3 text-center text-meta text-ink-2">正在加载工具列表…</p>
       )}
     </div>
   );

@@ -649,7 +649,7 @@ export function HistorySidebar() {
             onChange={(e) => setPromptValue(e.target.value)}
             rows={4}
             placeholder="此会话专属的 AI 角色设定，留空则使用全局默认系统提示词。"
-            className="w-full resize-none rounded-btn border border-line bg-panel-2 px-2 py-1.5 text-ui leading-5 text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-[var(--cf-text-2)]"
+            className="w-full resize-none rounded-btn border border-line bg-panel-2 px-2 py-1.5 text-ui leading-5 text-ink outline-none transition-colors placeholder:text-ink-3 focus:border-accent"
           />
           <div className="mt-1.5 flex items-center gap-1.5">
             <button

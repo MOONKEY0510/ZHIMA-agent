@@ -120,9 +120,9 @@ export function AgentToolsTab() {
       {/* Tool list */}
       <div className="border-t border-line">
         <div className="flex items-center justify-between px-3 py-2">
-          <p className="text-[11px] font-medium text-ink">工具列表</p>
+          <p className="text-ui font-medium text-ink">工具列表</p>
           {tools && (
-            <span className="text-[10px] text-ink-2">
+            <span className="text-meta text-ink-2">
               {tools.length} 个工具 · {confirmCount} 个需确认 · {disabledCount} 个已禁用
             </span>
           )}
@@ -144,11 +144,11 @@ export function AgentToolsTab() {
                       <span className="text-xs font-medium text-ink">
                         {TOOL_NAMES[tool.name] ?? tool.name}
                       </span>
-                      <span className="rounded bg-panel-2 px-1.5 py-px text-[10px] text-ink-2">
+                      <span className="rounded bg-panel-2 px-1.5 py-px text-meta text-ink-2">
                         {tool.name}
                       </span>
                       <span
-                        className={`shrink-0 rounded px-1.5 py-px text-[10px] ${
+                        className={`shrink-0 rounded px-1.5 py-px text-meta ${
                           risk.tone === "warn"
                             ? "bg-[var(--cf-warn-bg,var(--cf-danger-weak,#fde))] text-[var(--cf-danger)]"
                             : "bg-panel-2 text-ink-2"
@@ -157,7 +157,7 @@ export function AgentToolsTab() {
                         {risk.text}
                       </span>
                     </div>
-                    <p className="mt-1 text-[11px] leading-4 text-ink-2">{tool.description}</p>
+                    <p className="mt-1 text-ui leading-4 text-ink-2">{tool.description}</p>
                   </div>
                   <div className="flex shrink-0 flex-col items-end">
                     <Dropdown
@@ -170,7 +170,7 @@ export function AgentToolsTab() {
                         label: option.label,
                       }))}
                     />
-                    <span className="mt-1 text-[10px] text-ink-2">
+                    <span className="mt-1 text-meta text-ink-2">
                       {POLICY_OPTIONS.find((o) => o.value === tool.policy)?.hint}
                     </span>
                   </div>
@@ -179,7 +179,7 @@ export function AgentToolsTab() {
             })}
           </ul>
         ) : (
-          <p className="py-6 text-center text-[11px] text-ink-2">正在加载工具列表…</p>
+          <p className="py-6 text-center text-ui text-ink-2">正在加载工具列表…</p>
         )}
       </div>
     </SettingsSection>

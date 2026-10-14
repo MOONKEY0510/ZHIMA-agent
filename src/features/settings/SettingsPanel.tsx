@@ -161,7 +161,7 @@ function Dropdown({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between gap-2 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-left text-sm text-ink outline-none transition-colors hover:bg-panel focus:border-[var(--cf-text-2)] disabled:opacity-40"
+        className="flex w-full items-center justify-between gap-2 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-left text-sm text-ink outline-none transition-colors hover:bg-panel focus:border-accent disabled:opacity-40"
       >
         <span className="truncate">{selected?.label ?? value}</span>
         <ChevronDown
@@ -391,10 +391,10 @@ function AssistantsSection() {
                 <span className="truncate font-medium">{a.name}</span>
                 {activeId === a.id && <Check size={12} className="shrink-0 text-success" />}
               </span>
-              <span className="line-clamp-2 text-[10px] leading-4 text-ink-2">
+              <span className="line-clamp-2 text-meta leading-4 text-ink-2">
                 {a.description || a.systemPrompt.slice(0, 40)}
               </span>
-              <span className="truncate text-[10px] text-ink-2/80">{modelLabel(a)}</span>
+              <span className="truncate text-meta text-ink-2/80">{modelLabel(a)}</span>
             </button>
             <span className="absolute right-1.5 top-1.5 flex items-center gap-0.5">
               <button
@@ -451,7 +451,7 @@ function AssistantsSection() {
       </div>
 
       <div className="flex items-center justify-between gap-2 px-3 py-2">
-        <p className="text-[11px] text-ink-2">
+        <p className="text-ui text-ink-2">
           内置助手可编辑并随时恢复默认；删除自定义助手后，其会话回到全局默认。
         </p>
         <button
@@ -463,7 +463,7 @@ function AssistantsSection() {
         </button>
       </div>
 
-      {error && <p className="px-4 pb-2 text-[11px] text-danger">{error}</p>}
+      {error && <p className="px-4 pb-2 text-ui text-danger">{error}</p>}
 
       {draft !== null && (
         <Modal
@@ -541,7 +541,7 @@ function AssistantForm({
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   return (
     <div className="space-y-3">
@@ -648,17 +648,17 @@ function AssistantForm({
             <span className="ml-1 text-accent">已设置 {Object.keys(policies).length} 项</span>
           )}
         </summary>
-        <p className="mt-1.5 text-[11px] leading-4 text-ink-2">
+        <p className="mt-1.5 text-ui leading-4 text-ink-2">
           未设置的跟随全局设置；与全局冲突时始终采用更严格的一项（全局禁用无法被助手放开）。
         </p>
         <div className="mt-2 space-y-1.5">
           {tools.length === 0 ? (
-            <p className="text-[11px] text-ink-2">正在加载工具列表…</p>
+            <p className="text-ui text-ink-2">正在加载工具列表…</p>
           ) : (
             tools.map((tool) => (
               <div key={tool.name} className="flex items-center gap-2">
                 <span
-                  className="min-w-0 flex-1 truncate text-[11px] text-ink"
+                  className="min-w-0 flex-1 truncate text-ui text-ink"
                   title={tool.description}
                 >
                   {tool.name}
@@ -751,7 +751,7 @@ function SystemPromptSection() {
           onChange={(e) => setValue(e.target.value)}
           placeholder="例如：你是一个简洁可靠的桌面助手，用中文回答。"
           rows={4}
-          className="w-full resize-none rounded-btn border border-line bg-panel-2 px-3 py-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]"
+          className="w-full resize-none rounded-btn border border-line bg-panel-2 px-3 py-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent"
         />
         <div className="mt-2 flex items-center justify-end gap-2">
           {value.trim() && (
@@ -837,7 +837,7 @@ function SkillsTab() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   const doImport = async () => {
     setNotice(null);
@@ -892,7 +892,7 @@ function SkillsTab() {
             type="button"
             disabled={busy}
             onClick={() => void doImport()}
-            className="rounded-btn border border-line px-2.5 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+            className="rounded-btn border border-line px-2.5 py-1 text-ui text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
           >
             导入技能
           </button>
@@ -900,7 +900,7 @@ function SkillsTab() {
             type="button"
             disabled={editing !== null}
             onClick={() => setEditing(newSkill())}
-            className="rounded-btn bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+            className="rounded-btn bg-accent px-2.5 py-1 text-ui font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
           >
             新建
           </button>
@@ -909,7 +909,7 @@ function SkillsTab() {
     >
       {notice && (
         <div
-          className={`mx-3 mb-2 whitespace-pre-line rounded-btn border px-2.5 py-1.5 text-[11px] leading-5 ${
+          className={`mx-3 mb-2 whitespace-pre-line rounded-btn border px-2.5 py-1.5 text-ui leading-5 ${
             notice.ok
               ? "border-line text-ink-2"
               : "border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--cf-danger)_8%,transparent)] text-danger"
@@ -951,9 +951,9 @@ function SkillsTab() {
             />
           </div>
           {skill.description && (
-            <p className="mt-1 text-[11px] text-ink-2">{skill.description}</p>
+            <p className="mt-1 text-ui text-ink-2">{skill.description}</p>
           )}
-          <p className="mt-1 text-[10px] text-ink-2">
+          <p className="mt-1 text-meta text-ink-2">
             {skill.triggers.length > 0
               ? `触发词：${skill.triggers.join("、")}`
               : "常驻技能：每次对话都会注入完整说明"}
@@ -963,7 +963,7 @@ function SkillsTab() {
               type="button"
               disabled={busy}
               onClick={() => setEditing({ ...skill })}
-              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel-2 disabled:opacity-40"
+              className="rounded-btn border border-line px-2 py-1 text-ui text-ink-2 transition-colors hover:bg-panel-2 disabled:opacity-40"
             >
               编辑
             </button>
@@ -977,7 +977,7 @@ function SkillsTab() {
                   await refresh();
                 })
               }
-              className="rounded-btn border border-line px-2 py-1 text-[11px] text-danger transition-colors hover:bg-panel-2 disabled:opacity-40"
+              className="rounded-btn border border-line px-2 py-1 text-ui text-danger transition-colors hover:bg-panel-2 disabled:opacity-40"
             >
               删除
             </button>
@@ -1018,7 +1018,7 @@ function SkillsTab() {
             <button
               type="button"
               onClick={() => setEditing(null)}
-              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel"
+              className="rounded-btn border border-line px-2 py-1 text-ui text-ink-2 transition-colors hover:bg-panel"
             >
               取消
             </button>
@@ -1032,7 +1032,7 @@ function SkillsTab() {
                   await refresh();
                 })
               }
-              className="rounded-btn bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="rounded-btn bg-accent px-2.5 py-1 text-ui font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               保存
             </button>
@@ -1088,7 +1088,7 @@ function ProxySection() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors focus:border-[var(--cf-text-2)]";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors focus:border-accent";
 
   return (
     <SettingsSection
@@ -1104,7 +1104,7 @@ function ProxySection() {
           spellCheck={false}
           className={inputCls}
         />
-        <p className="mt-1 text-[11px] text-ink-2">
+        <p className="mt-1 text-ui text-ink-2">
           支持 http://、https://、socks5:// 协议。留空则使用下面的系统代理选项。
         </p>
       </div>
@@ -1141,7 +1141,7 @@ function ProxySection() {
           {saving ? "应用中…" : saved ? "已应用" : "应用"}
         </button>
       </div>
-      {error && <p className="px-4 pb-2 text-[11px] text-danger">{error}</p>}
+      {error && <p className="px-4 pb-2 text-ui text-danger">{error}</p>}
     </SettingsSection>
   );
 }
@@ -1348,12 +1348,12 @@ function BackupSection() {
             {preview.skills > 0 ? ` · ${preview.skills} 个技能` : ""}
             {preview.images > 0 ? ` · ${preview.images} 张图片` : ""}
           </p>
-          <p className="mt-0.5 text-[11px] text-ink-2">
+          <p className="mt-0.5 text-ui text-ink-2">
             导出于 {new Date(preview.exportedAt).toLocaleString("zh-CN")}
           </p>
 
           <div className="mt-2 flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-1.5 text-[11px] text-ink">
+            <label className="flex items-center gap-1.5 text-ui text-ink">
               <input
                 type="radio"
                 checked={strategy === "merge"}
@@ -1362,7 +1362,7 @@ function BackupSection() {
               />
               合并（保留现有数据）
             </label>
-            <label className="flex items-center gap-1.5 text-[11px] text-ink">
+            <label className="flex items-center gap-1.5 text-ui text-ink">
               <input
                 type="radio"
                 checked={strategy === "replace"}
@@ -1374,7 +1374,7 @@ function BackupSection() {
           </div>
 
           {strategy === "replace" && (
-            <p className="mt-1.5 text-[11px] text-danger">
+            <p className="mt-1.5 text-ui text-danger">
               替换会删除当前全部会话、记忆与生成图片，且无法撤销。
             </p>
           )}
@@ -1386,14 +1386,14 @@ function BackupSection() {
                   type="button"
                   onClick={() => void confirmImport()}
                   disabled={busy !== null}
-                  className="rounded-btn bg-danger px-2.5 py-1 text-[11px] text-white transition-opacity hover:opacity-85 disabled:opacity-40"
+                  className="rounded-btn bg-danger px-2.5 py-1 text-ui text-white transition-opacity hover:opacity-85 disabled:opacity-40"
                 >
                   确认导入
                 </button>
                 <button
                   type="button"
                   onClick={() => setConfirming(false)}
-                  className="rounded-btn border border-line px-2.5 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel"
+                  className="rounded-btn border border-line px-2.5 py-1 text-ui text-ink-2 transition-colors hover:bg-panel"
                 >
                   取消
                 </button>
@@ -1403,7 +1403,7 @@ function BackupSection() {
                 <button
                   type="button"
                   onClick={() => setConfirming(true)}
-                  className="rounded-btn bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90"
+                  className="rounded-btn bg-accent px-2.5 py-1 text-ui font-medium text-accent-fg transition-opacity hover:opacity-90"
                 >
                   开始导入
                 </button>
@@ -1413,7 +1413,7 @@ function BackupSection() {
                     setPreview(null);
                     setPendingPath(null);
                   }}
-                  className="rounded-btn border border-line px-2.5 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel"
+                  className="rounded-btn border border-line px-2.5 py-1 text-ui text-ink-2 transition-colors hover:bg-panel"
                 >
                   取消
                 </button>
@@ -1424,7 +1424,7 @@ function BackupSection() {
       )}
 
       {message && (
-        <p className={`px-4 pb-2 text-[11px] ${message.ok ? "text-ink-2" : "text-danger"}`}>
+        <p className={`px-4 pb-2 text-ui ${message.ok ? "text-ink-2" : "text-danger"}`}>
           {message.text}
         </p>
       )}
@@ -1507,14 +1507,14 @@ function McpSection() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   return (
     <SettingsSection
       title="MCP 服务器"
       description="接入 Model Context Protocol 工具服务器（stdio）。其工具会出现在 Agent 工具列表中，且默认每次调用都需要确认。"
     >
-      <div className="mx-3 mb-2 rounded-btn border border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--cf-danger)_8%,transparent)] px-2.5 py-1.5 text-[11px] leading-5 text-danger">
+      <div className="mx-3 mb-2 rounded-btn border border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--cf-danger)_8%,transparent)] px-2.5 py-1.5 text-ui leading-5 text-danger">
         MCP 服务器会在本机执行任意代码（与你当前用户权限相同）。仅添加你信任来源的服务器。
       </div>
 
@@ -1522,7 +1522,7 @@ function McpSection() {
         <div key={server.id} className="mx-3 mb-2 rounded-btn border border-line bg-panel p-2.5">
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1 truncate text-xs text-ink">{server.name}</span>
-            <span className="shrink-0 text-[10px] text-ink-2">{server.tools.length} 个工具</span>
+            <span className="shrink-0 text-meta text-ink-2">{server.tools.length} 个工具</span>
             <Dropdown
               value={server.enabled ? "on" : "off"}
               onChange={(value) =>
@@ -1537,7 +1537,7 @@ function McpSection() {
               className="w-20 shrink-0"
             />
           </div>
-          <p className="mt-1 break-all font-mono text-[10px] text-ink-2">{server.commandLine}</p>
+          <p className="mt-1 break-all font-mono text-meta text-ink-2">{server.commandLine}</p>
 
           <div className="mt-1.5 flex items-center gap-1.5">
             <button
@@ -1549,14 +1549,14 @@ function McpSection() {
                   setToolsFor((prev) => ({ ...prev, [server.id]: tools }));
                 })
               }
-              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+              className="rounded-btn border border-line px-2 py-1 text-ui text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
             >
               测试连接
             </button>
             <button
               type="button"
               onClick={() => setEditing({ ...server })}
-              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel-2"
+              className="rounded-btn border border-line px-2 py-1 text-ui text-ink-2 transition-colors hover:bg-panel-2"
             >
               编辑
             </button>
@@ -1568,12 +1568,12 @@ function McpSection() {
                   apply(await deleteMcpServer(server.id));
                 })
               }
-              className="rounded-btn border border-line px-2 py-1 text-[11px] text-danger transition-colors hover:bg-panel-2 disabled:opacity-40"
+              className="rounded-btn border border-line px-2 py-1 text-ui text-danger transition-colors hover:bg-panel-2 disabled:opacity-40"
             >
               删除
             </button>
             {toolsFor[server.id] && (
-              <span className="text-[10px] text-ink-2">
+              <span className="text-meta text-ink-2">
                 发现 {toolsFor[server.id].length} 个工具
               </span>
             )}
@@ -1582,7 +1582,7 @@ function McpSection() {
           {toolsFor[server.id] && toolsFor[server.id].length > 0 && (
             <ul className="mt-1.5 space-y-0.5">
               {toolsFor[server.id].map((tool) => (
-                <li key={tool.qualified} className="truncate text-[10px] text-ink-2" title={tool.description}>
+                <li key={tool.qualified} className="truncate text-meta text-ink-2" title={tool.description}>
                   · {tool.toolName} → {tool.qualified}
                 </li>
               ))}
@@ -1592,7 +1592,7 @@ function McpSection() {
           {server.tools.length > 0 && !toolsFor[server.id] && (
             <ul className="mt-1.5 space-y-0.5">
               {server.tools.map((tool) => (
-                <li key={tool.qualified} className="truncate text-[10px] text-ink-2" title={tool.description}>
+                <li key={tool.qualified} className="truncate text-meta text-ink-2" title={tool.description}>
                   · {tool.qualified}
                 </li>
               ))}
@@ -1627,7 +1627,7 @@ function McpSection() {
             rows={2}
             placeholder={"参数，每行一个，例如：\n-y\n@modelcontextprotocol/server-filesystem\nD:\\docs"}
             spellCheck={false}
-            className={`${inputCls} resize-none font-mono text-[11px] leading-5`}
+            className={`${inputCls} resize-none font-mono text-ui leading-5`}
           />
           <textarea
             value={Object.entries(editing.env)
@@ -1653,13 +1653,13 @@ function McpSection() {
             rows={2}
             placeholder={"环境变量，每行 KEY=VALUE（明文保存，注意不要放长期密钥）"}
             spellCheck={false}
-            className={`${inputCls} resize-none font-mono text-[11px] leading-5`}
+            className={`${inputCls} resize-none font-mono text-ui leading-5`}
           />
           <div className="flex items-center justify-end gap-1.5">
             <button
               type="button"
               onClick={() => setEditing(null)}
-              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel"
+              className="rounded-btn border border-line px-2 py-1 text-ui text-ink-2 transition-colors hover:bg-panel"
             >
               取消
             </button>
@@ -1672,7 +1672,7 @@ function McpSection() {
                   setEditing(null);
                 })
               }
-              className="rounded-btn bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="rounded-btn bg-accent px-2.5 py-1 text-ui font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               保存并连接
             </button>
@@ -1686,7 +1686,7 @@ function McpSection() {
               onChange={(e) => setJsonDraft(e.target.value)}
               placeholder='JSON 快捷粘贴：{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","D:\\docs"]}'
               spellCheck={false}
-              className={`${inputCls} font-mono text-[11px]`}
+              className={`${inputCls} font-mono text-ui`}
             />
             <button
               type="button"
@@ -1708,7 +1708,7 @@ function McpSection() {
       )}
 
       {notice && (
-        <p className={`px-4 pb-2 text-[11px] ${notice.ok ? "text-ink-2" : "text-danger"}`}>
+        <p className={`px-4 pb-2 text-ui ${notice.ok ? "text-ink-2" : "text-danger"}`}>
           {notice.text}
         </p>
       )}
@@ -1785,7 +1785,7 @@ function KnowledgeSection() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   return (
     <SettingsSection
@@ -1823,7 +1823,7 @@ function KnowledgeSection() {
         </div>
       </FormRow>
 
-      <div className="flex items-center justify-between gap-2 px-3 pb-1 pt-2 text-[11px] text-ink-2">
+      <div className="flex items-center justify-between gap-2 px-3 pb-1 pt-2 text-ui text-ink-2">
         <span>
           共 {view?.documents ?? documents.length} 篇 · {view?.chunks ?? 0} 个片段
         </span>
@@ -1832,14 +1832,14 @@ function KnowledgeSection() {
             type="button"
             onClick={() => void addFile()}
             disabled={busy}
-            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-ui text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
           >
             {busy ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />} 导入文件
           </button>
           <button
             type="button"
             onClick={() => setPasteOpen((v) => !v)}
-            className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2"
+            className="rounded-btn border border-line px-2 py-1 text-ui text-ink transition-colors hover:bg-panel-2"
           >
             粘贴文本
           </button>
@@ -1883,7 +1883,7 @@ function KnowledgeSection() {
             <button
               type="button"
               onClick={() => setPasteOpen(false)}
-              className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink-2 transition-colors hover:bg-panel"
+              className="rounded-btn border border-line px-2 py-1 text-ui text-ink-2 transition-colors hover:bg-panel"
             >
               取消
             </button>
@@ -1898,7 +1898,7 @@ function KnowledgeSection() {
                   setPasteOpen(false);
                 })
               }
-              className="rounded-btn bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="rounded-btn bg-accent px-2.5 py-1 text-ui font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               入库
             </button>
@@ -1917,7 +1917,7 @@ function KnowledgeSection() {
               <span className="cf-provider-badge shrink-0">
                 {KB_SOURCE_LABELS[doc.sourceType] ?? doc.sourceType}
               </span>
-              <span className="shrink-0 text-[10px] text-ink-2">{doc.chunkCount} 片段</span>
+              <span className="shrink-0 text-meta text-ink-2">{doc.chunkCount} 片段</span>
               {confirmingId === doc.id ? (
                 <button
                   type="button"
@@ -1925,7 +1925,7 @@ function KnowledgeSection() {
                     void run("删除", () => deleteKbDocument(doc.id));
                     setConfirmingId(null);
                   }}
-                  className="shrink-0 text-[11px] text-danger"
+                  className="shrink-0 text-ui text-danger"
                 >
                   确认删除
                 </button>
@@ -1970,11 +1970,11 @@ function KnowledgeSection() {
         </div>
         {hits && (
           <div className="mt-1.5 space-y-1.5">
-            {hits.length === 0 && <p className="text-[11px] text-ink-2">没有命中片段</p>}
+            {hits.length === 0 && <p className="text-ui text-ink-2">没有命中片段</p>}
             {hits.map((hit, index) => (
               <div
                 key={`${hit.documentId}-${hit.seq}-${index}`}
-                className="rounded-btn border border-line bg-panel-2 px-2 py-1.5 text-[11px] leading-5"
+                className="rounded-btn border border-line bg-panel-2 px-2 py-1.5 text-ui leading-5"
               >
                 <p className="text-ink-2">
                   {hit.title} · 片段 {hit.seq + 1}
@@ -1987,7 +1987,7 @@ function KnowledgeSection() {
       </div>
 
       {notice && (
-        <p className={`px-4 pb-2 text-[11px] ${notice.ok ? "text-ink-2" : "text-danger"}`}>
+        <p className={`px-4 pb-2 text-ui ${notice.ok ? "text-ink-2" : "text-danger"}`}>
           {notice.text}
         </p>
       )}
@@ -2075,7 +2075,7 @@ function WebSearchSection() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   const hint = ENGINE_HINTS[engine] ?? ENGINE_HINTS.duckduckgo;
 
@@ -2113,14 +2113,14 @@ function WebSearchSection() {
               {showKey ? <EyeOff size={13} /> : <Eye size={13} />}
             </button>
           </div>
-          <p className="mt-1 text-[11px] text-ink-2">
+          <p className="mt-1 text-ui text-ink-2">
             保存在 Windows 凭据管理器中，不会写入配置文件。保存后可用下方「测试搜索」验证。
           </p>
           {hint.url && (
             <button
               type="button"
               onClick={() => void openUrl(hint.url!).catch(() => undefined)}
-              className="mt-1 flex items-center gap-1 text-[11px] text-accent transition-opacity hover:opacity-80"
+              className="mt-1 flex items-center gap-1 text-ui text-accent transition-opacity hover:opacity-80"
             >
               <ExternalLink size={11} />
               {hint.linkLabel}
@@ -2134,7 +2134,7 @@ function WebSearchSection() {
           <button
             type="button"
             onClick={() => setEngine("bocha")}
-            className="text-[11px] text-accent underline underline-offset-2 transition-opacity hover:opacity-80"
+            className="text-ui text-accent underline underline-offset-2 transition-opacity hover:opacity-80"
           >
             点此改用「博查」：国内直连、注册送免费额度（也可选 Tavily，每月 1000 次免费）
           </button>
@@ -2151,14 +2151,14 @@ function WebSearchSection() {
             spellCheck={false}
             className={inputCls}
           />
-          <p className="mt-1 text-[11px] text-ink-2">
+          <p className="mt-1 text-ui text-ink-2">
             需在实例的 settings.yml 中开启 JSON 输出（format: json）。
           </p>
         </div>
       )}
 
       {loaded && !ready && engine !== "duckduckgo" && (
-        <p className="px-4 pb-1 text-[11px] text-danger">
+        <p className="px-4 pb-1 text-ui text-danger">
           当前引擎尚未配置完成，联网搜索会返回错误提示。
         </p>
       )}
@@ -2189,14 +2189,14 @@ function WebSearchSection() {
             测试
           </button>
         </div>
-        {testError && <p className="mt-1.5 text-[11px] text-danger">{testError}</p>}
+        {testError && <p className="mt-1.5 text-ui text-danger">{testError}</p>}
         {testResult && (
           <div className="mt-1.5 space-y-1.5 rounded-btn border border-line bg-panel-2 p-2">
-            <p className="text-[11px] text-ink-2">
+            <p className="text-ui text-ink-2">
               {testResult.count} 条结果 · {testResult.elapsedMs} ms
             </p>
             {testResult.results.map((r, i) => (
-              <div key={i} className="min-w-0 text-[11px] leading-4">
+              <div key={i} className="min-w-0 text-ui leading-4">
                 <p className="truncate text-ink">{r.title || r.url}</p>
                 <p className="truncate text-ink-2">{r.snippet}</p>
               </div>
@@ -2216,7 +2216,7 @@ function WebSearchSection() {
           {saving ? "保存中…" : saved ? "已保存" : "保存"}
         </button>
       </div>
-      {error && <p className="px-4 pb-2 text-[11px] text-danger">{error}</p>}
+      {error && <p className="px-4 pb-2 text-ui text-danger">{error}</p>}
     </SettingsSection>
   );
 }
@@ -2350,7 +2350,7 @@ function ShortcutRecorder({ kind = "wake" }: { kind?: "wake" | "quick" }) {
       {kind === "quick" && (
         <button
           onClick={toggleEnabled}
-          className={`self-start rounded-btn px-2 py-0.5 text-[11px] transition-colors ${
+          className={`self-start rounded-btn px-2 py-0.5 text-ui transition-colors ${
             enabled
               ? "bg-accent text-accent-fg hover:opacity-90"
               : "border border-line text-ink-2 hover:bg-panel-2"
@@ -2602,7 +2602,7 @@ function MemorySection() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   return (
     <SettingsSection
@@ -2612,7 +2612,7 @@ function MemorySection() {
         editingId === null && (
           <button
             onClick={startAdd}
-            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2"
+            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-ui text-ink transition-colors hover:bg-panel-2"
           >
             <Plus size={11} />
             添加记忆
@@ -2620,7 +2620,7 @@ function MemorySection() {
         )
       }
     >
-      {error && <p className="px-4 pt-2 text-[11px] text-danger">{error}</p>}
+      {error && <p className="px-4 pt-2 text-ui text-danger">{error}</p>}
 
       {editingId !== null && (
         <div className="space-y-3 p-3">
@@ -2673,11 +2673,11 @@ function MemorySection() {
             <li key={m.id} className="cf-tool-item">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="rounded bg-panel-2 px-1.5 py-0.5 text-[10px] text-ink-2">
+                  <span className="rounded bg-panel-2 px-1.5 py-0.5 text-meta text-ink-2">
                     {CATEGORY_LABELS[m.category] ?? m.category}
                   </span>
                   {!m.enabled && (
-                    <span className="rounded bg-panel-2 px-1.5 py-0.5 text-[10px] text-danger">
+                    <span className="rounded bg-panel-2 px-1.5 py-0.5 text-meta text-danger">
                       已停用
                     </span>
                   )}
@@ -2718,7 +2718,7 @@ function MemorySection() {
         <div className="flex justify-end px-3 py-2">
           <button
             onClick={() => void clearAll()}
-            className="text-[11px] text-danger transition-colors hover:opacity-80"
+            className="text-ui text-danger transition-colors hover:opacity-80"
           >
             清空所有记忆
           </button>
@@ -2778,7 +2778,7 @@ function PresetSection() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   return (
     <SettingsSection
@@ -2850,7 +2850,7 @@ function PresetSection() {
             key={p.id}
             className="cf-provider-card flex items-center gap-2 py-2"
           >
-            <span className="shrink-0 rounded bg-panel-2 px-1.5 py-px font-mono text-[11px] text-accent">
+            <span className="shrink-0 rounded bg-panel-2 px-1.5 py-px font-mono text-ui text-accent">
               {p.command}
             </span>
             <span className="truncate text-xs text-ink">{p.name}</span>
@@ -2897,7 +2897,7 @@ function AboutSection() {
 
   return (
     <section className="mt-2 text-center">
-      <p className="text-[11px] leading-5 text-ink-2">
+      <p className="text-ui leading-5 text-ink-2">
         芝麻 v{version} · 全局快捷键唤起 / 隐藏
         <br />
         默认模型可随时在顶部模型选择器中切换

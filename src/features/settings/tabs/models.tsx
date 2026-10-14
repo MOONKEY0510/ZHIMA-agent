@@ -122,7 +122,7 @@ function ProviderList({
                     </button>
                     {confirmingId === p.id ? (
                       <button
-                        className="flex h-6 items-center gap-1 rounded-md bg-danger px-1.5 text-[11px] text-white"
+                        className="flex h-6 items-center gap-1 rounded-md bg-danger px-1.5 text-ui text-white"
                         onClick={() => void remove(p.id)}
                       >
                         确认删除
@@ -138,7 +138,7 @@ function ProviderList({
                     )}
                   </span>
                 </div>
-                <div className="mt-1 flex items-center gap-2 text-[11px] text-ink-2">
+                <div className="mt-1 flex items-center gap-2 text-ui text-ink-2">
                   <span className="truncate">{p.baseUrl}</span>
                   <span className="shrink-0">{p.models.length} 个模型</span>
                   <span
@@ -231,7 +231,7 @@ function ProviderForm({
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-[var(--cf-text-2)]";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   return (
     <div className="space-y-4">
@@ -455,7 +455,7 @@ function ModelManager({ provider }: { provider: ProviderView }) {
         <button
           onClick={() => void fetchCandidates()}
           disabled={fetching || adding || !provider.hasApiKey}
-          className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+          className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-ui text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
           title={provider.hasApiKey ? "从 /v1/models 拉取候选模型" : "需先配置 API Key"}
         >
           {fetching ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
@@ -471,7 +471,7 @@ function ModelManager({ provider }: { provider: ProviderView }) {
             if (e.key === "Enter") void addManual();
           }}
           placeholder="手工添加模型 ID，回车确认"
-          className="flex-1 rounded-btn border border-line bg-panel-2 px-2.5 py-1 text-xs text-ink outline-none placeholder:text-ink-2 focus:border-[var(--cf-text-2)]"
+          className="flex-1 rounded-btn border border-line bg-panel-2 px-2.5 py-1 text-xs text-ink outline-none placeholder:text-ink-2 focus:border-accent"
           spellCheck={false}
         />
         <button
@@ -486,7 +486,7 @@ function ModelManager({ provider }: { provider: ProviderView }) {
       {candidates && (
         <div className="mt-2 rounded-btn border border-line bg-panel-2/60 p-2">
           <div className="mb-1.5 flex items-center justify-between">
-            <p className="text-[11px] text-ink-2">
+            <p className="text-ui text-ink-2">
               上游发现 {candidates.length} 个模型，
               {freshCandidates.length === 0
                 ? "均已在配置中"
@@ -495,13 +495,13 @@ function ModelManager({ provider }: { provider: ProviderView }) {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setSelected(new Set(freshCandidates))}
-                className="text-[11px] text-ink hover:underline"
+                className="text-ui text-ink hover:underline"
               >
                 全选
               </button>
               <button
                 onClick={() => setSelected(new Set())}
-                className="text-[11px] text-ink hover:underline"
+                className="text-ui text-ink hover:underline"
               >
                 清空
               </button>
@@ -521,22 +521,22 @@ function ModelManager({ provider }: { provider: ProviderView }) {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="输入关键字模糊匹配，如 gpt-4 或 mini"
-              className="min-w-0 flex-1 rounded-btn border border-line bg-panel-2 px-2 py-1 text-[11px] text-ink outline-none placeholder:text-ink-2 focus:border-[var(--cf-text-2)]"
+              className="min-w-0 flex-1 rounded-btn border border-line bg-panel-2 px-2 py-1 text-ui text-ink outline-none placeholder:text-ink-2 focus:border-accent"
               spellCheck={false}
             />
             {terms.length > 0 && (
-              <span className="shrink-0 text-[10px] text-ink-2">
+              <span className="shrink-0 text-meta text-ink-2">
                 匹配 {matched.length} 个
               </span>
             )}
           </div>
 
           {freshCandidates.length === 0 ? (
-            <p className="py-2 text-center text-[11px] text-ink-2">
+            <p className="py-2 text-center text-ui text-ink-2">
               无需添加（上游模型都已存在）
             </p>
           ) : matched.length === 0 ? (
-            <p className="py-2 text-center text-[11px] text-ink-2">
+            <p className="py-2 text-center text-ui text-ink-2">
               没有匹配“{search.trim()}”的模型
             </p>
           ) : (
@@ -545,7 +545,7 @@ function ModelManager({ provider }: { provider: ProviderView }) {
                 {matched.map((id) => (
                   <label
                     key={id}
-                    className="flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] hover:bg-panel-2"
+                    className="flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-0.5 text-ui hover:bg-panel-2"
                   >
                     <input
                       type="checkbox"
@@ -561,7 +561,7 @@ function ModelManager({ provider }: { provider: ProviderView }) {
                 <button
                   onClick={() => void commitAdd()}
                   disabled={selected.size === 0 || adding}
-                  className="flex items-center gap-1 rounded-btn bg-accent px-2.5 py-1 text-[11px] text-accent-fg transition-opacity hover:opacity-85 disabled:opacity-40"
+                  className="flex items-center gap-1 rounded-btn bg-accent px-2.5 py-1 text-ui text-accent-fg transition-opacity hover:opacity-85 disabled:opacity-40"
                 >
                   {adding && <Loader2 size={11} className="animate-spin" />}
                   添加所选（{selected.size}）
@@ -570,7 +570,7 @@ function ModelManager({ provider }: { provider: ProviderView }) {
                   <button
                     onClick={selectAllMatched}
                     disabled={matched.length === 0}
-                    className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+                    className="rounded-btn border border-line px-2 py-1 text-ui text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
                     title={`勾选当前匹配到的 ${matched.length} 个模型`}
                   >
                     全选匹配项
@@ -578,7 +578,7 @@ function ModelManager({ provider }: { provider: ProviderView }) {
                 )}
                 <button
                   onClick={() => setCandidates(null)}
-                  className="rounded-btn border border-line px-2 py-1 text-[11px] text-ink transition-colors hover:bg-panel-2"
+                  className="rounded-btn border border-line px-2 py-1 text-ui text-ink transition-colors hover:bg-panel-2"
                 >
                   取消
                 </button>
@@ -624,11 +624,11 @@ function ModelManager({ provider }: { provider: ProviderView }) {
                   >
                     <span className="truncate text-ink">{m.displayName}</span>
                     {m.displayName !== m.modelKey && (
-                      <span className="truncate text-[10px] text-ink-2">{m.modelKey}</span>
+                      <span className="truncate text-meta text-ink-2">{m.modelKey}</span>
                     )}
                   </button>
                   {isDefault && (
-                    <span className="shrink-0 rounded bg-panel-2 px-1.5 py-px text-[10px] text-success">
+                    <span className="shrink-0 rounded bg-panel-2 px-1.5 py-px text-meta text-success">
                       默认
                     </span>
                   )}
@@ -671,7 +671,7 @@ function GenerationSection() {
   };
 
   const inputCls =
-    "w-20 rounded-btn border border-line bg-panel-2 px-2 py-1 text-xs text-ink outline-none focus:border-[var(--cf-text-2)] disabled:opacity-40";
+    "w-20 rounded-btn border border-line bg-panel-2 px-2 py-1 text-xs text-ink outline-none focus:border-accent disabled:opacity-40";
 
   return (
     <SettingsSection
@@ -735,7 +735,7 @@ function GenerationSection() {
       </div>
 
       {!tokensAuto && tokens < 16 && (
-        <p className="px-4 py-2 text-[11px] text-danger">
+        <p className="px-4 py-2 text-ui text-danger">
           最大输出长度过小，模型可能只返回几个字符。
         </p>
       )}
@@ -795,7 +795,7 @@ function VisionSection() {
 
       <div className="border-t border-line p-3">
         <p className="mb-1 text-xs font-medium text-ink">模型视觉能力标记</p>
-        <p className="mb-2 text-[11px] text-ink-2">
+        <p className="mb-2 text-ui text-ink-2">
           标记为“视觉”的模型将直接接收图片，无需通过视觉模型中转。
         </p>
         <div className="max-h-40 space-y-0.5 overflow-y-auto">
@@ -815,7 +815,7 @@ function VisionSection() {
               />
               <Eye size={13} className="text-accent/70" />
               <span className="truncate text-ink">{model.displayName}</span>
-              <span className="truncate text-[10px] text-ink-2">{provider.name}</span>
+              <span className="truncate text-meta text-ink-2">{provider.name}</span>
             </label>
           ))}
         </div>
