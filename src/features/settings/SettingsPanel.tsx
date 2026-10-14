@@ -167,7 +167,7 @@ function Dropdown({
         type="button"
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between gap-2 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-left text-sm text-ink outline-none transition-colors hover:bg-panel focus:border-accent disabled:opacity-40"
+        className="flex w-full items-center justify-between gap-2 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-left text-ui text-ink outline-none transition-colors hover:bg-panel focus:border-accent disabled:opacity-40"
       >
         <span className="truncate">{selected?.label ?? value}</span>
         <ChevronDown
@@ -185,7 +185,7 @@ function Dropdown({
                 onChange(option.value);
                 setOpen(false);
               }}
-              className={`block w-full px-2.5 py-1.5 text-left text-sm transition-colors ${
+              className={`block w-full px-2.5 py-1.5 text-left text-ui transition-colors ${
                 option.value === value
                   ? "bg-accent/15 text-accent"
                   : "text-ink hover:bg-panel-2"
@@ -396,7 +396,7 @@ function AssistantsSection() {
               title={a.description ?? undefined}
               className={`cf-template-card w-full ${activeId === a.id ? "is-active" : ""}`}
             >
-              <span className="flex items-center gap-1.5 text-xs text-ink">
+              <span className="flex items-center gap-1.5 text-meta text-ink">
                 <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-accent/10 text-accent">
                   <AssistantIcon icon={a.icon} size={13} />
                 </span>
@@ -469,7 +469,7 @@ function AssistantsSection() {
         <button
           type="button"
           onClick={() => setDraft(newDraft())}
-          className="flex shrink-0 items-center gap-1 rounded-btn border border-line px-2 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
+          className="flex shrink-0 items-center gap-1 rounded-btn border border-line px-2 py-1 text-meta text-ink transition-colors hover:bg-panel-2"
         >
           <Plus size={12} /> 新建助手
         </button>
@@ -553,12 +553,12 @@ function AssistantForm({
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-ui text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   return (
     <div className="space-y-3">
       <div>
-        <label className="mb-1 block text-xs text-ink-2">图标</label>
+        <label className="mb-1 block text-meta text-ink-2">图标</label>
         <div className="flex items-center gap-2">
           <div className="flex min-w-0 flex-1 flex-wrap gap-1">
             {ASSISTANT_ICON_KEYS.map((key) => {
@@ -591,7 +591,7 @@ function AssistantForm({
       </div>
 
       <div>
-        <label className="mb-1 block text-xs text-ink-2">名称</label>
+        <label className="mb-1 block text-meta text-ink-2">名称</label>
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -601,7 +601,7 @@ function AssistantForm({
       </div>
 
       <div>
-        <label className="mb-1 block text-xs text-ink-2">简介（可选）</label>
+        <label className="mb-1 block text-meta text-ink-2">简介（可选）</label>
         <input
           value={description}
           onChange={(e) => setDescription(e.target.value)}
@@ -611,7 +611,7 @@ function AssistantForm({
       </div>
 
       <div>
-        <label className="mb-1 block text-xs text-ink-2">系统提示词</label>
+        <label className="mb-1 block text-meta text-ink-2">系统提示词</label>
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -623,7 +623,7 @@ function AssistantForm({
 
       <div className="flex gap-2">
         <div className="min-w-0 flex-1">
-          <label className="mb-1 block text-xs text-ink-2">服务商</label>
+          <label className="mb-1 block text-meta text-ink-2">服务商</label>
           <Dropdown
             value={providerId}
             onChange={(value) => {
@@ -637,7 +637,7 @@ function AssistantForm({
           />
         </div>
         <div className="min-w-0 flex-1">
-          <label className="mb-1 block text-xs text-ink-2">模型</label>
+          <label className="mb-1 block text-meta text-ink-2">模型</label>
           <Dropdown
             value={modelKey}
             onChange={setModelKey}
@@ -654,7 +654,7 @@ function AssistantForm({
       </div>
 
       <details className="rounded-btn border border-line px-3 py-2">
-        <summary className="cursor-pointer text-xs text-ink-2">
+        <summary className="cursor-pointer text-meta text-ink-2">
           工具策略（可选）
           {Object.keys(policies).length > 0 && (
             <span className="ml-1 text-accent">已设置 {Object.keys(policies).length} 项</span>
@@ -704,7 +704,7 @@ function AssistantForm({
         <button
           type="button"
           onClick={onDone}
-          className="rounded-btn border border-line px-3 py-1.5 text-xs text-ink-2 transition-colors hover:bg-panel-2"
+          className="rounded-btn border border-line px-3 py-1.5 text-meta text-ink-2 transition-colors hover:bg-panel-2"
         >
           取消
         </button>
@@ -712,7 +712,7 @@ function AssistantForm({
           type="button"
           onClick={() => void submit()}
           disabled={saving || !name.trim() || !prompt.trim()}
-          className="flex items-center gap-1.5 rounded-btn bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+          className="flex items-center gap-1.5 rounded-btn bg-accent px-3 py-1.5 text-meta font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
         >
           {saving && <Loader2 size={12} className="animate-spin" />}
           保存
@@ -763,20 +763,20 @@ function SystemPromptSection() {
           onChange={(e) => setValue(e.target.value)}
           placeholder="例如：你是一个简洁可靠的桌面助手，用中文回答。"
           rows={4}
-          className="w-full resize-none rounded-btn border border-line bg-panel-2 px-3 py-2 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent"
+          className="w-full resize-none rounded-btn border border-line bg-panel-2 px-3 py-2 text-ui text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent"
         />
         <div className="mt-2 flex items-center justify-end gap-2">
           {value.trim() && (
             <button
               onClick={() => void clear()}
-              className="rounded-btn border border-line px-3 py-1 text-xs text-ink-2 transition-colors hover:bg-panel-2"
+              className="rounded-btn border border-line px-3 py-1 text-meta text-ink-2 transition-colors hover:bg-panel-2"
             >
               清除
             </button>
           )}
           <button
             onClick={() => void save()}
-            className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-xs font-medium text-accent-fg transition-colors hover:opacity-90"
+            className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-meta font-medium text-accent-fg transition-colors hover:opacity-90"
           >
             {saved && <Check size={12} />}
             {saved ? "已保存" : "保存"}
@@ -849,7 +849,7 @@ function SkillsTab() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-ui text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   const doImport = async () => {
     setNotice(null);
@@ -932,11 +932,11 @@ function SkillsTab() {
       )}
 
       {loading && (
-        <div className="px-4 py-6 text-center text-xs text-ink-2">正在加载技能…</div>
+        <div className="px-4 py-6 text-center text-meta text-ink-2">正在加载技能…</div>
       )}
 
       {!loading && skills.length === 0 && editing === null && (
-        <div className="px-4 py-6 text-center text-xs leading-6 text-ink-2">
+        <div className="px-4 py-6 text-center text-meta leading-6 text-ink-2">
           还没有技能。点击「导入技能」导入 SKILL.md / JSON / ZIP 文件，
           <br />
           或点击「新建」从头编写一个，例如「周报助手」。
@@ -946,7 +946,7 @@ function SkillsTab() {
       {skills.map((skill) => (
         <div key={skill.id} className="mx-3 mb-2 rounded-btn border border-line bg-panel p-2.5">
           <div className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-xs text-ink">{skill.name}</span>
+            <span className="min-w-0 flex-1 truncate text-meta text-ink">{skill.name}</span>
             <Dropdown
               value={skill.enabled ? "on" : "off"}
               onChange={(value) =>
@@ -1100,7 +1100,7 @@ function ProxySection() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors focus:border-accent";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-ui text-ink outline-none transition-colors focus:border-accent";
 
   return (
     <SettingsSection
@@ -1108,7 +1108,7 @@ function ProxySection() {
       description="通过本地代理转发 API 请求，可显著改善直连海外服务的速度与稳定性。"
     >
       <div className="p-3">
-        <label className="mb-1 block text-xs text-ink-2">代理地址</label>
+        <label className="mb-1 block text-meta text-ink-2">代理地址</label>
         <input
           value={url}
           onChange={(e) => setUrl(e.target.value)}
@@ -1139,7 +1139,7 @@ function ProxySection() {
               setUseSystem(false);
               void setProxy(null, false);
             }}
-            className="rounded-btn border border-line px-2.5 py-1 text-xs text-ink-2 transition-colors hover:bg-panel-2"
+            className="rounded-btn border border-line px-2.5 py-1 text-meta text-ink-2 transition-colors hover:bg-panel-2"
           >
             清除
           </button>
@@ -1147,7 +1147,7 @@ function ProxySection() {
         <button
           onClick={() => void save()}
           disabled={saving}
-          className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-xs font-medium text-accent-fg transition-colors hover:opacity-90 disabled:opacity-40"
+          className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-meta font-medium text-accent-fg transition-colors hover:opacity-90 disabled:opacity-40"
         >
           {saved && <Check size={12} />}
           {saving ? "应用中…" : saved ? "已应用" : "应用"}
@@ -1311,7 +1311,7 @@ function BackupSection() {
       description="导出/导入会话、记忆、技能与生成图片。备份中不包含 API Key，换机器后需要重新填写。"
     >
       <div className="space-y-2 px-3 pb-2 pt-1">
-        <label className="flex items-center gap-2 text-xs text-ink">
+        <label className="flex items-center gap-2 text-meta text-ink">
           <input
             type="checkbox"
             checked={includeMemories}
@@ -1320,7 +1320,7 @@ function BackupSection() {
           />
           包含长期记忆
         </label>
-        <label className="flex items-center gap-2 text-xs text-ink">
+        <label className="flex items-center gap-2 text-meta text-ink">
           <input
             type="checkbox"
             checked={includeImages}
@@ -1336,7 +1336,7 @@ function BackupSection() {
           type="button"
           onClick={() => void doExport()}
           disabled={busy !== null}
-          className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+          className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
         >
           {busy === "export" && <Loader2 size={12} className="animate-spin" />}
           导出备份…
@@ -1345,7 +1345,7 @@ function BackupSection() {
           type="button"
           onClick={() => void pickImportFile()}
           disabled={busy !== null}
-          className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+          className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
         >
           {busy === "import" && <Loader2 size={12} className="animate-spin" />}
           导入备份…
@@ -1354,7 +1354,7 @@ function BackupSection() {
 
       {preview && (
         <div className="mx-3 mb-2 rounded-btn border border-line bg-panel-2 p-2.5">
-          <p className="text-xs text-ink">
+          <p className="text-meta text-ink">
             该备份包含 {preview.conversations} 个会话 · {preview.messages} 条消息 ·{" "}
             {preview.memories} 条记忆
             {preview.skills > 0 ? ` · ${preview.skills} 个技能` : ""}
@@ -1519,7 +1519,7 @@ function McpSection() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-ui text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   return (
     <SettingsSection
@@ -1533,7 +1533,7 @@ function McpSection() {
       {servers.map((server) => (
         <div key={server.id} className="mx-3 mb-2 rounded-btn border border-line bg-panel p-2.5">
           <div className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-xs text-ink">{server.name}</span>
+            <span className="min-w-0 flex-1 truncate text-meta text-ink">{server.name}</span>
             <span className="shrink-0 text-meta text-ink-2">{server.tools.length} 个工具</span>
             <Dropdown
               value={server.enabled ? "on" : "off"}
@@ -1704,7 +1704,7 @@ function McpSection() {
               type="button"
               disabled={!jsonDraft.trim()}
               onClick={() => void applyJson()}
-              className="shrink-0 rounded-btn border border-line px-2.5 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+              className="shrink-0 rounded-btn border border-line px-2.5 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
             >
               解析
             </button>
@@ -1712,7 +1712,7 @@ function McpSection() {
           <button
             type="button"
             onClick={() => setEditing(emptyServer())}
-            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
+            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-meta text-ink transition-colors hover:bg-panel-2"
           >
             <Plus size={12} /> 手动添加服务器
           </button>
@@ -1797,7 +1797,7 @@ function KnowledgeSection() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-ui text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   return (
     <SettingsSection
@@ -1870,7 +1870,7 @@ function KnowledgeSection() {
           type="button"
           disabled={busy || !url.trim()}
           onClick={() => void run("导入网页", () => addKbUrl(url.trim()))}
-          className="shrink-0 rounded-btn border border-line px-2.5 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+          className="shrink-0 rounded-btn border border-line px-2.5 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
         >
           导入网页
         </button>
@@ -1923,7 +1923,7 @@ function KnowledgeSection() {
           {documents.map((doc) => (
             <div key={doc.id} className="flex items-center gap-2 bg-panel px-2.5 py-1.5">
               <FileText size={12} className="shrink-0 text-ink-2" />
-              <span className="min-w-0 flex-1 truncate text-xs text-ink" title={doc.sourceRef ?? doc.title}>
+              <span className="min-w-0 flex-1 truncate text-meta text-ink" title={doc.sourceRef ?? doc.title}>
                 {doc.title}
               </span>
               <span className="cf-provider-badge shrink-0">
@@ -1957,7 +1957,7 @@ function KnowledgeSection() {
       )}
 
       <div className="px-3 pb-2">
-        <label className="mb-1 block text-xs text-ink-2">检索测试</label>
+        <label className="mb-1 block text-meta text-ink-2">检索测试</label>
         <div className="flex items-center gap-2">
           <input
             value={query}
@@ -1975,7 +1975,7 @@ function KnowledgeSection() {
             type="button"
             disabled={busy || !query.trim()}
             onClick={() => void runSearch()}
-            className="shrink-0 rounded-btn border border-line px-2.5 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+            className="shrink-0 rounded-btn border border-line px-2.5 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
           >
             检索
           </button>
@@ -2087,7 +2087,7 @@ function WebSearchSection() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-ui text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   const hint = ENGINE_HINTS[engine] ?? ENGINE_HINTS.duckduckgo;
 
@@ -2107,7 +2107,7 @@ function WebSearchSection() {
 
       {needsKey && (
         <div className="px-3 pb-2">
-          <label className="mb-1 block text-xs text-ink-2">API Key</label>
+          <label className="mb-1 block text-meta text-ink-2">API Key</label>
           <div className="relative">
             <input
               value={apiKey}
@@ -2155,7 +2155,7 @@ function WebSearchSection() {
 
       {engine === "searxng" && (
         <div className="px-3 pb-2">
-          <label className="mb-1 block text-xs text-ink-2">实例地址</label>
+          <label className="mb-1 block text-meta text-ink-2">实例地址</label>
           <input
             value={searxUrl}
             onChange={(e) => setSearxUrl(e.target.value)}
@@ -2176,7 +2176,7 @@ function WebSearchSection() {
       )}
 
       <div className="px-3 pb-2 pt-1">
-        <label className="mb-1 block text-xs text-ink-2">测试搜索</label>
+        <label className="mb-1 block text-meta text-ink-2">测试搜索</label>
         <div className="flex items-center gap-2">
           <input
             value={testQuery}
@@ -2195,7 +2195,7 @@ function WebSearchSection() {
             type="button"
             onClick={() => void runTest()}
             disabled={testing || !ready}
-            className="flex shrink-0 items-center gap-1 rounded-btn border border-line px-3 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+            className="flex shrink-0 items-center gap-1 rounded-btn border border-line px-3 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
           >
             {testing && <Loader2 size={12} className="animate-spin" />}
             测试
@@ -2222,7 +2222,7 @@ function WebSearchSection() {
           type="button"
           onClick={() => void save()}
           disabled={saving || !loaded}
-          className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-xs font-medium text-accent-fg transition-colors hover:opacity-90 disabled:opacity-40"
+          className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-meta font-medium text-accent-fg transition-colors hover:opacity-90 disabled:opacity-40"
         >
           {saved && <Check size={12} />}
           {saving ? "保存中…" : saved ? "已保存" : "保存"}
@@ -2346,7 +2346,7 @@ function ShortcutRecorder({ kind = "wake" }: { kind?: "wake" | "quick" }) {
   return (
     <div className="flex w-full flex-col gap-1">
       <div className="flex items-center gap-2">
-        <span className="min-w-24 flex-1 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-center text-xs text-ink">
+        <span className="min-w-24 flex-1 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-center text-meta text-ink">
           {recording ? "按下新快捷键…" : current || (kind === "quick" ? "Alt+Q" : "Alt+Space")}
         </span>
         <button
@@ -2354,7 +2354,7 @@ function ShortcutRecorder({ kind = "wake" }: { kind?: "wake" | "quick" }) {
             setError(null);
             setRecording(!recording);
           }}
-          className="rounded-btn border border-line px-2.5 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2"
+          className="rounded-btn border border-line px-2.5 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2"
         >
           {recording ? "取消" : "重新录入"}
         </button>
@@ -2371,7 +2371,7 @@ function ShortcutRecorder({ kind = "wake" }: { kind?: "wake" | "quick" }) {
           {enabled ? "划词已启用" : "划词已停用"}
         </button>
       )}
-      {error && <p className="mt-1 text-xs text-danger">{error}</p>}
+      {error && <p className="mt-1 text-meta text-danger">{error}</p>}
     </div>
   );
 }
@@ -2406,8 +2406,8 @@ function GeneralTab() {
       <SettingsSection title="快捷键" description="唤起 / 隐藏应用的全局快捷键">
         <div className="cf-form-row items-start">
           <div className="flex-1">
-            <p className="text-sm font-medium text-ink">唤起快捷键</p>
-            <p className="mt-0.5 text-xs text-ink-2">
+            <p className="text-ui font-medium text-ink">唤起快捷键</p>
+            <p className="mt-0.5 text-meta text-ink-2">
               录入后立即生效并保存；若与系统或其他软件冲突会提示失败。Esc 取消录入。
             </p>
           </div>
@@ -2418,8 +2418,8 @@ function GeneralTab() {
 
         <div className="cf-form-row items-start">
           <div className="flex-1">
-            <p className="text-sm font-medium text-ink">划词助手快捷键</p>
-            <p className="mt-0.5 text-xs text-ink-2">
+            <p className="text-ui font-medium text-ink">划词助手快捷键</p>
+            <p className="mt-0.5 text-meta text-ink-2">
               在任意程序里选中文本后按此快捷键：自动复制取词、唤起窗口并给出翻译 /
               解释 / 总结等动作。管理员权限（UAC 提升）的窗口无法取词，这是 Windows 限制。
             </p>
@@ -2472,13 +2472,13 @@ function GeneralTab() {
             <>
               <button
                 onClick={() => setConfirming(false)}
-                className="rounded-btn border border-line px-3 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
+                className="rounded-btn border border-line px-3 py-1 text-meta text-ink transition-colors hover:bg-panel-2"
               >
                 取消
               </button>
               <button
                 onClick={() => void clearData()}
-                className="rounded-btn bg-danger px-3 py-1 text-xs text-white transition-opacity hover:opacity-85"
+                className="rounded-btn bg-danger px-3 py-1 text-meta text-white transition-opacity hover:opacity-85"
               >
                 确认清空全部会话
               </button>
@@ -2486,7 +2486,7 @@ function GeneralTab() {
           ) : (
             <button
               onClick={() => setConfirming(true)}
-              className="rounded-btn border border-line px-3 py-1 text-xs text-danger transition-colors hover:bg-panel-2"
+              className="rounded-btn border border-line px-3 py-1 text-meta text-danger transition-colors hover:bg-panel-2"
             >
               {cleared ? "已清空" : "清空全部会话数据…"}
             </button>
@@ -2640,7 +2640,7 @@ function MemorySection() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-ui text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   return (
     <SettingsSection
@@ -2663,7 +2663,7 @@ function MemorySection() {
       {editingId !== null && (
         <div className="space-y-3 p-3">
           <div>
-            <label className="mb-1 block text-xs text-ink-2">类别</label>
+            <label className="mb-1 block text-meta text-ink-2">类别</label>
             <Dropdown
               value={draftCategory}
               onChange={(val) => setDraftCategory(val)}
@@ -2674,7 +2674,7 @@ function MemorySection() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-ink-2">内容</label>
+            <label className="mb-1 block text-meta text-ink-2">内容</label>
             <textarea
               value={draftContent}
               onChange={(e) => setDraftContent(e.target.value)}
@@ -2686,13 +2686,13 @@ function MemorySection() {
           <div className="flex items-center justify-end gap-2">
             <button
               onClick={() => setEditingId(null)}
-              className="rounded-btn border border-line px-3 py-1 text-xs text-ink-2 transition-colors hover:bg-panel-2"
+              className="rounded-btn border border-line px-3 py-1 text-meta text-ink-2 transition-colors hover:bg-panel-2"
             >
               取消
             </button>
             <button
               onClick={() => void save()}
-              className="rounded-btn bg-accent px-3 py-1 text-xs font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-50"
+              className="rounded-btn bg-accent px-3 py-1 text-meta font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-50"
               disabled={!draftContent.trim()}
             >
               保存
@@ -2702,9 +2702,9 @@ function MemorySection() {
       )}
 
       {!loaded ? (
-        <p className="px-4 py-6 text-xs text-ink-2">加载中…</p>
+        <p className="px-4 py-6 text-meta text-ink-2">加载中…</p>
       ) : memories.length === 0 ? (
-        <p className="px-4 py-6 text-xs text-ink-2">暂无记忆。</p>
+        <p className="px-4 py-6 text-meta text-ink-2">暂无记忆。</p>
       ) : (
         <ul>
           {memories.map((m) => (
@@ -2720,7 +2720,7 @@ function MemorySection() {
                     </span>
                   )}
                 </div>
-                <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink">
+                <p className="mt-1 whitespace-pre-wrap break-words text-ui text-ink">
                   {m.content}
                 </p>
               </div>
@@ -2816,7 +2816,7 @@ function PresetSection() {
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-ui text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   return (
     <SettingsSection
@@ -2826,7 +2826,7 @@ function PresetSection() {
         editingId === null && (
           <button
             onClick={startAdd}
-            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
+            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-meta text-ink transition-colors hover:bg-panel-2"
           >
             <Plus size={12} /> 添加
           </button>
@@ -2836,7 +2836,7 @@ function PresetSection() {
       {editingId !== null && (
         <div className="space-y-3 p-3">
           <div>
-            <label className="mb-1 block text-xs text-ink-2">名称</label>
+            <label className="mb-1 block text-meta text-ink-2">名称</label>
             <input
               value={draftName}
               onChange={(e) => setDraftName(e.target.value)}
@@ -2845,7 +2845,7 @@ function PresetSection() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-ink-2">触发指令</label>
+            <label className="mb-1 block text-meta text-ink-2">触发指令</label>
             <input
               value={draftCommand}
               onChange={(e) => setDraftCommand(e.target.value)}
@@ -2855,7 +2855,7 @@ function PresetSection() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-ink-2">提示词内容</label>
+            <label className="mb-1 block text-meta text-ink-2">提示词内容</label>
             <textarea
               value={draftContent}
               onChange={(e) => setDraftContent(e.target.value)}
@@ -2867,14 +2867,14 @@ function PresetSection() {
           <div className="flex items-center justify-end gap-2">
             <button
               onClick={() => setEditingId(null)}
-              className="rounded-btn border border-line px-3 py-1 text-xs text-ink-2 transition-colors hover:bg-panel-2"
+              className="rounded-btn border border-line px-3 py-1 text-meta text-ink-2 transition-colors hover:bg-panel-2"
             >
               取消
             </button>
             <button
               onClick={() => void save()}
               disabled={!draftName.trim() || !draftCommand.trim() || !draftContent.trim()}
-              className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-xs font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-meta font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               <Check size={12} /> 保存
             </button>
@@ -2891,7 +2891,7 @@ function PresetSection() {
             <span className="shrink-0 rounded bg-panel-2 px-1.5 py-px font-mono text-ui text-accent">
               {p.command}
             </span>
-            <span className="truncate text-xs text-ink">{p.name}</span>
+            <span className="truncate text-meta text-ink">{p.name}</span>
             <span className="ml-auto flex shrink-0 items-center gap-0.5">
               <button
                 onClick={() => startEdit(p)}
@@ -2911,7 +2911,7 @@ function PresetSection() {
           </div>
         ))}
         {presets.length === 0 && editingId === null && (
-          <p className="rounded-btn border border-dashed border-line px-3 py-3 text-center text-xs text-ink-2">
+          <p className="rounded-btn border border-dashed border-line px-3 py-3 text-center text-meta text-ink-2">
             暂无快捷指令，点击右上角"添加"创建
           </p>
         )}
@@ -2950,7 +2950,7 @@ function AboutSection() {
 function Notice({ ok, text }: { ok: boolean; text: string }) {
   return (
     <p
-      className={`rounded-btn border px-2.5 py-1.5 text-xs leading-5 ${
+      className={`rounded-btn border px-2.5 py-1.5 text-meta leading-5 ${
         ok
           ? "border-[color-mix(in_srgb,var(--cf-success)_35%,transparent)] text-success"
           : "border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] text-danger"
@@ -2987,7 +2987,7 @@ function Modal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <h3 className="text-sm font-semibold text-ink">{title}</h3>
+          <h3 className="text-ui font-semibold text-ink">{title}</h3>
           <button onClick={onClose} className="cf-icon-btn" title="关闭">
             <X size={14} />
           </button>
@@ -3047,10 +3047,10 @@ function FormRow({
   return (
     <div className={`cf-form-row ${className ?? ""}`}>
       <div className="flex-1">
-        <label htmlFor={htmlFor} className="block text-sm font-medium text-ink">
+        <label htmlFor={htmlFor} className="block text-ui font-medium text-ink">
           {label}
         </label>
-        {description && <p className="mt-0.5 text-xs text-ink-2">{description}</p>}
+        {description && <p className="mt-0.5 text-meta text-ink-2">{description}</p>}
       </div>
       <div className="flex w-44 shrink-0 justify-end">{children}</div>
     </div>

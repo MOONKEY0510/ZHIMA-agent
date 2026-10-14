@@ -11,7 +11,7 @@ export function DiagnosticsTab() {
     <>
       <section>
         <SectionHeader title="诊断信息" />
-        <p className="mb-3 text-xs leading-5 text-ink-2">
+        <p className="mb-3 text-meta leading-5 text-ink-2">
           查看最近的请求运行记录（脱敏，不含消息内容与密钥），用于排查对话失败等问题。
         </p>
         <DiagnosticsSection />
@@ -74,9 +74,9 @@ function DiagnosticsSection() {
     >
       {error && <p className="px-4 pt-2 text-ui text-danger">{error}</p>}
       {!loaded ? (
-        <p className="px-4 py-6 text-xs text-ink-2">加载中…</p>
+        <p className="px-4 py-6 text-meta text-ink-2">加载中…</p>
       ) : runs.length === 0 ? (
-        <p className="px-4 py-6 text-xs text-ink-2">暂无运行记录。</p>
+        <p className="px-4 py-6 text-meta text-ink-2">暂无运行记录。</p>
       ) : (
         <ul>
           {runs.map((r) => (
@@ -95,7 +95,7 @@ function DiagnosticsSection() {
                   >
                     {RUN_STATUS_LABELS[r.status] ?? r.status}
                   </span>
-                  <span className="truncate text-xs text-ink">{r.modelKey ?? "—"}</span>
+                  <span className="truncate text-meta text-ink">{r.modelKey ?? "—"}</span>
                 </div>
                 <p className="mt-0.5 text-ui text-ink-2">
                   {r.durationMs ? `耗时 ${(r.durationMs / 1000).toFixed(1)}s` : "耗时 —"}

@@ -84,7 +84,7 @@ export function UsageTab() {
     return (
       <section className="cf-settings-section">
         <div className="cf-settings-section-body">
-          <p className="px-4 py-6 text-xs leading-5 text-danger">{error}</p>
+          <p className="px-4 py-6 text-meta leading-5 text-danger">{error}</p>
         </div>
       </section>
     );
@@ -94,7 +94,7 @@ export function UsageTab() {
     return (
       <section className="cf-settings-section">
         <div className="cf-settings-section-body">
-          <p className="px-4 py-6 text-xs text-ink-2">加载中…</p>
+          <p className="px-4 py-6 text-meta text-ink-2">加载中…</p>
         </div>
       </section>
     );
@@ -221,7 +221,7 @@ function EmptyState() {
   return (
     <div className="px-4 py-8 text-center">
       <BarChart3 size={22} className="mx-auto text-ink-2" />
-      <p className="mt-2 text-xs text-ink">暂无用量数据</p>
+      <p className="mt-2 text-meta text-ink">暂无用量数据</p>
       <p className="mt-1 text-ui leading-5 text-ink-2">
         发一轮对话后，服务商返回的 token 用量会在这里累计；数据只保存在本机。
       </p>
@@ -255,7 +255,7 @@ function StatStrip({
         <div className="grid grid-cols-5 divide-x divide-line">
           {items.map((item) => (
             <div key={item.label} className="min-w-0 px-1.5 py-3 text-center">
-              <p className="truncate text-[13px] font-semibold tabular-nums text-ink" title={item.value}>
+              <p className="truncate text-ui font-semibold tabular-nums text-ink" title={item.value}>
                 {item.value}
               </p>
               <p className="mt-1 truncate text-meta text-ink-2">{item.label}</p>
@@ -417,7 +417,7 @@ function TokenTrend({ trend }: { trend: ModelTrend }) {
       : [];
 
   if (isEmpty) {
-    return <p className="px-4 py-14 text-center text-xs text-ink-2">该时间段暂无 token 记录。</p>;
+    return <p className="px-4 py-14 text-center text-meta text-ink-2">该时间段暂无 token 记录。</p>;
   }
 
   return (
@@ -554,7 +554,7 @@ function ModelDonutCard({
       </div>
       <div className="cf-settings-section-body">
         {slices.length === 0 ? (
-          <p className="px-4 py-6 text-xs text-ink-2">暂无模型用量。</p>
+          <p className="px-4 py-6 text-meta text-ink-2">暂无模型用量。</p>
         ) : (
           <div className="flex items-center gap-4 p-3">
             <svg

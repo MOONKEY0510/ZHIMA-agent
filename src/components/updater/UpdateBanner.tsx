@@ -67,7 +67,7 @@ export function UpdateBanner() {
           <>
             <div className="flex items-start gap-2">
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold text-ink">
+                <p className="text-meta font-semibold text-ink">
                   发现新版本 v{state.update.version}
                 </p>
                 {state.update.body && (
@@ -78,14 +78,14 @@ export function UpdateBanner() {
                 <div className="mt-2 flex items-center gap-2">
                   <button
                     onClick={() => void startDownload(state.update)}
-                    className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1.5 text-xs text-accent-fg transition-opacity hover:opacity-85"
+                    className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1.5 text-meta text-accent-fg transition-opacity hover:opacity-85"
                   >
                     <Download size={12} />
                     更新
                   </button>
                   <button
                     onClick={() => setState({ kind: "hidden" })}
-                    className="rounded-btn border border-line px-3 py-1.5 text-xs text-ink-2 transition-colors hover:bg-panel hover:text-ink"
+                    className="rounded-btn border border-line px-3 py-1.5 text-meta text-ink-2 transition-colors hover:bg-panel hover:text-ink"
                   >
                     稍后
                   </button>
@@ -105,7 +105,7 @@ export function UpdateBanner() {
           <div className="flex items-center gap-2">
             <Loader2 size={14} className="shrink-0 animate-spin text-accent" />
             <div className="min-w-0 flex-1">
-              <p className="text-xs text-ink">
+              <p className="text-meta text-ink">
                 {state.kind === "installing"
                   ? "正在安装并重启…"
                   : `正在下载更新 ${state.total ? `${formatBytes(state.received)} / ${formatBytes(state.total)}` : formatBytes(state.received)}`}
@@ -125,7 +125,7 @@ export function UpdateBanner() {
         {state.kind === "error" && (
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold text-danger">更新失败</p>
+              <p className="text-meta font-semibold text-danger">更新失败</p>
               <p className="mt-1 break-words text-ui leading-4 text-ink-2">
                 {state.message}
               </p>
@@ -210,14 +210,14 @@ export function UpdateSettingsCard() {
       <div className="cf-settings-section-body">
         <div className="cf-form-row">
           <div className="flex-1">
-            <p className="text-sm font-medium text-ink">检查更新</p>
-            <p className="mt-0.5 text-xs text-ink-2">点击按钮检查是否有可用新版本</p>
+            <p className="text-ui font-medium text-ink">检查更新</p>
+            <p className="mt-0.5 text-meta text-ink-2">点击按钮检查是否有可用新版本</p>
           </div>
           <div className="flex w-44 shrink-0 items-center justify-end">
             <button
               onClick={() => void doCheck()}
               disabled={checking || busy}
-              className="flex items-center gap-1.5 rounded-btn bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="flex items-center gap-1.5 rounded-btn bg-accent px-3 py-1.5 text-meta font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               {checking ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
               {checking ? "检查中…" : "检查更新"}
@@ -228,9 +228,9 @@ export function UpdateSettingsCard() {
         {update && (
           <div className="cf-form-row items-start">
             <div className="flex-1">
-              <p className="text-sm font-medium text-ink">发现新版本 v{update.version}</p>
+              <p className="text-ui font-medium text-ink">发现新版本 v{update.version}</p>
               {update.body && (
-                <p className="mt-0.5 whitespace-pre-wrap break-words text-xs leading-4 text-ink-2">
+                <p className="mt-0.5 whitespace-pre-wrap break-words text-meta leading-4 text-ink-2">
                   {update.body}
                 </p>
               )}
@@ -239,7 +239,7 @@ export function UpdateSettingsCard() {
               <button
                 onClick={() => void doInstall(update)}
                 disabled={busy}
-                className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+                className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
               >
                 {busy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
                 {busy ? "更新中…" : "立即更新"}

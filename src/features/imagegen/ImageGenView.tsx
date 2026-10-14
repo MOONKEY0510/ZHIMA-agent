@@ -255,7 +255,7 @@ export function ImageGenView() {
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-3 py-3">
           {/* Prompt */}
           <div className="flex flex-col gap-1.5">
-            <label className="flex items-center gap-1.5 text-xs font-medium text-ink">
+            <label className="flex items-center gap-1.5 text-meta font-medium text-ink">
               <Wand2 size={13} /> 画面描述
             </label>
             <textarea
@@ -265,14 +265,14 @@ export function ImageGenView() {
               onKeyDown={onKeyDown}
               rows={4}
               placeholder="描述你想生成的图片，Enter 生成，Shift+Enter 换行"
-              className="resize-none rounded-input border border-line bg-panel px-3 py-2.5 text-sm leading-5 text-ink outline-none placeholder:text-ink-2 focus:border-accent"
+              className="resize-none rounded-input border border-line bg-panel px-3 py-2.5 text-ui leading-5 text-ink outline-none placeholder:text-ink-2 focus:border-accent"
             />
           </div>
 
           {/* Reference images */}
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
-              <label className="flex items-center gap-1.5 text-xs font-medium text-ink">
+              <label className="flex items-center gap-1.5 text-meta font-medium text-ink">
                 <ImagePlus size={13} /> 参考图
                 <span className="text-meta font-normal text-ink-2">（可选，当前支持 1 张）</span>
               </label>
@@ -352,9 +352,9 @@ export function ImageGenView() {
 
           {/* Model */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-ink">生成模型</label>
+            <label className="text-meta font-medium text-ink">生成模型</label>
             <div className="flex items-center gap-2 rounded-input border border-line bg-panel px-3 py-2">
-              <span className="min-w-0 flex-1 truncate text-xs text-ink-2" title={modelLabel}>
+              <span className="min-w-0 flex-1 truncate text-meta text-ink-2" title={modelLabel}>
                 {modelLabel}
               </span>
               <button
@@ -374,7 +374,7 @@ export function ImageGenView() {
 
           {/* Size */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-ink">尺寸</label>
+            <label className="text-meta font-medium text-ink">尺寸</label>
             <div className="grid grid-cols-3 gap-1.5">
               {SIZE_OPTIONS.map((s) => {
                 const key = `${s.w}x${s.h}`;
@@ -407,7 +407,7 @@ export function ImageGenView() {
                 }}
                 placeholder="宽x高"
                 spellCheck={false}
-                className="flex-1 rounded-md border border-line bg-panel px-2 py-1 text-xs text-ink outline-none placeholder:text-ink-2 focus:border-accent"
+                className="flex-1 rounded-md border border-line bg-panel px-2 py-1 text-meta text-ink outline-none placeholder:text-ink-2 focus:border-accent"
               />
               <span className="text-meta text-ink-2">自定义</span>
             </div>
@@ -415,7 +415,7 @@ export function ImageGenView() {
 
           {/* Error */}
           {error && (
-            <p className="rounded-btn border border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] px-2.5 py-1.5 text-xs leading-5 text-danger">
+            <p className="rounded-btn border border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] px-2.5 py-1.5 text-meta leading-5 text-danger">
               {error}
             </p>
           )}
@@ -426,7 +426,7 @@ export function ImageGenView() {
           <button
             onClick={() => void generate()}
             disabled={!prompt.trim() || generating || !imageModel}
-            className="flex w-full items-center justify-center gap-1.5 rounded-input bg-accent py-2.5 text-sm font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+            className="flex w-full items-center justify-center gap-1.5 rounded-input bg-accent py-2.5 text-ui font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
           >
             {generating ? (
               <>
@@ -452,7 +452,7 @@ export function ImageGenView() {
         {generating ? (
           <div className="flex flex-col items-center gap-3 text-ink-2">
             <Loader2 size={32} className="animate-spin" />
-            <p className="text-xs">正在创作中，请稍候…</p>
+            <p className="text-meta">正在创作中，请稍候…</p>
           </div>
         ) : selected ? (
           <div className="flex max-h-full w-full max-w-3xl flex-col items-center gap-3">
@@ -473,7 +473,7 @@ export function ImageGenView() {
             </div>
 
             <div className="flex w-full max-w-2xl items-center gap-3 rounded-input border border-line bg-panel px-3 py-2 shadow-sm">
-              <p className="min-w-0 flex-1 truncate text-xs text-ink-2" title={selected.prompt}>
+              <p className="min-w-0 flex-1 truncate text-meta text-ink-2" title={selected.prompt}>
                 {selected.prompt}
                 {selected.sizeLabel && (
                   <span className="ml-2 text-meta opacity-70">{selected.sizeLabel}</span>
@@ -482,13 +482,13 @@ export function ImageGenView() {
               <div className="flex shrink-0 items-center gap-1">
                 <button
                   onClick={downloadSelected}
-                  className="flex items-center gap-1 rounded-btn border border-line px-2.5 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
+                  className="flex items-center gap-1 rounded-btn border border-line px-2.5 py-1 text-meta text-ink transition-colors hover:bg-panel-2"
                 >
                   <Download size={12} /> 下载
                 </button>
                 <button
                   onClick={() => void deleteSelected()}
-                  className="flex items-center gap-1 rounded-btn border border-line px-2.5 py-1 text-xs text-danger transition-colors hover:bg-panel-2"
+                  className="flex items-center gap-1 rounded-btn border border-line px-2.5 py-1 text-meta text-danger transition-colors hover:bg-panel-2"
                 >
                   <Trash2 size={12} /> 删除
                 </button>
@@ -501,8 +501,8 @@ export function ImageGenView() {
               <Sparkles size={28} className="opacity-40" />
             </div>
             <div className="max-w-xs space-y-1">
-              <p className="text-sm font-medium text-ink">图像生成工作台</p>
-              <p className="text-xs leading-5">
+              <p className="text-ui font-medium text-ink">图像生成工作台</p>
+              <p className="text-meta leading-5">
                 在左侧面板输入描述、上传参考图，即可开始创作。
                 <br />
                 支持文生图与参考图生图。

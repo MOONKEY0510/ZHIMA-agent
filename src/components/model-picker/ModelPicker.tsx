@@ -172,7 +172,7 @@ export function ModelPicker() {
                   }
                 }}
                 placeholder="搜索模型或服务商…"
-                className="flex-1 bg-transparent text-xs text-ink outline-none placeholder:text-ink-2"
+                className="flex-1 bg-transparent text-meta text-ink outline-none placeholder:text-ink-2"
               />
               <button
                 type="button"
@@ -190,7 +190,7 @@ export function ModelPicker() {
 
             <div className="flex-1 overflow-y-auto py-1">
               {providers.length === 0 && (
-                <p className="px-3 py-4 text-center text-xs text-ink-2">
+                <p className="px-3 py-4 text-center text-meta text-ink-2">
                   还没有服务商，请先在设置中添加
                 </p>
               )}
@@ -268,7 +268,7 @@ export function ModelPicker() {
                   setOpen(false);
                   openSettings();
                 }}
-                className="flex items-center gap-1.5 border-t border-line px-3 py-2 text-xs text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+                className="flex items-center gap-1.5 border-t border-line px-3 py-2 text-meta text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
               >
                 <Settings2 size={12} /> 管理服务商与模型…
               </button>
@@ -309,7 +309,7 @@ function ModelRow({
 }) {
   return (
     <div
-      className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-panel-2 ${
+      className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 text-meta transition-colors hover:bg-panel-2 ${
         selected ? "text-ink" : "text-ink-2"
       }`}
       onClick={onPick}

@@ -231,20 +231,20 @@ function ProviderForm({
   };
 
   const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
+    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-ui text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
 
   return (
     <div className="space-y-4">
       {!provider && (
         <div>
-          <label className="mb-1 block text-xs text-ink-2">常用服务商</label>
+          <label className="mb-1 block text-meta text-ink-2">常用服务商</label>
           <div className="flex flex-wrap gap-1.5">
             {PROVIDER_PRESETS.map((preset) => (
               <button
                 key={preset.id}
                 type="button"
                 onClick={() => applyPreset(preset)}
-                className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                className={`rounded-full border px-2.5 py-1 text-meta transition-colors ${
                   presetId === preset.id
                     ? "border-accent bg-accent text-accent-fg"
                     : "border-line text-ink-2 hover:bg-panel-2 hover:text-ink"
@@ -254,14 +254,14 @@ function ProviderForm({
               </button>
             ))}
           </div>
-          <p className="mt-1 text-xs text-ink-2">
+          <p className="mt-1 text-meta text-ink-2">
             选择后自动填入名称与 Base URL，也可以直接手动填写。
           </p>
         </div>
       )}
 
       <div>
-        <label className="mb-1 block text-xs text-ink-2">名称</label>
+        <label className="mb-1 block text-meta text-ink-2">名称</label>
         <input
           value={name}
           onChange={(e) => {
@@ -274,7 +274,7 @@ function ProviderForm({
       </div>
 
       <div>
-        <label className="mb-1 block text-xs text-ink-2">Base URL</label>
+        <label className="mb-1 block text-meta text-ink-2">Base URL</label>
         <input
           value={baseUrl}
           onChange={(e) => {
@@ -286,14 +286,14 @@ function ProviderForm({
           spellCheck={false}
         />
         {httpPlainWarning && (
-          <p className="mt-1 text-xs text-danger">
+          <p className="mt-1 text-meta text-danger">
             正在使用非本机的明文 HTTP，API Key 可能被窃听，建议改用 HTTPS。
           </p>
         )}
       </div>
 
       <div>
-        <label className="mb-1 block text-xs text-ink-2">API Key</label>
+        <label className="mb-1 block text-meta text-ink-2">API Key</label>
         <div className="relative">
           <input
             value={apiKey}
@@ -312,14 +312,14 @@ function ProviderForm({
             {showKey ? <EyeOff size={13} /> : <Eye size={13} />}
           </button>
         </div>
-        <p className="mt-1 text-xs text-ink-2">
+        <p className="mt-1 text-meta text-ink-2">
           保存在 Windows 凭据管理器中，不会写入配置文件。
         </p>
         {presetConsoleUrl && (
           <button
             type="button"
             onClick={() => void openUrl(presetConsoleUrl).catch(() => undefined)}
-            className="mt-1 flex items-center gap-1 text-xs text-accent transition-opacity hover:opacity-80"
+            className="mt-1 flex items-center gap-1 text-meta text-accent transition-opacity hover:opacity-80"
           >
             <ExternalLink size={11} />
             前往 {selectedPreset?.name} 获取 API Key
@@ -331,7 +331,7 @@ function ProviderForm({
         <button
           onClick={() => void test()}
           disabled={testing || (!baseUrl.trim() && !provider)}
-          className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+          className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
         >
           {testing && <Loader2 size={12} className="animate-spin" />}
           测试连接
@@ -339,7 +339,7 @@ function ProviderForm({
         <button
           onClick={() => void save()}
           disabled={saving || !baseUrl.trim()}
-          className="flex items-center gap-1.5 rounded-btn bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+          className="flex items-center gap-1.5 rounded-btn bg-accent px-3 py-1.5 text-meta font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
         >
           {saving && <Loader2 size={12} className="animate-spin" />}
           保存
@@ -451,7 +451,7 @@ function ModelManager({ provider }: { provider: ProviderView }) {
   return (
     <div className="border-t border-line pt-3">
       <div className="mb-2 flex items-center justify-between">
-        <p className="text-xs text-ink-2">模型（{provider.models.length}）</p>
+        <p className="text-meta text-ink-2">模型（{provider.models.length}）</p>
         <button
           onClick={() => void fetchCandidates()}
           disabled={fetching || adding || !provider.hasApiKey}
@@ -471,12 +471,12 @@ function ModelManager({ provider }: { provider: ProviderView }) {
             if (e.key === "Enter") void addManual();
           }}
           placeholder="手工添加模型 ID，回车确认"
-          className="flex-1 rounded-btn border border-line bg-panel-2 px-2.5 py-1 text-xs text-ink outline-none placeholder:text-ink-2 focus:border-accent"
+          className="flex-1 rounded-btn border border-line bg-panel-2 px-2.5 py-1 text-meta text-ink outline-none placeholder:text-ink-2 focus:border-accent"
           spellCheck={false}
         />
         <button
           onClick={() => void addManual()}
-          className="rounded-btn border border-line px-2 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
+          className="rounded-btn border border-line px-2 py-1 text-meta text-ink transition-colors hover:bg-panel-2"
         >
           添加
         </button>
@@ -597,7 +597,7 @@ function ModelManager({ provider }: { provider: ProviderView }) {
               return (
                 <li
                   key={m.modelKey}
-                  className="flex items-center gap-2 rounded-btn px-2 py-1.5 text-xs hover:bg-panel-2"
+                  className="flex items-center gap-2 rounded-btn px-2 py-1.5 text-meta hover:bg-panel-2"
                 >
                   <button
                     onClick={() => void toggleFavorite(provider.id, m.modelKey)}
@@ -794,7 +794,7 @@ function VisionSection() {
       </FormRow>
 
       <div className="border-t border-line p-3">
-        <p className="mb-1 text-xs font-medium text-ink">模型视觉能力标记</p>
+        <p className="mb-1 text-meta font-medium text-ink">模型视觉能力标记</p>
         <p className="mb-2 text-ui text-ink-2">
           标记为“视觉”的模型将直接接收图片，无需通过视觉模型中转。
         </p>
@@ -802,7 +802,7 @@ function VisionSection() {
           {allModels.map(({ provider, model }) => (
             <label
               key={`${provider.id}::${model.modelKey}`}
-              className="flex items-center gap-2 rounded-btn px-2 py-1.5 text-xs hover:bg-panel-2"
+              className="flex items-center gap-2 rounded-btn px-2 py-1.5 text-meta hover:bg-panel-2"
             >
               <input
                 type="checkbox"

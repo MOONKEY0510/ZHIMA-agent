@@ -88,8 +88,8 @@ function BackgroundImageSection({
     >
       <div className="cf-form-row items-start">
         <div className="flex-1">
-          <p className="text-sm font-medium text-ink">背景预览</p>
-          <p className="mt-0.5 text-xs text-ink-2">
+          <p className="text-ui font-medium text-ink">背景预览</p>
+          <p className="mt-0.5 text-meta text-ink-2">
             {image ? "已启用自定义背景" : "使用默认纯色背景"}
           </p>
         </div>
@@ -98,7 +98,7 @@ function BackgroundImageSection({
             {image ? (
               <img src={image} alt="自定义背景图预览" className="h-full w-full object-cover" />
             ) : (
-              <div className="flex h-full items-center justify-center gap-2 text-xs text-ink-2">
+              <div className="flex h-full items-center justify-center gap-2 text-meta text-ink-2">
                 <ImageIcon size={15} /> 尚未设置背景图
               </div>
             )}
@@ -108,7 +108,7 @@ function BackgroundImageSection({
             <button
               onClick={() => fileRef.current?.click()}
               disabled={uploading}
-              className="rounded-btn border border-line px-2.5 py-1 text-xs text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+              className="rounded-btn border border-line px-2.5 py-1 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
             >
               {uploading ? "上传中…" : image ? "更换背景图" : "上传背景图"}
             </button>
@@ -218,7 +218,7 @@ function AvatarSettingsSection() {
       />
     ) : (
       <span
-        className="flex h-10 w-10 shrink-0 items-center justify-center text-xs font-bold text-white"
+        className="flex h-10 w-10 shrink-0 items-center justify-center text-meta font-bold text-white"
         style={{ backgroundColor: color, borderRadius: radius }}
       >
         {label}
@@ -229,8 +229,8 @@ function AvatarSettingsSection() {
     <SettingsSection title="头像设置" description="统一设置 AI 助手和你自己的头像外观">
       <div className="cf-form-row items-start">
         <div className="flex-1">
-          <p className="text-sm font-medium text-ink">头像预览</p>
-          <p className="mt-0.5 text-xs text-ink-2">同时应用于 AI 助手与你自己</p>
+          <p className="text-ui font-medium text-ink">头像预览</p>
+          <p className="mt-0.5 text-meta text-ink-2">同时应用于 AI 助手与你自己</p>
         </div>
         <div className="flex w-44 shrink-0 gap-5">
           <div className="flex flex-col items-center gap-1.5">
@@ -291,7 +291,7 @@ function AvatarSettingsSection() {
 
       <div className="cf-form-row items-start">
         <div className="flex-1">
-          <p className="text-sm font-medium text-ink">AI 头像颜色</p>
+          <p className="text-ui font-medium text-ink">AI 头像颜色</p>
         </div>
         <div className="flex w-44 shrink-0 flex-wrap gap-2">
           {AVATAR_COLORS.map((c) => (
@@ -310,7 +310,7 @@ function AvatarSettingsSection() {
 
       <div className="cf-form-row items-start">
         <div className="flex-1">
-          <p className="text-sm font-medium text-ink">我的头像颜色</p>
+          <p className="text-ui font-medium text-ink">我的头像颜色</p>
         </div>
         <div className="flex w-44 shrink-0 flex-wrap gap-2">
           {AVATAR_COLORS.map((c) => (

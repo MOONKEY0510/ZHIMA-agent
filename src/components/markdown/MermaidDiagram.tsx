@@ -173,7 +173,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 
       <div className="p-3">
         {state.status === "loading" && (
-          <div className="flex items-center justify-center gap-2 py-6 text-xs text-ink-2">
+          <div className="flex items-center justify-center gap-2 py-6 text-meta text-ink-2">
             <Loader2 size={14} className="animate-spin" />
             正在渲染图表…
           </div>
@@ -188,7 +188,7 @@ export const MermaidDiagram = memo(function MermaidDiagram({
 
         {state.status === "error" && (
           <div>
-            <div className="flex items-start gap-1.5 rounded-lg border border-[var(--cf-danger)]/40 bg-[var(--cf-danger)]/5 px-2.5 py-2 text-[12px] text-[var(--cf-danger)]">
+            <div className="flex items-start gap-1.5 rounded-lg border border-[var(--cf-danger)]/40 bg-[var(--cf-danger)]/5 px-2.5 py-2 text-meta text-[var(--cf-danger)]">
               <AlertTriangle size={13} className="mt-0.5 shrink-0" />
               <div className="min-w-0">
                 <div className="font-medium">图表渲染失败</div>
@@ -310,7 +310,7 @@ function DiagramFullscreen({
         className="flex items-center justify-between border-b px-4 py-2"
         style={{ borderColor: chromeBorder }}
       >
-        <span className="text-xs" style={{ color: chromeText }}>
+        <span className="text-meta" style={{ color: chromeText }}>
           滚轮缩放 · 拖拽平移 · 按 Esc 退出
         </span>
         <div className="flex items-center gap-1">
@@ -324,7 +324,7 @@ function DiagramFullscreen({
           </FullscreenButton>
           <button
             onClick={reset}
-            className="min-w-14 rounded-md border px-2 py-1 text-xs tabular-nums transition-opacity hover:opacity-75"
+            className="min-w-14 rounded-md border px-2 py-1 text-meta tabular-nums transition-opacity hover:opacity-75"
             style={{ color: chromeText, borderColor: chromeBorder }}
             title="重置缩放"
           >
