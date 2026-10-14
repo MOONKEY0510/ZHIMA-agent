@@ -928,12 +928,12 @@ function SkillsTab() {
       title="技能"
       description="导入或编写技能（支持 Claude Skills 的 SKILL.md 格式）：对话命中触发词时，AI 会按技能说明执行。技能的名称与描述随每次对话发送；完整说明仅在触发时注入，以节省上下文。"
       action={
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             disabled={busy}
             onClick={() => void doImport()}
-            className="rounded-btn border border-line px-2.5 py-1 text-ui text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+            className="cf-btn-secondary"
           >
             导入技能
           </button>
@@ -941,7 +941,7 @@ function SkillsTab() {
             type="button"
             disabled={editing !== null}
             onClick={() => setEditing(newSkill())}
-            className="rounded-btn bg-accent px-2.5 py-1 text-ui font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+            className="cf-btn-primary"
           >
             新建
           </button>
@@ -950,7 +950,7 @@ function SkillsTab() {
     >
       {notice && (
         <div
-          className={`mx-3 mb-2 whitespace-pre-line rounded-btn border px-2.5 py-1.5 text-ui leading-5 ${
+          className={`mb-3 whitespace-pre-line rounded-btn border px-3 py-2 text-ui leading-5 ${
             notice.ok
               ? "border-line text-ink-2"
               : "border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--cf-danger)_8%,transparent)] text-danger"
@@ -961,14 +961,19 @@ function SkillsTab() {
       )}
 
       {loading && (
-        <div className="px-4 py-6 text-center text-meta text-ink-2">正在加载技能…</div>
+        <div className="py-10 text-center text-ui text-ink-2">正在加载技能…</div>
       )}
 
       {!loading && skills.length === 0 && editing === null && (
-        <div className="px-4 py-6 text-center text-meta leading-6 text-ink-2">
-          还没有技能。点击「导入技能」导入 SKILL.md / JSON / ZIP 文件，
-          <br />
-          或点击「新建」从头编写一个，例如「周报助手」。
+        <div className="py-12 text-center">
+          <p className="text-[0.9375rem] leading-6 text-ink">
+            还没有技能
+          </p>
+          <p className="mt-1.5 text-[0.8125rem] leading-5 text-ink-2">
+            点击「导入技能」导入 SKILL.md / JSON / ZIP 文件，
+            <br />
+            或点击「新建」从头编写一个，例如「周报助手」。
+          </p>
         </div>
       )}
 
@@ -1720,30 +1725,36 @@ function McpSection() {
           </div>
         </div>
       ) : (
-        <div className="mx-3 mb-2 space-y-2">
-          <div className="flex items-center gap-2">
-            <input
-              value={jsonDraft}
-              onChange={(e) => setJsonDraft(e.target.value)}
-              placeholder='JSON 快捷粘贴：{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","D:\\docs"]}'
-              spellCheck={false}
-              className={`${inputCls} font-mono text-ui`}
-            />
-            <button
-              type="button"
-              disabled={!jsonDraft.trim()}
-              onClick={() => void applyJson()}
-              className="shrink-0 rounded-btn border border-line px-2.5 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
-            >
-              解析
-            </button>
+        <div className="mb-3 space-y-3">
+          <div>
+            <label className="cf-field-label">从 JSON 粘贴</label>
+            <div className="flex items-center gap-2">
+              <input
+                value={jsonDraft}
+                onChange={(e) => setJsonDraft(e.target.value)}
+                placeholder='{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","D:\\docs"]}'
+                spellCheck={false}
+                className={`${inputCls} font-mono text-ui`}
+              />
+              <button
+                type="button"
+                disabled={!jsonDraft.trim()}
+                onClick={() => void applyJson()}
+                className="cf-btn-secondary shrink-0"
+              >
+                解析
+              </button>
+            </div>
+            <p className="mt-1 text-meta text-ink-3">
+              粘贴服务器配置 JSON，自动填充下方表单。
+            </p>
           </div>
           <button
             type="button"
             onClick={() => setEditing(emptyServer())}
-            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-meta text-ink transition-colors hover:bg-panel-2"
+            className="cf-btn-secondary"
           >
-            <Plus size={12} /> 手动添加服务器
+            <Plus size={13} /> 手动添加服务器
           </button>
         </div>
       )}

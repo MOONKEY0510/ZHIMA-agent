@@ -792,16 +792,16 @@ function VisionSection() {
         />
       </FormRow>
 
-      <div className="border-t border-line p-3">
-        <p className="mb-1 text-meta font-medium text-ink">模型视觉能力标记</p>
-        <p className="mb-2 text-ui text-ink-2">
+      <div className="border-t border-line px-0 py-3">
+        <p className="mb-1 text-[0.9375rem] font-medium leading-5 text-ink">模型视觉能力标记</p>
+        <p className="mb-3 text-[0.8125rem] leading-5 text-ink-2">
           标记为“视觉”的模型将直接接收图片，无需通过视觉模型中转。
         </p>
-        <div className="max-h-40 space-y-0.5 overflow-y-auto">
+        <div className="max-h-56 space-y-0 overflow-y-auto">
           {allModels.map(({ provider, model }) => (
             <label
               key={`${provider.id}::${model.modelKey}`}
-              className="flex items-center gap-2 rounded-btn px-2 py-1.5 text-meta hover:bg-panel-2"
+              className="flex cursor-pointer items-center gap-3 rounded-btn px-2 py-2 transition-colors hover:bg-hover"
             >
               <input
                 type="checkbox"
@@ -810,11 +810,13 @@ function VisionSection() {
                   await toggleVision(provider.id, model.modelKey);
                   await refresh();
                 }}
-                className="rounded border-line"
+                className="cf-checkbox"
               />
-              <Eye size={13} className="text-accent/70" />
-              <span className="truncate text-ink">{model.displayName}</span>
-              <span className="truncate text-meta text-ink-2">{provider.name}</span>
+              <Eye size={14} className="shrink-0 text-accent/70" />
+              <span className="min-w-0 flex-1 truncate text-[0.9375rem] leading-5 text-ink">
+                {model.displayName}
+              </span>
+              <span className="shrink-0 text-meta text-ink-3">{provider.name}</span>
             </label>
           ))}
         </div>
