@@ -320,7 +320,7 @@ const EmptyState = memo(function EmptyState() {
     <div ref={containerRef} className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
       <div className="flex flex-col items-center gap-1.5">
         <Sparkles size={compact ? 18 : 22} className="text-accent" />
-        <p className={`font-serif text-ink ${compact ? "text-title" : "text-display"}`}>
+        <p className={`font-display text-ink ${compact ? "text-title" : "text-display"}`}>
           {greeting()}
         </p>
         {!compact && (

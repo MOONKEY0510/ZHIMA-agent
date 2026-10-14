@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Zhima · 桌面悬浮窗 AI 助手架构",
+    "locale": "zh-CN",
+    "output": "zhima-architecture.html",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "chat-path", "label": "主对话链路", "focus": ["ui", "commands", "agent", "openai", "provider-api"], "note": "从悬浮窗提问到模型流式回答的完整路径。" },
+      { "id": "tool-path", "label": "Agent 工具与授权", "focus": ["agent", "tools", "mcp", "approval", "skills", "knowledge"], "note": "模型发起工具调用，经用户授权后由 Rust 本地执行。" },
+      { "id": "local-data", "label": "本地数据与隐私", "focus": ["sqlite", "keyring", "config", "ui"], "note": "会话、知识库、记忆全部留在本机，密钥进系统凭据管理器。" }
+    ]
+  },
+  "layout": { "mode": "grid", "cols": 6, "gapX": 40, "gapY": 40, "cellW": 160, "cellH": 90 },
+  "components": [
+    { "id": "user", "type": "external", "label": "用户", "sublabel": "Alt+Space / Alt+Q", "row": 1, "col": 0 },
+    { "id": "ui", "type": "frontend", "label": "React 前端", "sublabel": "悬浮窗 / 完整模式", "tag": "WebView2", "row": 1, "col": 1 },
+    { "id": "commands", "type": "backend", "label": "Tauri Commands", "sublabel": "80+ invoke 命令", "row": 1, "col": 2 },
+    { "id": "agent", "type": "backend", "label": "Agent 引擎", "sublabel": "上下文预算 · 工具循环", "tag": "Rust + Tokio", "row": 1, "col": 3 },
+    { "id": "openai", "type": "backend", "label": "OpenAI 适配层", "sublabel": "SSE 流式解析", "row": 0, "col": 4 },
+    { "id": "provider-api", "type": "cloud", "label": "模型服务商", "sublabel": "DeepSeek/Kimi/Ollama", "row": 0, "col": 5 },
+    { "id": "tools", "type": "backend", "label": "12 内置工具", "sublabel": "搜索/抓取/剪贴板/文档", "row": 1, "col": 4 },
+    { "id": "approval", "type": "security", "label": "工具授权", "sublabel": "三级授权 · 防泄漏", "row": 2, "col": 4 },
+    { "id": "mcp", "type": "messagebus", "label": "MCP 客户端", "sublabel": "stdio JSON-RPC 会话池", "row": 3, "col": 3 },
+    { "id": "skills", "type": "backend", "label": "技能系统", "sublabel": "触发词注入", "row": 3, "col": 2 },
+    { "id": "knowledge", "type": "database", "label": "知识库", "sublabel": "BM25 检索", "row": 2, "col": 0 },
+    { "id": "sqlite", "type": "database", "label": "SQLite (FTS5)", "sublabel": "会话/记忆/用量", "row": 4, "col": 1 },
+    { "id": "keyring", "type": "security", "label": "Windows 凭据管理器", "sublabel": "API Key 不落盘", "row": 4, "col": 3 },
+    { "id": "config", "type": "database", "label": "providers.json", "sublabel": "服务商与模型配置", "row": 4, "col": 0 }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Rust / Tauri 2 后端", "wraps": ["commands", "agent", "openai", "tools", "approval", "mcp", "skills", "keyring"] },
+    { "kind": "region", "label": "本机数据层", "wraps": ["sqlite", "config", "knowledge"] }
+  ],
+  "connections": [
+    { "id": "user-to-ui", "from": "user", "to": "ui", "label": "快捷键唤起", "variant": "emphasis" },
+    { "id": "ui-to-commands", "from": "ui", "to": "commands", "label": "invoke", "variant": "emphasis" },
+    { "id": "commands-to-agent", "from": "commands", "to": "agent", "variant": "emphasis" },
+    { "id": "agent-to-openai", "from": "agent", "to": "openai", "label": "Chat Completions", "variant": "emphasis" },
+    { "id": "openai-to-provider", "from": "openai", "to": "provider-api", "label": "SSE 流", "variant": "emphasis" },
+    { "id": "agent-to-tools", "from": "agent", "to": "tools" },
+    { "id": "tools-to-approval", "from": "tools", "to": "approval", "label": "敏感先确认", "variant": "security", "labelDy": 24 },
+    { "id": "approval-to-agent", "from": "approval", "to": "agent", "label": "授权后恢复", "variant": "dashed", "fromSide": "left", "toSide": "right", "labelDx": -60 },
+    { "id": "agent-to-mcp", "from": "agent", "to": "mcp", "label": "MCP 工具", "labelDy": 24 },
+    { "id": "agent-to-skills", "from": "agent", "to": "skills", "label": "技能注入 / BM25 检索" },
+    { "id": "commands-to-sqlite", "from": "commands", "to": "sqlite", "label": "历史/记忆/用量", "variant": "dashed", "labelDx": -40 }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "前端（React + WebView2）", "items": ["6.4 MB 安装包：不打包 Chromium", "悬浮窗 ↔ 完整模式，随唤随到", "Zustand 状态 + react-spring 动效"] },
+    { "dot": "emerald", "title": "Rust 后端（性能与隐私核心）", "items": ["SSE 流式解析：粘包/拆包/UTF-8 跨块", "工具调用 + 三级授权 + 数据流防泄漏", "MCP stdio 会话池，按需启动、闲置回收"] },
+    { "dot": "rose", "title": "本地优先的隐私设计", "items": ["会话/知识库/记忆全在 SQLite", "API Key 存 Windows 凭据管理器", "BM25 检索零外部依赖，不引向量模型"] }
+  ]
+}

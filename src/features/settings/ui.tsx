@@ -156,11 +156,11 @@ export function SettingsSection({
   return (
     <section className={`cf-settings-section ${className ?? ""}`}>
       <div className="cf-settings-section-header">
-        <div>
+        <div className="min-w-0 flex-1">
           <h2 className="cf-settings-section-title">{title}</h2>
           {description && <p className="cf-settings-section-desc">{description}</p>}
         </div>
-        {action}
+        {action && <div className="shrink-0">{action}</div>}
       </div>
       <div className="cf-settings-section-body">{children}</div>
     </section>
@@ -186,9 +186,9 @@ export function FormRow({
         <label htmlFor={htmlFor} className="block text-ui font-medium text-ink">
           {label}
         </label>
-        {description && <p className="mt-0.5 text-meta text-ink-2">{description}</p>}
+        {description && <p className="mt-1 text-meta text-ink-2">{description}</p>}
       </div>
-      <div className="flex w-44 shrink-0 justify-end">{children}</div>
+      <div className="flex shrink-0 items-center justify-end gap-2">{children}</div>
     </div>
   );
 }

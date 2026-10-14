@@ -138,13 +138,13 @@ export function AgentToolsTab() {
                   key={tool.name}
                   className={`cf-tool-item ${disabled ? "is-disabled" : ""}`}
                 >
-                  <Icon size={16} className="mt-0.5 shrink-0 text-accent" />
+                  <Icon size={15} className="mt-0.5 shrink-0 text-accent" />
                   <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-xs font-medium text-ink">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="text-ui font-medium text-ink">
                         {TOOL_NAMES[tool.name] ?? tool.name}
                       </span>
-                      <span className="rounded bg-panel-2 px-1.5 py-px text-meta text-ink-2">
+                      <span className="rounded bg-panel-2 px-1.5 py-px font-mono text-meta text-ink-2">
                         {tool.name}
                       </span>
                       <span
@@ -157,20 +157,20 @@ export function AgentToolsTab() {
                         {risk.text}
                       </span>
                     </div>
-                    <p className="mt-1 text-ui leading-4 text-ink-2">{tool.description}</p>
+                    <p className="mt-0.5 text-meta leading-4 text-ink-2">{tool.description}</p>
                   </div>
-                  <div className="flex shrink-0 flex-col items-end">
+                  <div className="flex shrink-0 flex-col items-end gap-0.5">
                     <Dropdown
                       value={tool.policy}
                       onChange={(val) => changePolicy(tool.name, val as ToolPolicy)}
-                      className="w-auto min-w-[5.5rem]"
+                      className="w-auto min-w-[6rem]"
                       title={POLICY_OPTIONS.find((o) => o.value === tool.policy)?.hint}
                       options={POLICY_OPTIONS.map((option) => ({
                         value: option.value,
                         label: option.label,
                       }))}
                     />
-                    <span className="mt-1 text-meta text-ink-2">
+                    <span className="text-meta text-ink-3">
                       {POLICY_OPTIONS.find((o) => o.value === tool.policy)?.hint}
                     </span>
                   </div>

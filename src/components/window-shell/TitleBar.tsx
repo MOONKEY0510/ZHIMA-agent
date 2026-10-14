@@ -166,7 +166,7 @@ export function TitleBar() {
             <MoreHorizontal size={15} className={exportBusy ? "animate-pulse" : undefined} />
           </button>
           {menuOpen && (
-            <div className="cf-menu-pop absolute right-0 top-8 z-50 w-44 overflow-hidden rounded-menu border border-line bg-panel p-1 shadow-menu">
+            <div className="cf-menu-pop absolute right-0 top-8 z-50 w-56 overflow-hidden rounded-menu border border-line bg-panel p-1 shadow-menu">
               {view === "chat" && messages.some((m) => m.content.length > 0) && (
                 <>
                   <p className={menuLabelCls}>导出</p>
@@ -279,7 +279,7 @@ function ThemeSwatch({ theme: t }: { theme: (typeof THEMES)[number] }) {
     <button
       onClick={() => void setTheme(t.value)}
       title={t.label}
-      className={`flex flex-col items-center gap-1 rounded-btn px-1 py-1.5 transition-colors hover:bg-hover ${
+      className={`flex min-w-0 flex-col items-center gap-1 rounded-btn px-1 py-1.5 transition-colors hover:bg-hover ${
         current === t.value ? "ring-1 ring-[var(--cf-accent)]" : ""
       }`}
     >
@@ -287,7 +287,7 @@ function ThemeSwatch({ theme: t }: { theme: (typeof THEMES)[number] }) {
         <span className="flex-1" style={{ backgroundColor: t.preview[0] }} />
         <span className="flex-1" style={{ backgroundColor: t.preview[1] }} />
       </span>
-      <span className="text-meta text-ink-2">{t.label}</span>
+      <span className="w-full truncate text-center text-meta text-ink-2">{t.label}</span>
     </button>
   );
 }

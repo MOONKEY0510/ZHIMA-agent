@@ -8,10 +8,12 @@ import {
   BarChart3,
   Check,
   ChevronDown,
+  Database,
   ExternalLink,
   Eye,
   EyeOff,
   FileText,
+  Globe,
   Loader2,
   Pencil,
   Plus,
@@ -19,6 +21,7 @@ import {
   RefreshCw,
   Settings as SettingsIcon,
   SlidersHorizontal,
+  Sparkles,
   Palette,
   Wrench,
   Bot,
@@ -120,7 +123,10 @@ type SettingsTab =
   | "usage"
   | "diagnostics"
   | "general"
-  | "persona";
+  | "persona"
+  | "context"
+  | "integrations"
+  | "data";
 
 /** Fully custom dropdown. The browser-native `<select>` popup cannot be
  *  styled consistently across platforms, so we render our own menu.
@@ -198,8 +204,11 @@ const TABS: { id: SettingsTab; label: string; icon: typeof SettingsIcon }[] = [
   { id: "models", label: "模型设置", icon: SlidersHorizontal },
   { id: "appearance", label: "外观行为", icon: Palette },
   { id: "persona", label: "角色与提示词", icon: UserCircle },
+  { id: "context", label: "上下文与记忆", icon: Sparkles },
   { id: "tools", label: "Agent 工具", icon: Bot },
   { id: "skills", label: "技能", icon: Puzzle },
+  { id: "integrations", label: "网络与集成", icon: Globe },
+  { id: "data", label: "数据与存储", icon: Database },
   { id: "usage", label: "用量统计", icon: BarChart3 },
   { id: "diagnostics", label: "诊断信息", icon: Activity },
   { id: "general", label: "通用", icon: Wrench },
@@ -254,12 +263,12 @@ export function SettingsPanel() {
               key={t.id}
               data-tab={t.id}
               onClick={() => go(t.id)}
-              className={`relative z-10 flex items-center gap-2 rounded-btn px-2.5 py-1.5 text-xs transition-colors duration-200 ${
-                active ? "text-ink" : "text-ink-2 hover:text-ink"
+              className={`relative z-10 flex items-center gap-2 rounded-btn px-2.5 py-1.5 text-ui transition-colors duration-200 ${
+                active ? "font-medium text-ink" : "text-ink-2 hover:text-ink"
               }`}
             >
-              <Icon size={13} />
-              {t.label}
+              <Icon size={14} />
+              <span className="min-w-0 flex-1 truncate">{t.label}</span>
             </button>
           );
         })}
@@ -267,18 +276,21 @@ export function SettingsPanel() {
 
       {/* Tab content. Keyed by tab so every switch replays the enter
           animation from a clean mount. */}
-      <div className="min-w-0 flex-1 overflow-y-auto px-4 pb-4 pt-1">
+      <div className="min-w-0 flex-1 overflow-y-auto px-4 pb-6 pt-3">
         <div
           key={tab}
-          className={`cf-settings-page mx-auto w-full max-w-xl ${
+          className={`cf-settings-page mx-auto w-full ${
             direction === 1 ? "cf-page-enter-next" : "cf-page-enter-prev"
           }`}
         >
           {tab === "models" && <ModelsTab />}
           {tab === "appearance" && <AppearanceTab />}
           {tab === "persona" && <PersonaTab />}
+          {tab === "context" && <ContextTab />}
           {tab === "tools" && <AgentToolsTab />}
           {tab === "skills" && <SkillsTab />}
+          {tab === "integrations" && <IntegrationsTab />}
+          {tab === "data" && <DataTab />}
           {tab === "usage" && <UsageTab />}
           {tab === "diagnostics" && <DiagnosticsTab />}
           {tab === "general" && <GeneralTab />}
@@ -2441,20 +2453,6 @@ function GeneralTab() {
         </FormRow>
       </SettingsSection>
 
-      <PresetSection />
-
-      <MemorySection />
-
-      <WebSearchSection />
-
-      <KnowledgeSection />
-
-      <McpSection />
-
-      <BackupSection />
-
-      <ProxySection />
-
       <SettingsSection
         title="会话历史"
         description="控制是否持久化对话记录到本地数据库（侧栏最多列出最近 200 个会话，消息搜索最多返回 30 条命中）"
@@ -2499,6 +2497,46 @@ function GeneralTab() {
       <UpdateSettingsCard />
 
       <AboutSection />
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Context tab — prompt presets + long-term memory                          */
+/* ------------------------------------------------------------------------ */
+
+function ContextTab() {
+  return (
+    <>
+      <PresetSection />
+      <MemorySection />
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Integrations tab — network, search, MCP                                   */
+/* ------------------------------------------------------------------------ */
+
+function IntegrationsTab() {
+  return (
+    <>
+      <ProxySection />
+      <WebSearchSection />
+      <McpSection />
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Data tab — knowledge base + backup                                        */
+/* ------------------------------------------------------------------------ */
+
+function DataTab() {
+  return (
+    <>
+      <KnowledgeSection />
+      <BackupSection />
     </>
   );
 }

@@ -82,14 +82,14 @@ function ProviderList({
       action={
         <button
           onClick={onAdd}
-          className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-xs text-ink transition-colors hover:bg-panel-2"
+          className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-ui text-ink transition-colors hover:bg-panel-2"
         >
-          <Plus size={12} /> 添加
+          <Plus size={13} /> 添加
         </button>
       }
     >
       {providers.length === 0 ? (
-        <p className="px-4 py-6 text-center text-xs text-ink-2">
+        <p className="px-4 py-8 text-center text-ui text-ink-2">
           还没有服务商，点击右上角“添加”配置 OpenAI 兼容接口
         </p>
       ) : (
@@ -105,7 +105,7 @@ function ProviderList({
                 className={`cf-provider-card ${isDefault ? "is-default" : ""}`}
               >
                 <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium text-ink">{p.name}</span>
+                  <span className="truncate text-ui font-medium text-ink">{p.name}</span>
                   {isDefault && defaultModel && (
                     <span className="cf-provider-badge">
                       <Check size={10} />
@@ -671,7 +671,7 @@ function GenerationSection() {
   };
 
   const inputCls =
-    "w-20 rounded-btn border border-line bg-panel-2 px-2 py-1 text-xs text-ink outline-none focus:border-accent disabled:opacity-40";
+    "w-20 rounded-btn border border-line bg-panel-2 px-2 py-1 text-ui text-ink outline-none focus:border-accent disabled:opacity-40";
 
   return (
     <SettingsSection
@@ -680,11 +680,11 @@ function GenerationSection() {
     >
       <div className="cf-form-row">
         <div className="flex-1">
-          <p className="text-sm font-medium text-ink">随机性（温度）</p>
-          <p className="mt-0.5 text-xs text-ink-2">越低越严谨稳定，越高越发散有创意</p>
+          <p className="text-ui font-medium text-ink">随机性（温度）</p>
+          <p className="mt-0.5 text-meta text-ink-2">越低越严谨稳定，越高越发散有创意</p>
         </div>
-        <div className="flex w-44 shrink-0 items-center gap-2">
-          <label className="flex items-center gap-1 text-xs text-ink-2">
+        <div className="flex shrink-0 items-center gap-2">
+          <label className="flex items-center gap-1 text-meta text-ink">
             <input
               type="checkbox"
               checked={tempAuto}
@@ -708,11 +708,11 @@ function GenerationSection() {
 
       <div className="cf-form-row">
         <div className="flex-1">
-          <p className="text-sm font-medium text-ink">最大输出</p>
-          <p className="mt-0.5 text-xs text-ink-2">模型单次回复的最大 token 数</p>
+          <p className="text-ui font-medium text-ink">最大输出</p>
+          <p className="mt-0.5 text-meta text-ink-2">模型单次回复的最大 token 数</p>
         </div>
-        <div className="flex w-44 shrink-0 items-center gap-2">
-          <label className="flex items-center gap-1 text-xs text-ink-2">
+        <div className="flex shrink-0 items-center gap-2">
+          <label className="flex items-center gap-1 text-meta text-ink">
             <input
               type="checkbox"
               checked={tokensAuto}
@@ -730,7 +730,7 @@ function GenerationSection() {
             onChange={(e) => setTokens(Number(e.target.value))}
             className={inputCls}
           />
-          <span className="text-xs text-ink-2">tokens</span>
+          <span className="text-meta text-ink-3">tokens</span>
         </div>
       </div>
 
@@ -743,9 +743,9 @@ function GenerationSection() {
       <div className="flex items-center justify-end gap-2 px-3 py-2">
         <button
           onClick={() => void save()}
-          className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-xs font-medium text-accent-fg transition-colors hover:opacity-90"
+          className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-ui font-medium text-accent-fg transition-colors hover:opacity-90"
         >
-          {saved && <Check size={12} />}
+          {saved && <Check size={13} />}
           {saved ? "已保存" : "保存参数"}
         </button>
       </div>

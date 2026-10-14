@@ -1,13 +1,18 @@
 /* Design tokens — plan §4.2 */
 
 :root {
-  /* Font stacks are theme-independent: serif is used sparingly (empty-state
-   * greeting, markdown h1/h2) and relies on fonts already on the OS, so the
-   * installer gains no weight from it. */
+  /* Font stacks are theme-independent. UI text uses the platform sans;
+   * AI output (messages, greetings, large headings) uses a warm serif
+   * to give the app Claude's editorial voice. We rely entirely on fonts
+   * already on the OS so the installer gains no weight from it. */
   --cf-font-sans:
     "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC",
     system-ui, -apple-system, sans-serif;
   --cf-font-serif: Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
+  /* Serif display: a tighter stack for AI prose. On Chinese systems the
+   * serif fallbacks are Songti/SimSun, which read well at body sizes. */
+  --cf-font-display: "Tiempos Text", "Source Serif 4", "Charter", Georgia,
+    "Songti SC", "SimSun", "Noto Serif CJK SC", serif;
   --cf-font-mono: "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
 }
 

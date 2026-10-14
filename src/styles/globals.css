@@ -186,9 +186,19 @@
 /* --- Markdown body ------------------------------------------------------- */
 .md-body {
   user-select: text;
-  line-height: 1.65;
+  font-family: var(--cf-font-display);
+  font-size: 0.9375rem;
+  line-height: 1.7;
+  letter-spacing: 0.001em;
   word-break: break-word;
   overflow-wrap: anywhere;
+}
+/* Code stays in monospace inside the prose. */
+.md-body code,
+.md-body pre,
+.md-body kbd,
+.md-body samp {
+  font-family: var(--cf-font-mono);
 }
 .md-body > *:first-child {
   margin-top: 0;
@@ -209,11 +219,11 @@
 }
 .md-body h1 {
   font-size: 1.35em;
-  font-family: var(--cf-font-serif);
+  font-family: var(--cf-font-display);
 }
 .md-body h2 {
   font-size: 1.2em;
-  font-family: var(--cf-font-serif);
+  font-family: var(--cf-font-display);
 }
 .md-body h3 {
   font-size: 1.05em;

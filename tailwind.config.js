@@ -19,6 +19,7 @@ export default {
       },
       fontFamily: {
         serif: ["var(--cf-font-serif)"],
+        display: ["var(--cf-font-display)"],
       },
       fontSize: {
         base: "14px",
