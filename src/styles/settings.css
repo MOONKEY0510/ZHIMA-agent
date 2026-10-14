@@ -325,7 +325,9 @@
   border-top-right-radius: var(--rounded-input, 14px);
 }
 
-/* Compact inline action buttons inside cards. */
+/* Compact inline action buttons inside cards.
+ * Claude's settings page renders row-level actions as text or ghost icons —
+ * no bordered chip, just a quiet glyph that darkens on hover. */
 .cf-icon-btn {
   display: grid;
   height: 1.5rem;
@@ -333,17 +335,26 @@
   place-items: center;
   border-radius: var(--rounded-btn, 9px);
   color: var(--cf-text-2);
-  transition: color 150ms ease, background-color 150ms ease;
+  opacity: 0.7;
+  transition: color 150ms cubic-bezier(0.22, 0.8, 0.36, 1),
+    background-color 150ms cubic-bezier(0.22, 0.8, 0.36, 1),
+    opacity 150ms cubic-bezier(0.22, 0.8, 0.36, 1);
 }
 
 .cf-icon-btn:hover {
-  background: var(--cf-panel-2);
+  background: color-mix(in srgb, var(--cf-text) 6%, transparent);
   color: var(--cf-text);
+  opacity: 1;
+}
+
+.cf-icon-btn.danger {
+  color: var(--cf-text-2);
 }
 
 .cf-icon-btn.danger:hover {
   background: color-mix(in srgb, var(--cf-danger) 10%, transparent);
   color: var(--cf-danger);
+  opacity: 1;
 }
 
 /* Sidebar navigation group label (Customize / Settings / etc.). */

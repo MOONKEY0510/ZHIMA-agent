@@ -731,7 +731,7 @@ function AssistantForm({
           type="button"
           onClick={() => void submit()}
           disabled={saving || !name.trim() || !prompt.trim()}
-          className="flex items-center gap-1.5 rounded-btn bg-accent px-3 py-1.5 text-meta font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+          className="cf-btn-primary"
         >
           {saving && <Loader2 size={12} className="animate-spin" />}
           保存
@@ -788,14 +788,14 @@ function SystemPromptSection() {
           {value.trim() && (
             <button
               onClick={() => void clear()}
-              className="rounded-btn border border-line px-3 py-1 text-meta text-ink-2 transition-colors hover:bg-panel-2"
+              className="cf-btn-secondary"
             >
               清除
             </button>
           )}
           <button
             onClick={() => void save()}
-            className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-meta font-medium text-accent-fg transition-colors hover:opacity-90"
+            className="cf-btn-primary"
           >
             {saved && <Check size={12} />}
             {saved ? "已保存" : "保存"}
@@ -1166,7 +1166,7 @@ function ProxySection() {
         <button
           onClick={() => void save()}
           disabled={saving}
-          className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-meta font-medium text-accent-fg transition-colors hover:opacity-90 disabled:opacity-40"
+          className="cf-btn-primary"
         >
           {saved && <Check size={12} />}
           {saving ? "应用中…" : saved ? "已应用" : "应用"}
@@ -2241,7 +2241,7 @@ function WebSearchSection() {
           type="button"
           onClick={() => void save()}
           disabled={saving || !loaded}
-          className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-meta font-medium text-accent-fg transition-colors hover:opacity-90 disabled:opacity-40"
+          className="cf-btn-primary"
         >
           {saved && <Check size={12} />}
           {saving ? "保存中…" : saved ? "已保存" : "保存"}
@@ -2491,13 +2491,13 @@ function GeneralTab() {
             <>
               <button
                 onClick={() => setConfirming(false)}
-                className="rounded-btn border border-line px-3 py-1 text-meta text-ink transition-colors hover:bg-panel-2"
+                className="cf-btn-secondary"
               >
                 取消
               </button>
               <button
                 onClick={() => void clearData()}
-                className="rounded-btn bg-danger px-3 py-1 text-meta text-white transition-opacity hover:opacity-85"
+                className="rounded-btn bg-danger px-3 py-1 text-ui font-medium text-white transition-opacity hover:opacity-90"
               >
                 确认清空全部会话
               </button>
@@ -2505,7 +2505,7 @@ function GeneralTab() {
           ) : (
             <button
               onClick={() => setConfirming(true)}
-              className="rounded-btn border border-line px-3 py-1 text-meta text-danger transition-colors hover:bg-panel-2"
+              className="rounded-btn border border-line bg-transparent px-3 py-1 text-ui text-danger transition-colors hover:bg-[color-mix(in_srgb,var(--cf-danger)_8%,transparent)]"
             >
               {cleared ? "已清空" : "清空全部会话数据…"}
             </button>
@@ -2705,13 +2705,13 @@ function MemorySection() {
           <div className="flex items-center justify-end gap-2">
             <button
               onClick={() => setEditingId(null)}
-              className="rounded-btn border border-line px-3 py-1 text-meta text-ink-2 transition-colors hover:bg-panel-2"
+              className="cf-btn-secondary"
             >
               取消
             </button>
             <button
               onClick={() => void save()}
-              className="rounded-btn bg-accent px-3 py-1 text-meta font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-50"
+              className="cf-btn-primary"
               disabled={!draftContent.trim()}
             >
               保存
@@ -2886,16 +2886,16 @@ function PresetSection() {
           <div className="flex items-center justify-end gap-2">
             <button
               onClick={() => setEditingId(null)}
-              className="rounded-btn border border-line px-3 py-1 text-meta text-ink-2 transition-colors hover:bg-panel-2"
+              className="cf-btn-secondary"
             >
               取消
             </button>
             <button
               onClick={() => void save()}
               disabled={!draftName.trim() || !draftCommand.trim() || !draftContent.trim()}
-              className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-meta font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="cf-btn-primary"
             >
-              <Check size={12} /> 保存
+              <Check size={13} /> 保存
             </button>
           </div>
         </div>
