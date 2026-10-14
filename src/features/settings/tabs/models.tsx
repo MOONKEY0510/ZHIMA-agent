@@ -82,7 +82,7 @@ function ProviderList({
       action={
         <button
           onClick={onAdd}
-          className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-ui text-ink transition-colors hover:bg-panel-2"
+          className="flex items-center gap-1 rounded-btn border border-line bg-transparent px-2.5 py-1 text-ui text-ink transition-colors hover:bg-hover"
         >
           <Plus size={13} /> 添加
         </button>
@@ -230,14 +230,13 @@ function ProviderForm({
     }
   };
 
-  const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-ui text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
+  const inputCls = "cf-input";
 
   return (
     <div className="space-y-4">
       {!provider && (
         <div>
-          <label className="mb-1 block text-meta text-ink-2">常用服务商</label>
+          <label className="cf-field-label">常用服务商</label>
           <div className="flex flex-wrap gap-1.5">
             {PROVIDER_PRESETS.map((preset) => (
               <button
@@ -261,7 +260,7 @@ function ProviderForm({
       )}
 
       <div>
-        <label className="mb-1 block text-meta text-ink-2">名称</label>
+        <label className="cf-field-label">名称</label>
         <input
           value={name}
           onChange={(e) => {
@@ -274,7 +273,7 @@ function ProviderForm({
       </div>
 
       <div>
-        <label className="mb-1 block text-meta text-ink-2">Base URL</label>
+        <label className="cf-field-label">Base URL</label>
         <input
           value={baseUrl}
           onChange={(e) => {
@@ -293,7 +292,7 @@ function ProviderForm({
       </div>
 
       <div>
-        <label className="mb-1 block text-meta text-ink-2">API Key</label>
+        <label className="cf-field-label">API Key</label>
         <div className="relative">
           <input
             value={apiKey}
@@ -307,7 +306,7 @@ function ProviderForm({
           />
           <button
             onClick={() => setShowKey(!showKey)}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-2 hover:text-ink"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-3 hover:text-ink"
           >
             {showKey ? <EyeOff size={13} /> : <Eye size={13} />}
           </button>
@@ -331,17 +330,17 @@ function ProviderForm({
         <button
           onClick={() => void test()}
           disabled={testing || (!baseUrl.trim() && !provider)}
-          className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
+          className="cf-btn-secondary"
         >
-          {testing && <Loader2 size={12} className="animate-spin" />}
+          {testing && <Loader2 size={13} className="animate-spin" />}
           测试连接
         </button>
         <button
           onClick={() => void save()}
           disabled={saving || !baseUrl.trim()}
-          className="flex items-center gap-1.5 rounded-btn bg-accent px-3 py-1.5 text-meta font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+          className="cf-btn-primary"
         >
-          {saving && <Loader2 size={12} className="animate-spin" />}
+          {saving && <Loader2 size={13} className="animate-spin" />}
           保存
         </button>
       </div>
@@ -671,7 +670,7 @@ function GenerationSection() {
   };
 
   const inputCls =
-    "w-20 rounded-btn border border-line bg-panel-2 px-2 py-1 text-ui text-ink outline-none focus:border-accent disabled:opacity-40";
+    "w-24 rounded-btn border border-line bg-transparent px-2.5 py-1 text-ui text-ink outline-none transition-colors focus:border-accent disabled:opacity-40";
 
   return (
     <SettingsSection
@@ -743,7 +742,7 @@ function GenerationSection() {
       <div className="flex items-center justify-end gap-2 px-3 py-2">
         <button
           onClick={() => void save()}
-          className="flex items-center gap-1 rounded-btn bg-accent px-3 py-1 text-ui font-medium text-accent-fg transition-colors hover:opacity-90"
+          className="cf-btn-primary"
         >
           {saved && <Check size={13} />}
           {saved ? "已保存" : "保存参数"}
