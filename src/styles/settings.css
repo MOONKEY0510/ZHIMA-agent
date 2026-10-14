@@ -6,8 +6,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 1.5rem;
-  padding: 1rem 0;
+  padding: 1.125rem 0;
   border-top: 1px solid var(--cf-border);
+  transition: background-color 120ms cubic-bezier(0.22, 0.8, 0.36, 1);
+}
+
+.cf-form-row:hover {
+  background: color-mix(in srgb, var(--cf-text) 2%, transparent);
 }
 
 .cf-form-row:first-child {

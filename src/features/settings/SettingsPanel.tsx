@@ -281,7 +281,9 @@ export function SettingsPanel() {
                   data-tab={t.id}
                   onClick={() => go(t.id)}
                   className={`relative z-10 flex w-full items-center gap-2.5 rounded-btn px-2.5 py-2 text-ui transition-colors duration-150 ${
-                    active ? "font-medium text-ink" : "text-ink-2 hover:text-ink"
+                    active
+                      ? "font-medium text-ink before:absolute before:left-0 before:top-1/2 before:h-4 before:w-0.5 before:-translate-y-1/2 before:rounded-full before:bg-[var(--cf-accent)]"
+                      : "text-ink-2 hover:text-ink"
                   }`}
                 >
                   <Icon size={15} strokeWidth={active ? 2.25 : 1.75} />
@@ -302,6 +304,14 @@ export function SettingsPanel() {
             direction === 1 ? "cf-page-enter-next" : "cf-page-enter-prev"
           }`}
         >
+          {/* Page header: the active tab name, mirroring Claude's settings
+              page which always shows the current section title at the top. */}
+          <header className="mb-6">
+            <h1 className="font-display text-[1.5rem] font-semibold leading-8 tracking-[-0.005em] text-ink">
+              {TABS.find((t) => t.id === tab)?.label}
+            </h1>
+          </header>
+
           {tab === "models" && <ModelsTab />}
           {tab === "appearance" && <AppearanceTab />}
           {tab === "persona" && <PersonaTab />}
