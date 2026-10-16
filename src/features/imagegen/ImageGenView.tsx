@@ -545,7 +545,7 @@ function ParamPicker({
   return (
     <label className="flex items-center gap-1.5">
       <span className="text-meta text-ink-3">{label}</span>
-      <Dropdown value={value} onChange={onChange} options={options} className="min-w-[5rem]" />
+      <Dropdown value={value} onChange={onChange} options={options} className="min-w-[5rem]" placement="top" />
     </label>
   );
 }

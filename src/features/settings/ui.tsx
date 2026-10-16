@@ -13,6 +13,7 @@ export function Dropdown({
   disabled,
   title,
   className,
+  placement = "bottom",
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -20,6 +21,9 @@ export function Dropdown({
   disabled?: boolean;
   title?: string;
   className?: string;
+  /** Open direction: `bottom` (default, dropdown) or `top` (pop-up above the
+   *  trigger, useful when the control sits near the bottom of the window). */
+  placement?: "bottom" | "top";
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -34,6 +38,11 @@ export function Dropdown({
     if (open) window.addEventListener("mousedown", onDocClick);
     return () => window.removeEventListener("mousedown", onDocClick);
   }, [open]);
+
+  const menuCls =
+    placement === "top"
+      ? "cf-menu-pop absolute bottom-full right-0 z-50 mb-1 max-h-60 min-w-full overflow-y-auto rounded-menu border border-line bg-panel py-1 shadow-menu"
+      : "cf-menu-pop absolute right-0 z-50 mt-1 max-h-60 min-w-full overflow-y-auto rounded-menu border border-line bg-panel py-1 shadow-menu";
 
   return (
     <div ref={ref} className={`relative ${className ?? ""}`} title={title}>
@@ -50,7 +59,7 @@ export function Dropdown({
         />
       </button>
       {open && (
-        <div className="cf-menu-pop absolute right-0 z-50 mt-1 max-h-60 min-w-full overflow-y-auto rounded-menu border border-line bg-panel py-1 shadow-menu">
+        <div className={menuCls}>
           {options.map((option) => (
             <button
               key={option.value}
