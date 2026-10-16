@@ -592,14 +592,14 @@ function ImageDetailDrawer({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label="生成详情"
-        className="relative grid max-h-full w-full max-w-5xl grid-cols-[3fr_2fr] overflow-hidden rounded-input border border-line bg-panel shadow-menu"
+        className="relative grid h-[85vh] w-[90vw] max-w-7xl grid-cols-[3fr_2fr] overflow-hidden rounded-input border border-line bg-panel shadow-menu"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Left: image */}
