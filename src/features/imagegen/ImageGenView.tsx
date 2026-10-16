@@ -3,36 +3,56 @@ import {
   Download,
   Loader2,
   Sparkles,
-  ImagePlus,
   X,
-  Settings2,
   Trash2,
-  Wand2,
-  Maximize2,
-  Upload,
+  Send,
+  Paperclip,
+  Copy,
+  Star,
+  Pencil,
 } from "lucide-react";
 import { generateImage } from "../../services/providers-api";
 import { currentModel, useProvidersStore } from "../../stores/providers-store";
 import { useImageGenStore } from "../../stores/imagegen-store";
 import { useWindowStore } from "../../stores/window-store";
+import { useChatStore } from "../../stores/chat-store";
+import { Dropdown } from "../../features/settings/ui";
 import type { ImageGeneration } from "../../services/imagegen-api";
 
 const SIZE_OPTIONS = [
-  { label: "1:1", w: 1024, h: 1024 },
-  { label: "9:16", w: 1024, h: 1792 },
-  { label: "16:9", w: 1792, h: 1024 },
-  { label: "3:4", w: 768, h: 1024 },
-  { label: "4:3", w: 1024, h: 768 },
+  { label: "1:1", value: "1024x1024" },
+  { label: "9:16", value: "1024x1792" },
+  { label: "16:9", value: "1792x1024" },
+  { label: "3:4", value: "768x1024" },
+  { label: "4:3", value: "1024x768" },
 ] as const;
 
-const PRESET_SIZE_STRINGS = new Set(SIZE_OPTIONS.map((s) => `${s.w}x${s.h}`));
+const QUALITY_OPTIONS = [
+  { value: "auto", label: "auto" },
+  { value: "low", label: "low" },
+  { value: "medium", label: "medium" },
+  { value: "high", label: "high" },
+];
 
-/**
- * The compatible `images/generations` convention carries one reference image
- * in the `image` field, so the UI offers exactly that until a multi-image
- * provider adapter exists.
- */
-const MAX_REFERENCE_IMAGES = 1;
+const FORMAT_OPTIONS = [
+  { value: "png", label: "PNG" },
+  { value: "jpeg", label: "JPEG" },
+  { value: "webp", label: "WebP" },
+];
+
+const TRANSPARENT_OPTIONS = [
+  { value: "false", label: "false" },
+  { value: "true", label: "true" },
+];
+
+const MODERATION_OPTIONS = [
+  { value: "auto", label: "auto" },
+  { value: "low", label: "low" },
+];
+
+const COUNT_OPTIONS = [1, 2, 3, 4].map((n) => ({ value: String(n), label: String(n) }));
+
+const MAX_REFERENCE_IMAGES = 3;
 
 function parseSize(value: string): { w: number; h: number } | null {
   const m = /^(\d+)\s*[x×X]\s*(\d+)$/.exec(value.trim());
@@ -62,27 +82,40 @@ function getReferenceImages(item: ImageGeneration): string[] {
   }
 }
 
+function aspectOf(sizeLabel: string | null): string {
+  if (!sizeLabel) return "1:1";
+  const p = parseSize(sizeLabel);
+  if (!p) return "1:1";
+  const g = (a: number, b: number): number => (b ? g(b, a % b) : a);
+  const d = g(p.w, p.h);
+  return `${p.w / d}:${p.h / d}`;
+}
+
 /**
- * Dedicated image-generation workbench (v2.1).
+ * Conversational image workbench.
  *
  * Layout:
- *   - Left parameter panel: prompt, reference images, model, size, generate.
- *   - Center canvas: live preview / loading / empty state.
- *
- * Supports both text-to-image and image-to-image/reference workflows.
+ *   - Left history sidebar (rendered separately by HistorySidebar).
+ *   - Center canvas: selected generation / empty state.
+ *   - Bottom composer: prompt + reference chips + 6 param pickers + send.
+ *   - Click the canvas image to open the detail drawer.
  */
 export function ImageGenView() {
   const [prompt, setPrompt] = useState("");
-  const [customSize, setCustomSize] = useState("1024x1024");
+  const [size, setSize] = useState<string>("auto");
+  const [quality, setQuality] = useState<string>("auto");
+  const [format, setFormat] = useState<string>("png");
+  const [transparent, setTransparent] = useState<string>("false");
+  const [moderation, setModeration] = useState<string>("auto");
+  const [count, setCount] = useState<string>("1");
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ImageGeneration | null>(null);
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const dropRef = useRef<HTMLDivElement>(null);
 
   const providers = useProvidersStore((s) => s.providers);
   const imageProviderId = useProvidersStore((s) => s.imageProviderId);
@@ -91,7 +124,6 @@ export function ImageGenView() {
   const addHistory = useImageGenStore((s) => s.add);
   const loadHistory = useImageGenStore((s) => s.load);
   const openSettings = useWindowStore((s) => s.openSettings);
-  const switchToChat = useWindowStore((s) => s.switchToChat);
 
   useEffect(() => {
     void loadHistory().then(() => {
@@ -100,7 +132,6 @@ export function ImageGenView() {
     textareaRef.current?.focus();
   }, [loadHistory]);
 
-  // Listen to sidebar selection / "new image" events.
   useEffect(() => {
     const onSelect = (e: Event) => {
       const detail = (e as CustomEvent<{ id?: string }>).detail;
@@ -124,14 +155,12 @@ export function ImageGenView() {
     };
   }, []);
 
-  // Sync selection when history is cleared/updated externally.
   useEffect(() => {
     if (!selected && history.length > 0) {
       setSelected(history[0]);
     }
   }, [history, selected]);
 
-  // Paste reference images anywhere in the image view.
   useEffect(() => {
     const onPaste = async (e: ClipboardEvent) => {
       const files = Array.from(e.clipboardData?.files ?? []).filter((f) =>
@@ -158,11 +187,14 @@ export function ImageGenView() {
   const loadIntoWorkbench = (item: ImageGeneration) => {
     setSelected(item);
     setPrompt(item.prompt);
-    // Older histories may carry several references; only the first is sent,
-    // so load exactly what the next generate call will actually use.
     setReferenceImages(getReferenceImages(item).slice(0, MAX_REFERENCE_IMAGES));
     if (item.sizeLabel) {
-      setCustomSize(item.sizeLabel);
+      const p = parseSize(item.sizeLabel);
+      if (p) {
+        const key = `${p.w}x${p.h}`;
+        const preset = SIZE_OPTIONS.find((s) => s.value === key);
+        setSize(preset ? preset.value : key);
+      }
     }
   };
 
@@ -180,36 +212,50 @@ export function ImageGenView() {
     setReferenceImages((prev) => prev.filter((_, i) => i !== idx));
   };
 
+  const resolvedSize = useMemo(() => {
+    if (size !== "auto") {
+      const p = parseSize(size);
+      if (p) return { w: p.w, h: p.h, label: `${p.w}x${p.h}` };
+    }
+    return { w: 1024, h: 1024, label: "1024x1024" };
+  }, [size]);
+
   const generate = async () => {
     const text = prompt.trim();
     if (!text || generating || !imageModel) return;
 
-    const parsed = parseSize(customSize);
-    if (!parsed) {
-      setError("尺寸格式无效，请输入如 512x512 的格式（最小 64 像素）");
-      return;
-    }
-    const { w, h } = parsed;
-    const isPreset = PRESET_SIZE_STRINGS.has(`${w}x${h}`);
-
     setGenerating(true);
     setError(null);
+    const startedAt = performance.now();
     try {
       const dataUrl = await generateImage(
         imageModel.provider.id,
         imageModel.model.modelKey,
         text,
-        `${w}x${h}`,
-        isPreset ? undefined : w,
-        isPreset ? undefined : h,
+        resolvedSize.label,
+        undefined,
+        undefined,
         referenceImages.length > 0 ? referenceImages : undefined,
       );
-      const sizeLabel = `${w}x${h}`;
-      await addHistory(text, dataUrl, sizeLabel, referenceImages);
+      const durationMs = Math.round(performance.now() - startedAt);
+      await addHistory(text, dataUrl, resolvedSize.label, referenceImages);
       const item = useImageGenStore.getState().history[0];
       if (item) {
         setSelected(item);
+        // Stash extra params on the item for the detail panel; persistence
+        // schema stays unchanged.
+        (item as ImageGeneration & Record<string, unknown>).extraParams = {
+          quality,
+          format,
+          transparent,
+          moderation,
+          count,
+          durationMs,
+          source: `${imageModel.provider.name} · ${imageModel.model.displayName}`,
+        };
       }
+      setPrompt("");
+      setReferenceImages([]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -240,290 +286,448 @@ export function ImageGenView() {
     if (!selected) return;
     await useImageGenStore.getState().remove(selected.id);
     setSelected(useImageGenStore.getState().history[0] ?? null);
+    setDetailOpen(false);
   };
 
-  const modelLabel = imageModel
-    ? `${imageModel.provider.name} · ${imageModel.model.displayName}`
-    : providers.length === 0
-      ? "未配置服务商"
-      : "未选择图像模型";
+  const reuseConfig = () => {
+    if (!selected) return;
+    setPrompt(selected.prompt);
+    setReferenceImages(getReferenceImages(selected).slice(0, MAX_REFERENCE_IMAGES));
+    setDetailOpen(false);
+    textareaRef.current?.focus();
+  };
+
+  const editOutput = () => {
+    if (!selected) return;
+    useChatStore.getState().setComposerPrefill(
+      `参考这张图：${selected.prompt}`,
+    );
+    useWindowStore.getState().switchToChat();
+  };
+
+  const copyPrompt = async () => {
+    if (!selected) return;
+    try {
+      await navigator.clipboard.writeText(selected.prompt);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
 
   return (
-    <div className="flex min-h-0 flex-1">
-      {/* Left parameter panel */}
-      <aside className="flex w-72 shrink-0 flex-col border-r border-line bg-panel-2">
-        <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-3 py-3">
-          {/* Prompt */}
-          <div className="flex flex-col gap-1.5">
-            <label className="flex items-center gap-1.5 text-meta font-medium text-ink">
-              <Wand2 size={13} /> 画面描述
-            </label>
-            <textarea
-              ref={textareaRef}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={onKeyDown}
-              rows={4}
-              placeholder="描述你想生成的图片，Enter 生成，Shift+Enter 换行"
-              className="resize-none rounded-input border border-line bg-panel px-3 py-2.5 text-ui leading-5 text-ink outline-none placeholder:text-ink-2 focus:border-accent"
-            />
-          </div>
-
-          {/* Reference images */}
-          <div className="flex flex-col gap-1.5">
-            <div className="flex items-center justify-between">
-              <label className="flex items-center gap-1.5 text-meta font-medium text-ink">
-                <ImagePlus size={13} /> 参考图
-                <span className="text-meta font-normal text-ink-2">（可选，当前支持 1 张）</span>
-              </label>
-              {referenceImages.length > 0 && (
-                <button
-                  onClick={() => setReferenceImages([])}
-                  className="text-meta text-ink-2 hover:text-danger"
-                >
-                  清空
-                </button>
-              )}
-            </div>
-
-            <div
-              ref={dropRef}
-              onDragOver={(e) => {
-                e.preventDefault();
-                setIsDragging(true);
-              }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setIsDragging(false);
-                const files = Array.from(e.dataTransfer.files).filter((f) =>
-                  f.type.startsWith("image/"),
-                );
-                void appendReferenceFiles(files);
-              }}
-              onClick={() => fileInputRef.current?.click()}
-              className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-input border border-dashed px-3 py-4 transition-colors ${
-                isDragging
-                  ? "border-[var(--cf-accent)] bg-panel"
-                  : "border-line bg-panel hover:bg-panel-2"
-              }`}
-            >
-              <Upload size={18} className="text-ink-2" />
-              <span className="text-center text-ui text-ink-2">
-                点击 / 拖拽 / 粘贴添加图片
-              </span>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  const files = Array.from(e.target.files ?? []);
-                  if (files.length) void appendReferenceFiles(files);
-                  e.currentTarget.value = "";
-                }}
-              />
-            </div>
-
-            {referenceImages.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {referenceImages.map((src, idx) => (
-                  <div
-                    key={`${src.slice(-32)}-${idx}`}
-                    className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-btn border border-line"
-                  >
-                    <img
-                      src={src}
-                      alt={`参考图 ${idx + 1}`}
-                      className="h-full w-full object-cover"
-                    />
-                    <button
-                      onClick={() => removeReference(idx)}
-                      className="absolute right-0.5 top-0.5 grid h-4 w-4 place-items-center rounded-full bg-danger text-white opacity-0 transition-opacity group-hover:opacity-100"
-                    >
-                      <X size={10} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Model */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-meta font-medium text-ink">生成模型</label>
-            <div className="flex items-center gap-2 rounded-input border border-line bg-panel px-3 py-2">
-              <span className="min-w-0 flex-1 truncate text-meta text-ink-2" title={modelLabel}>
-                {modelLabel}
-              </span>
-              <button
-                onClick={() => openSettings()}
-                title="更换图像模型"
-                className="text-ink-2 transition-colors hover:text-ink"
-              >
-                <Settings2 size={13} />
-              </button>
-            </div>
-            {!imageModel && (
-              <p className="text-ui text-danger">
-                未配置图像模型，请在设置 → 模型设置中配置
-              </p>
-            )}
-          </div>
-
-          {/* Size */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-meta font-medium text-ink">尺寸</label>
-            <div className="grid grid-cols-3 gap-1.5">
-              {SIZE_OPTIONS.map((s) => {
-                const key = `${s.w}x${s.h}`;
-                const active = customSize === key;
-                return (
-                  <button
-                    key={key}
-                    onClick={() => setCustomSize(key)}
-                    className={`rounded-md border px-1 py-1.5 text-ui transition-colors ${
-                      active
-                        ? "border-[var(--cf-accent)] bg-panel text-ink"
-                        : "border-line bg-panel text-ink-2 hover:bg-panel-2"
-                    }`}
-                    title={`${s.w}x${s.h}`}
-                  >
-                    {s.label}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                value={customSize}
-                onChange={(e) => setCustomSize(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    void generate();
-                  }
-                }}
-                placeholder="宽x高"
-                spellCheck={false}
-                className="flex-1 rounded-md border border-line bg-panel px-2 py-1 text-meta text-ink outline-none placeholder:text-ink-2 focus:border-accent"
-              />
-              <span className="text-meta text-ink-2">自定义</span>
-            </div>
-          </div>
-
-          {/* Error */}
-          {error && (
-            <p className="rounded-btn border border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] px-2.5 py-1.5 text-meta leading-5 text-danger">
-              {error}
-            </p>
-          )}
-        </div>
-
-        {/* Generate button */}
-        <div className="shrink-0 border-t border-line p-3">
-          <button
-            onClick={() => void generate()}
-            disabled={!prompt.trim() || generating || !imageModel}
-            className="flex w-full items-center justify-center gap-1.5 rounded-input bg-accent py-2.5 text-ui font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
-          >
-            {generating ? (
-              <>
-                <Loader2 size={16} className="animate-spin" /> 生成中…
-              </>
-            ) : (
-              <>
-                <Sparkles size={16} /> 立即生成
-              </>
-            )}
-          </button>
-          <button
-            onClick={switchToChat}
-            className="mt-2 w-full text-center text-ui text-ink-2 hover:text-ink hover:underline"
-          >
-            ← 返回对话模式
-          </button>
-        </div>
-      </aside>
-
-      {/* Center canvas */}
-      <main className="relative flex min-w-0 flex-1 flex-col items-center justify-center bg-[var(--cf-bg)] p-4">
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Canvas area */}
+      <main
+        className={`relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-[var(--cf-bg)] transition-colors ${
+          isDragging ? "bg-[color-mix(in_srgb,var(--cf-accent)_5%,transparent)]" : ""
+        }`}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsDragging(true);
+        }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsDragging(false);
+          const files = Array.from(e.dataTransfer.files).filter((f) =>
+            f.type.startsWith("image/"),
+          );
+          void appendReferenceFiles(files);
+        }}
+      >
         {generating ? (
           <div className="flex flex-col items-center gap-3 text-ink-2">
-            <Loader2 size={32} className="animate-spin" />
-            <p className="text-meta">正在创作中，请稍候…</p>
+            <Loader2 size={32} className="animate-spin text-accent" />
+            <p className="text-ui">正在创作中，请稍候…</p>
           </div>
         ) : selected ? (
-          <div className="flex max-h-full w-full max-w-3xl flex-col items-center gap-3">
-            <div
-              className="group relative flex max-h-[70vh] w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-btn border border-line bg-panel shadow-sm"
-              onClick={() => setPreviewOpen(true)}
-            >
-              <img
-                src={selected.imageData}
-                alt={selected.prompt}
-                className="max-h-full max-w-full object-contain"
-              />
-              <div className="pointer-events-none absolute inset-0 flex items-start justify-end p-2 opacity-0 transition-opacity group-hover:opacity-100">
-                <span className="rounded-btn bg-panel px-2 py-1 text-ui text-ink shadow-sm">
-                  <Maximize2 size={11} className="inline align-text-bottom" /> 点击预览
+          <button
+            type="button"
+            onClick={() => setDetailOpen(true)}
+            className="group relative max-h-full max-w-full cursor-zoom-in overflow-hidden rounded-input border border-line bg-panel shadow-sm transition-shadow hover:shadow-md"
+          >
+            <img
+              src={selected.imageData}
+              alt={selected.prompt}
+              className="max-h-[calc(100vh-220px)] max-w-full object-contain"
+            />
+            {/* Top-left badges */}
+            <div className="absolute left-3 top-3 flex items-center gap-1.5">
+              <span className="rounded-md bg-panel-2/80 px-2 py-0.5 text-meta text-ink backdrop-blur">
+                {aspectOf(selected.sizeLabel ?? null)}
+              </span>
+              {selected.sizeLabel && (
+                <span className="rounded-md bg-panel-2/80 px-2 py-0.5 text-meta text-ink backdrop-blur">
+                  {selected.sizeLabel}
                 </span>
-              </div>
+              )}
             </div>
-
-            <div className="flex w-full max-w-2xl items-center gap-3 rounded-input border border-line bg-panel px-3 py-2 shadow-sm">
-              <p className="min-w-0 flex-1 truncate text-meta text-ink-2" title={selected.prompt}>
-                {selected.prompt}
-                {selected.sizeLabel && (
-                  <span className="ml-2 text-meta opacity-70">{selected.sizeLabel}</span>
-                )}
-              </p>
-              <div className="flex shrink-0 items-center gap-1">
-                <button
-                  onClick={downloadSelected}
-                  className="flex items-center gap-1 rounded-btn border border-line px-2.5 py-1 text-meta text-ink transition-colors hover:bg-panel-2"
-                >
-                  <Download size={12} /> 下载
-                </button>
-                <button
-                  onClick={() => void deleteSelected()}
-                  className="flex items-center gap-1 rounded-btn border border-line px-2.5 py-1 text-meta text-danger transition-colors hover:bg-panel-2"
-                >
-                  <Trash2 size={12} /> 删除
-                </button>
-              </div>
-            </div>
-          </div>
+            {/* Top-right download */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                downloadSelected();
+              }}
+              title="下载"
+              className="absolute right-3 top-3 grid h-7 w-7 place-items-center rounded-md bg-panel-2/80 text-ink opacity-0 backdrop-blur transition-opacity group-hover:opacity-100"
+            >
+              <Download size={13} />
+            </button>
+            {/* Hover hint */}
+            <span className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-panel-2/80 px-3 py-1 text-meta text-ink opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
+              点击查看详情
+            </span>
+          </button>
         ) : (
-          <div className="flex flex-col items-center gap-3 text-center text-ink-2">
+          <div className="flex flex-col items-center gap-4 text-center">
             <div className="grid h-16 w-16 place-items-center rounded-full bg-panel-2">
-              <Sparkles size={28} className="opacity-40" />
+              <Sparkles size={28} className="text-ink-2 opacity-50" />
             </div>
             <div className="max-w-xs space-y-1">
-              <p className="text-ui font-medium text-ink">图像生成工作台</p>
-              <p className="text-meta leading-5">
-                在左侧面板输入描述、上传参考图，即可开始创作。
+              <p className="font-display text-title text-ink">图像工作台</p>
+              <p className="text-meta leading-5 text-ink-2">
+                在下方输入描述、上传参考图，即可开始创作。
                 <br />
                 支持文生图与参考图生图。
               </p>
             </div>
+            {!imageModel && (
+              <button
+                onClick={() => openSettings()}
+                className="cf-btn-primary"
+              >
+                先去配置图像模型
+              </button>
+            )}
+          </div>
+        )}
+
+        {isDragging && (
+          <div className="pointer-events-none absolute inset-4 grid place-items-center rounded-input border-2 border-dashed border-[var(--cf-accent)] bg-[color-mix(in_srgb,var(--cf-accent)_8%,transparent)]">
+            <p className="font-medium text-accent">松开以添加参考图</p>
           </div>
         )}
       </main>
 
-      {/* Full-screen preview */}
-      {previewOpen && selected && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-          onClick={() => setPreviewOpen(false)}
-        >
-          <img
-            src={selected.imageData}
-            alt={selected.prompt}
-            className="max-h-full max-w-full rounded-btn object-contain shadow-2xl"
+      {/* Bottom composer */}
+      <div className="shrink-0 border-t border-line bg-panel px-4 pb-4 pt-3">
+        {/* Reference chips */}
+        {referenceImages.length > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            {referenceImages.map((src, idx) => (
+              <div
+                key={`${src.slice(-32)}-${idx}`}
+                className="group relative h-12 w-12 shrink-0 overflow-hidden rounded-btn border border-line"
+              >
+                <img
+                  src={src}
+                  alt={`参考图 ${idx + 1}`}
+                  className="h-full w-full object-cover"
+                />
+                <button
+                  onClick={() => removeReference(idx)}
+                  className="absolute right-0.5 top-0.5 grid h-4 w-4 place-items-center rounded-full bg-danger text-white opacity-0 transition-opacity group-hover:opacity-100"
+                >
+                  <X size={9} />
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={() => setReferenceImages([])}
+              className="grid h-12 w-12 shrink-0 place-items-center rounded-btn border border-dashed border-line text-ink-3 transition-colors hover:border-danger hover:text-danger"
+              title="清空参考图"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        )}
+
+        {/* Prompt input */}
+        <div className="rounded-composer border border-line bg-panel shadow-composer transition-shadow duration-150 focus-within:border-[color-mix(in_srgb,var(--cf-accent)_40%,var(--cf-border))] focus-within:shadow-composer-focus">
+          <textarea
+            ref={textareaRef}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={onKeyDown}
+            rows={2}
+            placeholder="描述你想生成的图片，可输入 @ 来指定参考图…"
+            className="w-full resize-none bg-transparent px-3.5 pt-3 text-body leading-6 text-ink outline-none placeholder:text-ink-3"
           />
+
+          {/* Param row */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3.5 pb-2.5 pt-1">
+            <ParamPicker label="尺寸" value={size} onChange={setSize}
+              options={[{ value: "auto", label: "auto" }, ...SIZE_OPTIONS.map((s) => ({ value: s.value, label: s.label }))]} />
+            <ParamPicker label="质量" value={quality} onChange={setQuality} options={QUALITY_OPTIONS} />
+            <ParamPicker label="格式" value={format} onChange={setFormat} options={FORMAT_OPTIONS} />
+            <ParamPicker label="透明背景" value={transparent} onChange={setTransparent} options={TRANSPARENT_OPTIONS} />
+            <ParamPicker label="审核" value={moderation} onChange={setModeration} options={MODERATION_OPTIONS} />
+            <ParamPicker label="数量" value={count} onChange={setCount} options={COUNT_OPTIONS} />
+
+            <div className="ml-auto flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                title="添加参考图"
+                className="grid h-8 w-8 place-items-center rounded-btn text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+              >
+                <Paperclip size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={() => void generate()}
+                disabled={!prompt.trim() || generating || !imageModel}
+                title="生成"
+                className="grid h-8 w-8 place-items-center rounded-btn bg-accent text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                {generating ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Send size={15} />
+                )}
+              </button>
+            </div>
+          </div>
         </div>
+
+        {error && (
+          <p className="mt-2 rounded-btn border border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--cf-danger)_6%,transparent)] px-3 py-2 text-meta leading-5 text-danger">
+            {error}
+          </p>
+        )}
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            if (files.length) void appendReferenceFiles(files);
+            e.currentTarget.value = "";
+          }}
+        />
+      </div>
+
+      {/* Detail drawer */}
+      {detailOpen && selected && (
+        <ImageDetailDrawer
+          item={selected}
+          onClose={() => setDetailOpen(false)}
+          onDownload={downloadSelected}
+          onDelete={() => void deleteSelected()}
+          onReuse={reuseConfig}
+          onEdit={editOutput}
+          onCopyPrompt={() => void copyPrompt()}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Bottom param picker (one labeled dropdown)                                */
+/* ------------------------------------------------------------------------ */
+
+function ParamPicker({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: { value: string; label: string }[];
+}) {
+  return (
+    <label className="flex items-center gap-1.5">
+      <span className="text-meta text-ink-3">{label}</span>
+      <Dropdown value={value} onChange={onChange} options={options} className="min-w-[5rem]" />
+    </label>
+  );
+}
+
+/* ------------------------------------------------------------------------ */
+/* Detail drawer — right-hand panel showing the selected generation          */
+/* ------------------------------------------------------------------------ */
+
+function ImageDetailDrawer({
+  item,
+  onClose,
+  onDownload,
+  onDelete,
+  onReuse,
+  onEdit,
+  onCopyPrompt,
+}: {
+  item: ImageGeneration;
+  onClose: () => void;
+  onDownload: () => void;
+  onDelete: () => void;
+  onReuse: () => void;
+  onEdit: () => void;
+  onCopyPrompt: () => void;
+}) {
+  const refs = getReferenceImages(item);
+  const extra = (item as ImageGeneration & { extraParams?: Record<string, unknown> })
+    .extraParams ?? {};
+  const createdAt = new Date(item.createdAt);
+  const createdText = `${createdAt.getFullYear()}/${String(createdAt.getMonth() + 1).padStart(2, "0")}/${String(createdAt.getDate()).padStart(2, "0")} ${String(createdAt.getHours()).padStart(2, "0")}:${String(createdAt.getMinutes()).padStart(2, "0")}:${String(createdAt.getSeconds()).padStart(2, "0")}`;
+  const durationMs = typeof extra.durationMs === "number" ? extra.durationMs : null;
+  const durationText = durationMs !== null ? `${Math.floor(durationMs / 60000)}:${String(Math.floor((durationMs % 60000) / 1000)).padStart(2, "0")}` : null;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="生成详情"
+        className="relative grid max-h-full w-full max-w-5xl grid-cols-[3fr_2fr] overflow-hidden rounded-input border border-line bg-panel shadow-menu"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Left: image */}
+        <div className="relative flex min-h-0 items-center justify-center bg-panel-2 p-4">
+          <img
+            src={item.imageData}
+            alt={item.prompt}
+            className="max-h-full max-w-full rounded-btn object-contain"
+          />
+          <div className="absolute left-3 top-3 flex items-center gap-1.5">
+            <span className="rounded-md bg-panel/90 px-2 py-0.5 text-meta text-ink">
+              {aspectOf(item.sizeLabel ?? null)}
+            </span>
+            {item.sizeLabel && (
+              <span className="rounded-md bg-panel/90 px-2 py-0.5 text-meta text-ink">
+                {item.sizeLabel}
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={onDownload}
+            title="下载"
+            className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-md bg-panel/90 text-ink transition-colors hover:bg-panel"
+          >
+            <Download size={14} />
+          </button>
+        </div>
+
+        {/* Right: info */}
+        <div className="flex min-h-0 flex-col overflow-y-auto">
+          <div className="flex items-center justify-end border-b border-line px-4 py-2.5">
+            <button
+              onClick={onClose}
+              title="关闭"
+              className="grid h-7 w-7 place-items-center rounded-btn text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+            >
+              <X size={15} />
+            </button>
+          </div>
+
+          <div className="flex flex-1 flex-col gap-5 px-5 py-4">
+            {/* Prompt */}
+            <section>
+              <div className="mb-1 flex items-center justify-between">
+                <h3 className="text-meta font-medium text-ink-3">输入内容</h3>
+                <button
+                  onClick={onCopyPrompt}
+                  title="复制"
+                  className="grid h-5 w-5 place-items-center rounded text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+                >
+                  <Copy size={11} />
+                </button>
+              </div>
+              <p className="text-[0.9375rem] leading-6 text-ink">{item.prompt}</p>
+            </section>
+
+            {/* References */}
+            {refs.length > 0 && (
+              <section>
+                <h3 className="mb-1.5 text-meta font-medium text-ink-3">参考图</h3>
+                <div className="flex flex-wrap gap-2">
+                  {refs.map((src, idx) => (
+                    <img
+                      key={idx}
+                      src={src}
+                      alt={`参考图 ${idx + 1}`}
+                      className="h-14 w-14 rounded-btn border border-line object-cover"
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Params */}
+            <section>
+              <h3 className="mb-1.5 text-meta font-medium text-ink-3">参数配置</h3>
+              <dl className="space-y-1.5 text-ui">
+                <KV k="来源" v={typeof extra.source === "string" ? extra.source : "默认图像模型"} />
+                <KV k="尺寸" v={item.sizeLabel ?? "auto"} extra={typeof extra.quality === "string" ? extra.quality : "auto"} extraK="质量" />
+                <KV k="格式" v={typeof extra.format === "string" ? extra.format : "png"} extra={typeof extra.transparent === "string" ? extra.transparent : "false"} extraK="透明背景" />
+                <KV k="审核" v={typeof extra.moderation === "string" ? extra.moderation : "auto"} extra={typeof extra.count === "string" ? extra.count : "1"} extraK="数量" />
+              </dl>
+              <p className="mt-3 text-meta text-ink-3">
+                创建于 {createdText}
+                {durationText && ` · 耗时 ${durationText}`}
+              </p>
+            </section>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-2 border-t border-line px-5 py-3">
+            <button onClick={onReuse} className="cf-btn-primary flex-1">
+              复用配置
+            </button>
+            <button onClick={onEdit} className="cf-btn-secondary flex-1">
+              <Pencil size={13} /> 编辑输出
+            </button>
+            <button
+              onClick={onDelete}
+              className="flex items-center gap-1 rounded-btn border border-line px-3 py-1.5 text-ui text-danger transition-colors hover:bg-[color-mix(in_srgb,var(--cf-danger)_8%,transparent)]"
+            >
+              <Trash2 size={13} /> 删除任务
+            </button>
+            <button
+              type="button"
+              title="收藏"
+              className="grid h-8 w-8 place-items-center rounded-btn text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+            >
+              <Star size={15} />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KV({ k, v, extraK, extra }: { k: string; v: string; extraK?: string; extra?: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 border-b border-line pb-1.5 last:border-0">
+      <dt className="shrink-0 text-meta text-ink-3">{k}</dt>
+      <dd className="min-w-0 flex-1 truncate text-right text-ink">{v}</dd>
+      {extraK && extra !== undefined && (
+        <>
+          <dt className="shrink-0 text-meta text-ink-3">{extraK}</dt>
+          <dd className="min-w-0 flex-1 truncate text-right text-ink">{extra}</dd>
+        </>
       )}
     </div>
   );
