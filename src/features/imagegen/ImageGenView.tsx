@@ -630,18 +630,16 @@ function ImageDetailDrawer({
         </div>
 
         {/* Right: info */}
-        <div className="flex min-h-0 flex-col overflow-y-auto">
-          <div className="flex items-center justify-end border-b border-line px-4 py-2.5">
-            <button
-              onClick={onClose}
-              title="关闭"
-              className="grid h-7 w-7 place-items-center rounded-btn text-ink-2 transition-colors hover:bg-hover hover:text-ink"
-            >
-              <X size={15} />
-            </button>
-          </div>
+        <div className="relative flex min-h-0 flex-col">
+          <button
+            onClick={onClose}
+            title="关闭"
+            className="absolute right-3 top-3 z-10 grid h-7 w-7 place-items-center rounded-btn text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+          >
+            <X size={15} />
+          </button>
 
-          <div className="flex flex-1 flex-col gap-5 px-5 py-4">
+          <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
             {/* Prompt */}
             <section>
               <div className="mb-1 flex items-center justify-between">
@@ -677,16 +675,19 @@ function ImageDetailDrawer({
             {/* Params */}
             <section>
               <h3 className="mb-1.5 text-meta font-medium text-ink-3">参数配置</h3>
-              <dl className="space-y-1.5 text-ui">
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-ui">
                 <KV k="来源" v={typeof extra.source === "string" ? extra.source : "默认图像模型"} />
-                <KV k="尺寸" v={item.sizeLabel ?? "auto"} extra={typeof extra.quality === "string" ? extra.quality : "auto"} extraK="质量" />
-                <KV k="格式" v={typeof extra.format === "string" ? extra.format : "png"} extra={typeof extra.transparent === "string" ? extra.transparent : "false"} extraK="透明背景" />
-                <KV k="审核" v={typeof extra.moderation === "string" ? extra.moderation : "auto"} extra={typeof extra.count === "string" ? extra.count : "1"} extraK="数量" />
+                <KV k="尺寸" v={item.sizeLabel ?? "auto"} />
+                <KV k="质量" v={typeof extra.quality === "string" ? extra.quality : "auto"} />
+                <KV k="格式" v={typeof extra.format === "string" ? extra.format : "png"} />
+                <KV k="透明背景" v={typeof extra.transparent === "string" ? extra.transparent : "false"} />
+                <KV k="审核" v={typeof extra.moderation === "string" ? extra.moderation : "auto"} />
+                <KV k="数量" v={typeof extra.count === "string" ? extra.count : "1"} />
+                <KV
+                  k="创建于"
+                  v={durationText ? `${createdText} · ${durationText}` : createdText}
+                />
               </dl>
-              <p className="mt-3 text-meta text-ink-3">
-                创建于 {createdText}
-                {durationText && ` · 耗时 ${durationText}`}
-              </p>
             </section>
           </div>
 
@@ -727,17 +728,11 @@ function ImageDetailDrawer({
   );
 }
 
-function KV({ k, v, extraK, extra }: { k: string; v: string; extraK?: string; extra?: string }) {
+function KV({ k, v }: { k: string; v: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-3 border-b border-line pb-1.5 last:border-0">
+    <div className="flex items-baseline justify-between gap-2 border-b border-line pb-1 last:border-0">
       <dt className="shrink-0 text-meta text-ink-3">{k}</dt>
       <dd className="min-w-0 flex-1 truncate text-right text-ink">{v}</dd>
-      {extraK && extra !== undefined && (
-        <>
-          <dt className="shrink-0 text-meta text-ink-3">{extraK}</dt>
-          <dd className="min-w-0 flex-1 truncate text-right text-ink">{extra}</dd>
-        </>
-      )}
     </div>
   );
 }
