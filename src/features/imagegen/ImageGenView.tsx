@@ -691,23 +691,32 @@ function ImageDetailDrawer({
           </div>
 
           {/* Actions */}
-          <div className="flex items-center gap-2 border-t border-line px-5 py-3">
-            <button onClick={onReuse} className="cf-btn-primary flex-1">
+          <div className="flex items-center gap-1.5 border-t border-line px-5 py-3">
+            <button
+              onClick={onReuse}
+              className="inline-flex h-8 items-center gap-1.5 rounded-btn px-3 text-ui font-medium text-accent transition-colors hover:bg-[color-mix(in_srgb,var(--cf-accent)_8%,transparent)]"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
               复用配置
             </button>
-            <button onClick={onEdit} className="cf-btn-secondary flex-1">
-              <Pencil size={13} /> 编辑输出
+            <button
+              onClick={onEdit}
+              className="inline-flex h-8 items-center gap-1.5 rounded-btn px-3 text-ui font-medium text-success transition-colors hover:bg-[color-mix(in_srgb,var(--cf-success)_8%,transparent)]"
+            >
+              <Pencil size={13} />
+              编辑输出
             </button>
             <button
               onClick={onDelete}
-              className="flex items-center gap-1 rounded-btn border border-line px-3 py-1.5 text-ui text-danger transition-colors hover:bg-[color-mix(in_srgb,var(--cf-danger)_8%,transparent)]"
+              className="inline-flex h-8 items-center gap-1.5 rounded-btn px-3 text-ui font-medium text-danger transition-colors hover:bg-[color-mix(in_srgb,var(--cf-danger)_8%,transparent)]"
             >
-              <Trash2 size={13} /> 删除任务
+              <Trash2 size={13} />
+              删除任务
             </button>
             <button
               type="button"
               title="收藏"
-              className="grid h-8 w-8 place-items-center rounded-btn text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+              className="ml-auto grid h-8 w-8 place-items-center rounded-btn text-ink-3 transition-colors hover:bg-hover hover:text-ink"
             >
               <Star size={15} />
             </button>
