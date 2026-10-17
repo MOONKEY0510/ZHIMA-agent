@@ -15,8 +15,9 @@ use crate::storage::{config::ConfigStore, secrets};
 const MAX_IMAGE_RESPONSE_BYTES: usize = 20 * 1024 * 1024; // 20 MB
 /// Upper bound on the base64 `image_data` accepted when persisting history.
 const MAX_IMAGE_DATA_BYTES: usize = 20 * 1024 * 1024; // 20 MB
-/// The compatible `image` field carries one reference; more is rejected.
-const MAX_REFERENCE_IMAGES: usize = 1;
+/// Upper bound on reference images per request (mirrors the image workbench
+/// composer, which caps the attached chips at three).
+const MAX_REFERENCE_IMAGES: usize = 3;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +41,43 @@ pub struct GenerateImageRequest {
 
 fn default_image_size() -> String {
     "1024x1024".into()
+}
+
+/// Build the `image` field carrying the reference images.
+///
+/// A single reference keeps the plain-string shape, which every compatible API
+/// understands. Several references are sent as an array instead of dropping all
+/// but the first, which is the shape multi-reference providers expect.
+/// `Ok(None)` means there is no usable reference and the field stays unset.
+fn reference_image_value(refs: Vec<String>) -> Result<Option<serde_json::Value>, String> {
+    let images: Vec<String> = refs
+        .into_iter()
+        .map(strip_data_url_prefix)
+        .filter(|data| !data.is_empty())
+        .collect();
+    if images.len() > MAX_REFERENCE_IMAGES {
+        return Err(format!(
+            "一次最多支持 {MAX_REFERENCE_IMAGES} 张参考图（当前 {} 张）",
+            images.len()
+        ));
+    }
+    match images.len() {
+        0 => Ok(None),
+        1 => Ok(Some(serde_json::Value::String(
+            images.into_iter().next().unwrap_or_default(),
+        ))),
+        _ => Ok(Some(serde_json::Value::Array(
+            images.into_iter().map(serde_json::Value::String).collect(),
+        ))),
+    }
+}
+
+/// Drop the `data:image/png;base64,` prefix so only the payload is sent.
+fn strip_data_url_prefix(value: String) -> String {
+    value
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(',').map(|(_, data)| data.to_string()))
+        .unwrap_or(value)
 }
 
 /// Generate an image and return it as a base64-encoded PNG/JPEG data URL.
@@ -67,9 +105,9 @@ pub async fn generate_image(
         return Err("请输入图像描述".into());
     }
 
-    // Build the request body. If reference images are supplied we send them
-    // as base64 in the `image` field — the de facto convention used by most
-    // OpenAI-compatible Chinese image APIs (CogView, Wanxiang, Spark, etc.).
+    // Build the request body. Reference images are sent as base64 in the
+    // `image` field — the de facto convention used by most OpenAI-compatible
+    // Chinese image APIs (CogView, Wanxiang, Spark, Seedream, etc.).
     let mut body = serde_json::json!({
         "model": model,
         "prompt": request.prompt.trim(),
@@ -78,17 +116,8 @@ pub async fn generate_image(
     });
 
     if let Some(refs) = request.reference_images {
-        // The compatible request shape carries a single `image`; refuse extra
-        // references instead of silently generating from only the first one.
-        if refs.len() > MAX_REFERENCE_IMAGES {
-            return Err(format!("当前仅支持 {MAX_REFERENCE_IMAGES} 张参考图"));
-        }
-        if let Some(first) = refs.into_iter().next() {
-            let b64 = first
-                .strip_prefix("data:")
-                .and_then(|s| s.split_once(',').map(|(_, data)| data.to_string()))
-                .unwrap_or(first);
-            body["image"] = serde_json::Value::String(b64);
+        if let Some(value) = reference_image_value(refs)? {
+            body["image"] = value;
         }
     }
 
@@ -194,4 +223,51 @@ pub fn delete_image_generation(db: State<'_, Database>, id: String) -> Result<()
 #[tauri::command]
 pub fn clear_image_generations(db: State<'_, Database>) -> Result<(), String> {
     db.clear_image_generations()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PNG: &str = "data:image/png;base64,AAAA";
+    const JPG: &str = "data:image/jpeg;base64,BBBB";
+
+    #[test]
+    fn no_usable_reference_leaves_field_unset() {
+        assert!(reference_image_value(Vec::new()).unwrap().is_none());
+        assert!(reference_image_value(vec![String::new()])
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn single_reference_keeps_string_shape() {
+        let value = reference_image_value(vec![PNG.to_string()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(value, serde_json::json!("AAAA"));
+    }
+
+    #[test]
+    fn multiple_references_use_array_shape() {
+        let value = reference_image_value(vec![PNG.to_string(), JPG.to_string()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(value, serde_json::json!(["AAAA", "BBBB"]));
+    }
+
+    #[test]
+    fn raw_base64_passes_through() {
+        let value = reference_image_value(vec!["CCCC".to_string()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(value, serde_json::json!("CCCC"));
+    }
+
+    #[test]
+    fn references_beyond_cap_are_rejected() {
+        let refs = vec![PNG.to_string(); MAX_REFERENCE_IMAGES + 1];
+        let err = reference_image_value(refs).unwrap_err();
+        assert!(err.contains(&format!("最多支持 {MAX_REFERENCE_IMAGES} 张参考图")));
+    }
 }

@@ -469,7 +469,11 @@ export function ImageGenView() {
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                title="添加参考图"
+                title={
+                  referenceImages.length >= MAX_REFERENCE_IMAGES
+                    ? `最多 ${MAX_REFERENCE_IMAGES} 张参考图`
+                    : "添加参考图"
+                }
                 className="grid h-8 w-8 place-items-center rounded-btn text-ink-2 transition-colors hover:bg-hover hover:text-ink"
               >
                 <Paperclip size={15} />
