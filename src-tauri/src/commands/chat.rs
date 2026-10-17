@@ -25,7 +25,9 @@ use crate::api::text_tool_calls::{
 };
 use crate::api::web_search;
 use crate::errors::{brief, read_body_capped};
-use crate::models::request::{ChatSendMultiRequest, ChatSendRequest, DescribeImageRequest};
+use crate::models::request::{
+    ChatSendMultiRequest, ChatSendRequest, ContextExclusions, DescribeImageRequest,
+};
 use crate::models::response::{ChatEvent, SequencedChatEvent};
 use crate::state::AppState;
 use crate::storage::database::Database;
@@ -241,11 +243,13 @@ struct TurnContext {
     conversation_id: Option<String>,
     approval_session_id: Option<String>,
     memory_block: String,
+    memories: Vec<crate::storage::database::Memory>,
+    memory_candidates: Vec<crate::storage::database::Memory>,
+    knowledge_candidates: Vec<crate::models::response::KnowledgeEvidence>,
     tool_policies: std::collections::HashMap<String, crate::storage::config::ToolPolicy>,
     /// Retrieved knowledge-base passages, already formatted (P1-9).
     kb_block: Option<String>,
-    kb_hits: usize,
-    kb_titles: Vec<String>,
+    kb_evidence: Vec<crate::models::response::KnowledgeEvidence>,
     /// User-skill catalog plus triggered instructions (v20, `agent::skills`).
     skills_block: Option<String>,
 }
@@ -264,6 +268,7 @@ fn build_turn_context(
     thinking_effort: &str,
     conversation_id: Option<String>,
     skill_ids: &[String],
+    exclusions: &ContextExclusions,
 ) -> TurnContext {
     // Rolling summary so long-conversation context survives the frontend's
     // 40-message window (agent/context.rs).
@@ -272,15 +277,14 @@ fn build_turn_context(
         None => None,
     };
 
-    // Long-term memories (most-used first, bounded), rendered into the prompt.
-    let memory_block = {
-        let memories = crate::agent::memory::load_for_prompt(db);
-        // Track usage so the most relevant memories surface first.
-        for m in &memories {
-            let _ = db.record_memory_use(&m.id);
-        }
-        crate::agent::memory::format_memories(&memories)
-    };
+    // Shared read-only resolver: preview must never bump usage or invoke a model.
+    let memory_candidates = crate::agent::memory::load_for_prompt(db);
+    let memories: Vec<_> = memory_candidates
+        .iter()
+        .filter(|memory| !exclusions.memory_ids.contains(&memory.id))
+        .cloned()
+        .collect();
+    let memory_block = crate::agent::memory::format_memories(&memories);
 
     // Search query = the last non-empty user message.
     let search_query = if web_search {
@@ -293,7 +297,17 @@ fn build_turn_context(
         None
     };
 
-    let (kb_block, kb_hits, kb_titles) = retrieve_knowledge(config, db, messages);
+    let (_, knowledge_candidates) = retrieve_knowledge(config, db, messages);
+    let mut kb_evidence: Vec<_> = knowledge_candidates
+        .iter()
+        .filter(|hit| !exclusions.knowledge_document_ids.contains(&hit.document_id))
+        .cloned()
+        .collect();
+    for (index, hit) in kb_evidence.iter_mut().enumerate() {
+        hit.index = index + 1;
+    }
+    let kb_text = crate::agent::knowledge::format_evidence_context(&kb_evidence);
+    let kb_block = (!kb_text.is_empty()).then_some(kb_text);
 
     // User skills (自定义技能): catalog of every enabled skill plus the full
     // instructions of the ones triggered by the latest user message — or
@@ -326,10 +340,12 @@ fn build_turn_context(
         conversation_id,
         approval_session_id: None,
         memory_block,
+        memories,
+        memory_candidates,
+        knowledge_candidates,
         tool_policies,
         kb_block,
-        kb_hits,
-        kb_titles,
+        kb_evidence,
         skills_block,
     }
 }
@@ -405,17 +421,20 @@ fn initial_context_sensitive(
 
 /// Retrieve the best knowledge-base passages for this turn (P1-9).
 ///
-/// Returns the formatted prompt block, the hit count and the source titles.
+/// Returns a bounded prompt block and its exact evidence snapshot.
 /// Any failure degrades to "no knowledge" — a broken index must never block a
 /// chat request.
 fn retrieve_knowledge(
     config: &ConfigStore,
     db: &Database,
     messages: &[crate::models::request::ChatMessage],
-) -> (Option<String>, usize, Vec<String>) {
+) -> (
+    Option<String>,
+    Vec<crate::models::response::KnowledgeEvidence>,
+) {
     let knowledge = config.read(|cfg| cfg.knowledge.clone());
     if !knowledge.auto_inject {
-        return (None, 0, Vec::new());
+        return (None, Vec::new());
     }
     let query = messages
         .iter()
@@ -423,30 +442,199 @@ fn retrieve_knowledge(
         .find(|m| m.role == "user" && !m.content.trim().is_empty())
         .map(|m| m.content.trim().to_string());
     let Some(query) = query else {
-        return (None, 0, Vec::new());
+        return (None, Vec::new());
     };
 
     let hits = match db.kb_search(&query, knowledge.max_chunks as usize) {
         Ok(hits) => hits,
         Err(err) => {
             eprintln!("知识库检索失败: {err}");
-            return (None, 0, Vec::new());
+            return (None, Vec::new());
         }
     };
     if hits.is_empty() {
-        return (None, 0, Vec::new());
+        return (None, Vec::new());
     }
 
-    let excerpts: Vec<crate::agent::knowledge::KbExcerpt<'_>> = hits
-        .iter()
-        .map(|hit| crate::agent::knowledge::KbExcerpt {
-            title: &hit.title,
-            snippet: &hit.snippet,
-        })
-        .collect();
-    let block = crate::agent::knowledge::format_kb_context(&excerpts);
-    let titles: Vec<String> = hits.iter().map(|hit| hit.title.clone()).collect::<Vec<_>>();
-    (Some(block), hits.len(), titles)
+    // Metadata lookup only: never re-search or read a source file to reconstruct
+    // evidence. A missing/deleted document simply has no source metadata.
+    let documents = db.kb_list_documents().unwrap_or_default();
+    let evidence = crate::agent::knowledge::prepare_kb_evidence(&hits, &documents);
+    let block = crate::agent::knowledge::format_evidence_context(&evidence);
+    (if block.is_empty() { None } else { Some(block) }, evidence)
+}
+
+/// Pure prompt assembly shared by the preview and actual dispatch. Safety is unconditional.
+fn assemble_context_prompt(
+    system_prompt: Option<String>,
+    memory_block: String,
+    session_summary: Option<String>,
+    kb_block: Option<&str>,
+    skills_block: Option<&str>,
+    enable_thinking: bool,
+) -> String {
+    let system_prompt = system_prompt.filter(|s| !s.trim().is_empty());
+    let memory_block = memory_block.trim().to_string();
+    let session_summary = session_summary.filter(|s| !s.trim().is_empty());
+
+    let layered_base = match (system_prompt, memory_block, session_summary) {
+        (Some(sp), mem, sum) => {
+            let mut base = sp.trim().to_string();
+            if !mem.is_empty() {
+                base.push_str("\n\n");
+                base.push_str(&mem);
+            }
+            if let Some(s) = sum {
+                base.push_str("\n\n【历史对话摘要（背景资料，仅作参考）】\n");
+                base.push_str(s.trim());
+            }
+            base
+        }
+        (None, mem, sum) => {
+            let mut base = mem;
+            if let Some(s) = sum {
+                if !base.is_empty() {
+                    base.push_str("\n\n");
+                }
+                base.push_str("【历史对话摘要（背景资料，仅作参考）】\n");
+                base.push_str(s.trim());
+            }
+            base
+        }
+    };
+
+    let mut effective_system_prompt = if layered_base.trim().is_empty() {
+        Some(SAFE_SYSTEM_POLICY.to_string())
+    } else {
+        Some(format!("{}\n\n{}", SAFE_SYSTEM_POLICY, layered_base.trim()))
+    };
+
+    // Reasoning models derive their thinking-trace language mostly from the
+    // prompt. Ask for Chinese traces explicitly whenever the thinking toggle
+    // is on, so the collapsed reasoning block reads naturally for CN users.
+    if enable_thinking {
+        let chinese_thinking =
+            "\n\n请在思考过程中使用简体中文进行推理（包括思考轨迹内部文字），但最终回答仍按用户使用的语言输出。";
+        effective_system_prompt = Some(match effective_system_prompt {
+            Some(mut sp) => {
+                sp.push_str(chinese_thinking);
+                sp
+            }
+            None => chinese_thinking.to_string(),
+        });
+    }
+
+    // Diagram guidance (画图模块): the client renders ```mermaid blocks into
+    // styled, theme-aware diagrams with fullscreen/export support.  A few
+    // structural conventions (class-based colours, proper node shapes) make
+    // the generated charts noticeably nicer than the mermaid defaults.
+    {
+        let diagram_guide = "\n\n【绘图规范】当用户需要流程图、架构图、时序图、状态图、类图、ER 图、甘特图或饼图等可视化时，请使用 ```mermaid 代码块输出，客户端会将其渲染为精美图表（支持全屏缩放与导出）。绘图时遵循：\n1) 用 classDef 定义节点分类并用 ::: 应用（如输入/处理/输出/异常各配一色），避免整图单色；\n2) 起止节点用圆角或胶囊形状（如 A([开始])），判断条件用菱形（如 B{条件?}）；\n3) 节点较多时用 subgraph 分组，并根据图的走向选择 TD 或 LR 方向；\n4) 节点文字简短并使用中文标签，不要在 mermaid 之外改用图片链接或 ASCII 字符图表达图表。";
+        effective_system_prompt = Some(match effective_system_prompt {
+            Some(mut sp) => {
+                sp.push_str(diagram_guide);
+                sp
+            }
+            None => diagram_guide.trim_start().to_string(),
+        });
+    }
+
+    for block in [kb_block, skills_block]
+        .into_iter()
+        .flatten()
+        .filter(|b| !b.trim().is_empty())
+    {
+        let prompt = effective_system_prompt.get_or_insert_with(String::new);
+        prompt.push_str(
+            "
+
+",
+        );
+        prompt.push_str(block);
+    }
+    effective_system_prompt.unwrap_or_else(|| SAFE_SYSTEM_POLICY.to_string())
+}
+
+fn record_context_memory_use(db: &Database, context: &TurnContext) {
+    for memory in &context.memories {
+        let _ = db.record_memory_use(&memory.id);
+    }
+}
+
+fn preview_context(
+    config: &ConfigStore,
+    db: &Database,
+    request: &ChatSendRequest,
+) -> Result<crate::agent::context::ContextPreview, String> {
+    use crate::agent::context::{fit_context, ContextBudget, ContextPreview, PreviewMemory};
+    validate_messages(&request.messages)?;
+    let ctx = build_turn_context(
+        config,
+        db,
+        &request.messages,
+        request.system_prompt.clone(),
+        request.web_search,
+        request.enable_tools,
+        request.enable_thinking,
+        &request.thinking_effort,
+        request.conversation_id.clone(),
+        &request.skill_ids,
+        &request.context_exclusions,
+    );
+    let system_prompt = assemble_context_prompt(
+        ctx.system_prompt,
+        ctx.memory_block,
+        ctx.session_summary.clone(),
+        ctx.kb_block.as_deref(),
+        ctx.skills_block.as_deref(),
+        ctx.enable_thinking,
+    );
+    let budget = ContextBudget::conservative();
+    let fit = fit_context(&ctx.messages, Some(&system_prompt), &budget);
+    let estimated_tokens = budget.total_tokens(Some(&system_prompt), &fit.messages);
+    let mut dynamic_content = vec!["图片压缩/视觉描述、联网结果、工具定义及后续工具结果未计入；发送时会重新解析，预览不冻结结果。".into()];
+    if request.web_search {
+        dynamic_content.push("已开启联网搜索：预览不会执行搜索，搜索内容待发送时生成。".into());
+    }
+    if request.enable_tools {
+        dynamic_content
+            .push("已开启工具：工具目录和执行结果是动态内容，预览不会启动 MCP 或执行工具。".into());
+    }
+    Ok(ContextPreview {
+        memories: ctx
+            .memory_candidates
+            .into_iter()
+            .map(|memory| PreviewMemory {
+                excluded: request.context_exclusions.memory_ids.contains(&memory.id),
+                id: memory.id,
+                category: memory.category,
+                content: memory.content,
+            })
+            .collect(),
+        knowledge: ctx.knowledge_candidates,
+        excluded_knowledge_document_ids: request.context_exclusions.knowledge_document_ids.clone(),
+        skills_block: ctx.skills_block,
+        summary: ctx.session_summary,
+        system_prompt,
+        input_message_count: ctx.messages.len(),
+        retained_message_count: fit.messages.len(),
+        dropped_message_count: ctx.messages.len().saturating_sub(fit.messages.len()),
+        estimated_tokens,
+        input_budget: budget.max_input_tokens,
+        oversized_message: fit.oversized_message,
+        over_budget: estimated_tokens > budget.max_input_tokens,
+        dynamic_content,
+    })
+}
+
+/// Read-only local preview: no credentials, network, MCP warmup, usage writes or model calls.
+#[tauri::command]
+pub fn chat_preview_context(
+    config: State<'_, ConfigStore>,
+    db: State<'_, Database>,
+    request: ChatSendRequest,
+) -> Result<crate::agent::context::ContextPreview, String> {
+    preview_context(&config, &db, &request)
 }
 
 /// Validate a multi-model turn before any work happens.
@@ -523,8 +711,7 @@ fn spawn_stream(
             ctx.memory_block,
             ctx.tool_policies,
             ctx.kb_block,
-            ctx.kb_hits,
-            ctx.kb_titles,
+            ctx.kb_evidence,
             ctx.skills_block,
             summary_generation,
         )
@@ -559,9 +746,12 @@ pub async fn chat_send(
         &request.thinking_effort,
         request.conversation_id.clone(),
         &request.skill_ids,
+        &request.context_exclusions,
     );
     ctx.approval_session_id = validate_approval_scope(request.approval_session_id.as_deref())?;
     let target = resolve_target(&config, &request.provider_id, &request.model_key)?;
+
+    record_context_memory_use(&db, &ctx);
 
     // Enabled MCP servers start in the background, so this turn is never
     // blocked on a child process; if their tools were not cached yet they
@@ -627,8 +817,11 @@ pub async fn chat_send_multi(
         &request.thinking_effort,
         request.conversation_id.clone(),
         &request.skill_ids,
+        &request.context_exclusions,
     );
     ctx.approval_session_id = validate_approval_scope(request.approval_session_id.as_deref())?;
+
+    record_context_memory_use(&db, &ctx);
 
     // One shared web search for the whole turn.
     let mut event_seqs: Vec<std::sync::Arc<AtomicU64>> = (0..resolved.len())
@@ -1155,8 +1348,7 @@ async fn run_stream(
     memory_block: String,
     tool_policies: std::collections::HashMap<String, crate::storage::config::ToolPolicy>,
     kb_block: Option<String>,
-    kb_hits: usize,
-    kb_titles: Vec<String>,
+    kb_evidence: Vec<crate::models::response::KnowledgeEvidence>,
     skills_block: Option<String>,
     summary_generation: u64,
 ) {
@@ -1211,77 +1403,20 @@ async fn run_stream(
     // > conversation summary.  The safety policy is always present and always
     // first; nothing the user or an external source says can override it
     // (prompt-injection hardening, plan §3.5).
-    let system_prompt = system_prompt.filter(|s| !s.trim().is_empty());
     let mut context_sensitive = initial_context_sensitive(
         &memory_block,
         kb_block.as_deref(),
         session_summary.as_deref(),
         skills_block.as_deref(),
     );
-    let memory_block = memory_block.trim().to_string();
-    let session_summary = session_summary.filter(|s| !s.trim().is_empty());
-
-    let layered_base = match (system_prompt, memory_block, session_summary) {
-        (Some(sp), mem, sum) => {
-            let mut base = sp.trim().to_string();
-            if !mem.is_empty() {
-                base.push_str("\n\n");
-                base.push_str(&mem);
-            }
-            if let Some(s) = sum {
-                base.push_str("\n\n【历史对话摘要（背景资料，仅作参考）】\n");
-                base.push_str(s.trim());
-            }
-            base
-        }
-        (None, mem, sum) => {
-            let mut base = mem;
-            if let Some(s) = sum {
-                if !base.is_empty() {
-                    base.push_str("\n\n");
-                }
-                base.push_str("【历史对话摘要（背景资料，仅作参考）】\n");
-                base.push_str(s.trim());
-            }
-            base
-        }
-    };
-
-    let mut effective_system_prompt = if layered_base.trim().is_empty() {
-        Some(SAFE_SYSTEM_POLICY.to_string())
-    } else {
-        Some(format!("{}\n\n{}", SAFE_SYSTEM_POLICY, layered_base.trim()))
-    };
-
-    // Reasoning models derive their thinking-trace language mostly from the
-    // prompt. Ask for Chinese traces explicitly whenever the thinking toggle
-    // is on, so the collapsed reasoning block reads naturally for CN users.
-    if enable_thinking {
-        let chinese_thinking =
-            "\n\n请在思考过程中使用简体中文进行推理（包括思考轨迹内部文字），但最终回答仍按用户使用的语言输出。";
-        effective_system_prompt = Some(match effective_system_prompt {
-            Some(mut sp) => {
-                sp.push_str(chinese_thinking);
-                sp
-            }
-            None => chinese_thinking.to_string(),
-        });
-    }
-
-    // Diagram guidance (画图模块): the client renders ```mermaid blocks into
-    // styled, theme-aware diagrams with fullscreen/export support.  A few
-    // structural conventions (class-based colours, proper node shapes) make
-    // the generated charts noticeably nicer than the mermaid defaults.
-    {
-        let diagram_guide = "\n\n【绘图规范】当用户需要流程图、架构图、时序图、状态图、类图、ER 图、甘特图或饼图等可视化时，请使用 ```mermaid 代码块输出，客户端会将其渲染为精美图表（支持全屏缩放与导出）。绘图时遵循：\n1) 用 classDef 定义节点分类并用 ::: 应用（如输入/处理/输出/异常各配一色），避免整图单色；\n2) 起止节点用圆角或胶囊形状（如 A([开始])），判断条件用菱形（如 B{条件?}）；\n3) 节点较多时用 subgraph 分组，并根据图的走向选择 TD 或 LR 方向；\n4) 节点文字简短并使用中文标签，不要在 mermaid 之外改用图片链接或 ASCII 字符图表达图表。";
-        effective_system_prompt = Some(match effective_system_prompt {
-            Some(mut sp) => {
-                sp.push_str(diagram_guide);
-                sp
-            }
-            None => diagram_guide.trim_start().to_string(),
-        });
-    }
+    let mut effective_system_prompt = Some(assemble_context_prompt(
+        system_prompt,
+        memory_block,
+        session_summary,
+        kb_block.as_deref(),
+        skills_block.as_deref(),
+        enable_thinking,
+    ));
 
     // ---- Apply the context budget ------------------------------------------
     // Drop whole older turns if the request would exceed the conservative
@@ -1317,26 +1452,15 @@ async fn run_stream(
     // ---- Local knowledge base (P1-9) ---------------------------------------
     // Best-matching passages go into the prompt as reference material.  The
     // retrieval already happened on the sync side (build_turn_context) so the
-    // count is known before the first request.
-    if let Some(block) = kb_block.filter(|b| !b.trim().is_empty()) {
+    // count is known before the first request. This event means PREPARED, not
+    // delivered: users can inspect it before approving outbound data below.
+    if kb_block.is_some_and(|b| !b.trim().is_empty()) {
         emit(ChatEvent::KbUsed {
             request_id: request_id.clone(),
-            count: kb_hits,
-            titles: kb_titles,
-        });
-        effective_system_prompt = Some(match effective_system_prompt {
-            Some(sp) if !sp.trim().is_empty() => format!("{sp}\n\n{block}"),
-            _ => block,
-        });
-    }
-
-    // ---- User skills (自定义技能, v20) --------------------------------------
-    // Catalog + triggered instruction bodies, appended after the knowledge
-    // base so user-authored instructions stay closest to the conversation.
-    if let Some(block) = skills_block.filter(|b| !b.trim().is_empty()) {
-        effective_system_prompt = Some(match effective_system_prompt {
-            Some(sp) if !sp.trim().is_empty() => format!("{sp}\n\n{block}"),
-            _ => block,
+            count: kb_evidence.len(),
+            titles: kb_evidence.iter().map(|item| item.title.clone()).collect(),
+            evidence: kb_evidence,
+            stage: crate::models::response::KnowledgeEvidenceStage::Prepared,
         });
     }
 
@@ -2661,6 +2785,87 @@ mod tests {
         assert!(pending.lock().unwrap().is_empty());
     }
 
+    #[tokio::test]
+    async fn prepared_evidence_survives_real_provider_approval_rejection_and_cancellation() {
+        for cancel in [false, true] {
+            let pending = crate::state::PendingToolApprovals::default();
+            let token = CancellationToken::new();
+            let events = std::cell::RefCell::new(Vec::new());
+            let emit = |event: ChatEvent| {
+                if let ChatEvent::ToolPending {
+                    request_id,
+                    call_id,
+                    can_remember,
+                    ..
+                } = &event
+                {
+                    assert!(!can_remember);
+                    if cancel {
+                        // Real cancellation while the approval receiver is waiting.
+                        token.cancel();
+                    } else {
+                        let entry = pending
+                            .lock()
+                            .unwrap()
+                            .remove(&format!("{request_id}:{call_id}"))
+                            .unwrap();
+                        entry
+                            .sender
+                            .send(crate::state::ApprovalVerdict { approved: false })
+                            .unwrap();
+                    }
+                }
+                events.borrow_mut().push(event);
+            };
+            emit(ChatEvent::KbUsed {
+                request_id: "req".into(),
+                count: 1,
+                titles: vec!["手册".into()],
+                stage: crate::models::response::KnowledgeEvidenceStage::Prepared,
+                evidence: vec![crate::models::response::KnowledgeEvidence {
+                    index: 1,
+                    document_id: "doc".into(),
+                    chunk_index: 0,
+                    title: "手册".into(),
+                    snippet: "准备发送的原文".into(),
+                    truncated: false,
+                    source_type: None,
+                    source_ref: None,
+                }],
+            });
+            // Exercise the production oneshot/cancellation gate, not a mocked
+            // outcome. Neither result permits run_stream to reach HTTP sending.
+            let outcome = request_approval(
+                &emit,
+                &pending,
+                &token,
+                "req",
+                ApprovalPrompt {
+                    call_id: "provider-round-0",
+                    name: "发送本地数据至模型",
+                    summary: "确认外发".into(),
+                    scope: "chat",
+                    conversation_id: None,
+                    can_remember: false,
+                },
+            )
+            .await;
+            if cancel {
+                assert!(matches!(outcome, ApprovalOutcome::Cancelled));
+            } else {
+                assert!(matches!(outcome, ApprovalOutcome::Rejected));
+                assert!(events
+                    .borrow()
+                    .iter()
+                    .any(|event| matches!(event, ChatEvent::ToolRejected { .. })));
+            }
+            assert!(pending.lock().unwrap().is_empty());
+            let snapshot = serde_json::to_value(&events.borrow()[0]).unwrap();
+            assert_eq!(snapshot["stage"], "prepared");
+            assert_eq!(snapshot["evidence"][0]["snippet"], "准备发送的原文");
+        }
+    }
+
     #[test]
     fn regression_final_gate_honors_new_confirm_without_current_approval() {
         use crate::storage::config::ToolPolicy;
@@ -2674,6 +2879,72 @@ mod tests {
         assert!(!execution_approval_valid(ToolPolicy::Confirm, false, needs));
         assert!(execution_approval_valid(ToolPolicy::Confirm, true, needs));
         assert!(!execution_approval_valid(ToolPolicy::Disabled, true, false));
+    }
+
+    #[test]
+    fn knowledge_retrieval_emits_only_the_injected_snapshot_and_survives_source_deletion() {
+        use crate::storage::database::KbDocument;
+        let dir = std::env::temp_dir().join(format!(
+            "chatfloat-evidence-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = ConfigStore::load(dir.join("providers.json"));
+        config
+            .update(|cfg| {
+                cfg.knowledge.max_chunks = 1;
+                Ok(())
+            })
+            .unwrap();
+        let db = Database::in_memory();
+        for i in 0..2 {
+            db.kb_add_document(
+                &KbDocument {
+                    id: format!("doc-{i}"),
+                    title: format!("手册{i}"),
+                    source_type: "url".into(),
+                    source_ref: Some(format!("https://example.test/{i}")),
+                    chunk_count: 1,
+                    created_at: 0,
+                },
+                &["knowledge reference original passage".into()],
+            )
+            .unwrap();
+        }
+        let messages = vec![crate::models::request::ChatMessage {
+            role: "user".into(),
+            content: "knowledge".into(),
+            images: vec![],
+        }];
+        let (block, evidence) = retrieve_knowledge(&config, &db, &messages);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(
+            block.as_deref(),
+            Some(crate::agent::knowledge::format_evidence_context(&evidence).as_str())
+        );
+        assert!(initial_context_sensitive("", block.as_deref(), None, None));
+        // kb_search returns a search excerpt (including FTS highlight markers),
+        // not the full chunk. Preserve exactly what was injected, not a later
+        // source read that could falsely look like the original prompt.
+        let injected = evidence[0].snippet.clone();
+        assert!(injected.contains("knowledge"));
+        db.kb_delete_document(&evidence[0].document_id).unwrap();
+        assert_eq!(evidence[0].snippet, injected);
+        assert!(evidence[0].source_ref.is_some());
+        config
+            .update(|cfg| {
+                cfg.knowledge.auto_inject = false;
+                Ok(())
+            })
+            .unwrap();
+        let (block, evidence) = retrieve_knowledge(&config, &db, &messages);
+        assert!(block.is_none());
+        assert!(evidence.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2801,6 +3072,130 @@ mod tests {
     }
 
     #[test]
+    fn context_preview_is_read_only_and_matches_send_resolver() {
+        let dir = std::env::temp_dir().join(format!("context-preview-{}", new_request_id()));
+        let config = ConfigStore::load(dir.join("providers.json"));
+        let db = Database::in_memory();
+        let memory: crate::storage::database::Memory = serde_json::from_value(json!({
+            "id": "memory-1", "category": "preference", "content": "仅供测试的记忆",
+            "createdAt": 1, "updatedAt": 1
+        }))
+        .unwrap();
+        db.create_memory(&memory).unwrap();
+        let document = crate::storage::database::KbDocument {
+            id: "doc-1".into(),
+            title: "测试知识".into(),
+            source_type: "text".into(),
+            source_ref: None,
+            chunk_count: 1,
+            created_at: 1,
+        };
+        db.kb_add_document(&document, &["context preview knowledge".into()])
+            .unwrap();
+        let skill: crate::storage::skills::Skill = serde_json::from_value(json!({
+            "id": "skill-1", "name": "测试技能", "description": "说明", "content": "仅供测试的技能正文",
+            "triggers": ["unmatched"], "enabled": true, "sortOrder": 0, "createdAt": 1, "updatedAt": 1
+        })).unwrap();
+        db.upsert_skill(&skill).unwrap();
+        let mut request: ChatSendRequest = serde_json::from_value(json!({
+            "providerId": "missing-provider-no-credentials", "modelKey": "test",
+            "messages": [{"role": "user", "content": "context preview"}],
+            "systemPrompt": "助手规则", "skillIds": ["skill-1"], "webSearch": true, "enableTools": true
+        })).unwrap();
+        let before = db.list_enabled_memories(10).unwrap();
+        let first = preview_context(&config, &db, &request).unwrap();
+        assert_eq!(first.memories.len(), 1);
+        assert_eq!(first.knowledge.len(), 1);
+        assert!(first.system_prompt.contains(&first.knowledge[0].snippet));
+        assert!(first
+            .skills_block
+            .as_deref()
+            .unwrap()
+            .contains("仅供测试的技能正文"));
+        assert!(first.system_prompt.starts_with(SAFE_SYSTEM_POLICY));
+        assert!(first.system_prompt.contains("仅供测试的记忆"));
+        assert_eq!(
+            db.list_enabled_memories(10).unwrap()[0].use_count,
+            before[0].use_count
+        );
+        assert_eq!(
+            db.list_enabled_memories(10).unwrap()[0].last_used_at,
+            before[0].last_used_at
+        );
+        request.context_exclusions = ContextExclusions {
+            memory_ids: vec!["memory-1".into()],
+            knowledge_document_ids: vec!["doc-1".into()],
+        };
+        let preview = preview_context(&config, &db, &request).unwrap();
+        let context = build_turn_context(
+            &config,
+            &db,
+            &request.messages,
+            request.system_prompt.clone(),
+            request.web_search,
+            request.enable_tools,
+            request.enable_thinking,
+            &request.thinking_effort,
+            None,
+            &request.skill_ids,
+            &request.context_exclusions,
+        );
+        assert_eq!(
+            preview.system_prompt,
+            assemble_context_prompt(
+                context.system_prompt.clone(),
+                context.memory_block.clone(),
+                context.session_summary.clone(),
+                context.kb_block.as_deref(),
+                context.skills_block.as_deref(),
+                context.enable_thinking
+            )
+        );
+        assert!(preview.memories[0].excluded);
+        assert!(!preview.system_prompt.contains("仅供测试的记忆"));
+        assert!(preview.system_prompt.starts_with(SAFE_SYSTEM_POLICY));
+        assert!(context.kb_evidence.is_empty());
+        assert!(!preview.system_prompt.contains(&first.knowledge[0].snippet));
+        assert_eq!(preview.knowledge.len(), 1); // candidates stay reversible in the UI
+        assert_eq!(db.kb_list_documents().unwrap().len(), 1);
+        record_context_memory_use(&db, &context);
+        assert_eq!(
+            db.list_enabled_memories(10).unwrap()[0].use_count,
+            before[0].use_count
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn context_budget_includes_knowledge_and_skills_and_keeps_safety() {
+        let prompt = assemble_context_prompt(
+            None,
+            String::new(),
+            Some("摘要".into()),
+            Some(&"知识".repeat(20000)),
+            Some("技能"),
+            false,
+        );
+        let messages: Vec<_> = (0..5)
+            .map(|index| crate::models::request::ChatMessage {
+                role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+                content: "历史".repeat(100),
+                images: vec![],
+            })
+            .collect();
+        let fit = crate::agent::context::fit_context(
+            &messages,
+            Some(&prompt),
+            &crate::agent::context::ContextBudget::conservative(),
+        );
+        assert!(prompt.starts_with(SAFE_SYSTEM_POLICY));
+        assert!(prompt.contains("摘要"));
+        assert!(fit.truncated);
+        assert_eq!(fit.messages.len(), 1);
+        assert_eq!(fit.messages[0].content, messages.last().unwrap().content);
+    }
+
+    #[test]
     fn validate_chat_request_accepts_normal_payload() {
         let req = ChatSendRequest {
             provider_id: "p".into(),
@@ -2819,6 +3214,7 @@ mod tests {
             conversation_id: None,
             approval_session_id: None,
             skill_ids: vec![],
+            context_exclusions: ContextExclusions::default(),
         };
         assert!(validate_messages(&req.messages).is_ok());
     }
@@ -2842,6 +3238,7 @@ mod tests {
             conversation_id: None,
             approval_session_id: None,
             skill_ids: vec![],
+            context_exclusions: ContextExclusions::default(),
         };
         assert!(validate_messages(&req.messages).is_err());
 
@@ -2876,6 +3273,7 @@ mod tests {
                 conversation_id: None,
                 approval_session_id: None,
                 skill_ids: vec![],
+                context_exclusions: ContextExclusions::default(),
             }
         }
 

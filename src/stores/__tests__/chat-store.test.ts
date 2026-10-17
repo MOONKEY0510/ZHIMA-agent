@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { useChatStore } from "../chat-store";
+import { buildContextPreviewRequest, contextScope, useChatStore } from "../chat-store";
+import { EMPTY_CONTEXT_EXCLUSIONS, useContextOptionsStore } from "../context-options-store";
 import { useProvidersStore } from "../providers-store";
 import { useHistoryStore } from "../../services/history-store";
 import { useAssistantsStore } from "../assistants-store";
@@ -69,6 +70,7 @@ const seededProvider = {
 };
 
 function resetStores() {
+  useContextOptionsStore.getState().reset();
   useChatStore.setState({
     messages: [],
     streams: {},
@@ -149,6 +151,165 @@ function seedImport() {
     messages: [storedRow({ id: "a1", role: "assistant", content: "导入数据" })],
   });
 }
+
+describe("context preview and per-turn exclusions", () => {
+  const exclusions = { memoryIds: ["mem1"], knowledgeDocumentIds: ["doc1"] };
+  const arm = () => {
+    useContextOptionsStore.getState().toggle(contextScope(), "memoryIds", "mem1");
+    useContextOptionsStore.getState().toggle(contextScope(), "knowledgeDocumentIds", "doc1");
+  };
+  const requests = (command = "chat_send") => mockedInvoke.mock.calls.filter(([cmd]) => cmd === command)
+    .map(([, args]) => (args as { request: { contextExclusions: typeof exclusions; messages: unknown[] } }).request);
+
+  it("previews the actual conversation model/prompt/history without preparing images or writing", async () => {
+    useHistoryStore.setState({ activeId: "c1", conversations: [{ ...importedConversation, systemPrompt: "会话覆盖" }] });
+    useChatStore.setState({ messages: [{ id: "u", role: "user", content: "历史", images: [imageUrl], status: "done" }] });
+    arm();
+    const before = useChatStore.getState().messages;
+    await useChatStore.getState().previewContext("附件正文", { webSearch: true, enableTools: true, skillIds: ["skill"] });
+    expect(mockedInvoke).toHaveBeenCalledTimes(1);
+    expect(mockedInvoke).toHaveBeenCalledWith("chat_preview_context", { request: expect.objectContaining({
+      providerId: "p1", modelKey: "m1", systemPrompt: "会话覆盖", conversationId: "c1", contextExclusions: exclusions,
+      messages: [{ role: "user", content: "历史", images: undefined }, { role: "user", content: "附件正文", images: undefined }],
+      skillIds: ["skill"], webSearch: true, enableTools: true,
+    }) });
+    expect(useChatStore.getState().messages).toBe(before);
+    expect(historyApi.beginChatTurn).not.toHaveBeenCalled();
+    expect(useContextOptionsStore.getState().drafts.c1).toEqual(exclusions);
+  });
+
+  it("consumes exclusions once and replays the original turn on regenerate and retry", async () => {
+    useHistoryStore.setState({ historyEnabled: false });
+    arm();
+    await useChatStore.getState().send("原始问题");
+    const rid = Object.keys(useChatStore.getState().streams)[0];
+    useChatStore.getState().onError(rid, "失败", true);
+    useChatStore.getState().retryLast();
+    await vi.waitFor(() => expect(requests()).toHaveLength(2));
+    expect(requests().map((r) => r.contextExclusions)).toEqual([exclusions, exclusions]);
+    const retryId = Object.keys(useChatStore.getState().streams)[0];
+    useChatStore.getState().onFinish(retryId);
+    const assistant = useChatStore.getState().messages[1];
+    await useChatStore.getState().regenerate(assistant.id);
+    expect(requests()[requests().length - 1]?.contextExclusions).toEqual(exclusions);
+    useChatStore.getState().onFinish(Object.keys(useChatStore.getState().streams)[0]);
+    await useChatStore.getState().send("下一轮");
+    expect(requests()[requests().length - 1]?.contextExclusions).toEqual(EMPTY_CONTEXT_EXCLUSIONS);
+  });
+
+  it("isolates draft exclusions by conversation and forwards them to every comparison target", async () => {
+    useHistoryStore.setState({ activeId: "c1" }); arm();
+    useHistoryStore.setState({ activeId: "c2" });
+    expect(buildContextPreviewRequest("二").request.contextExclusions).toEqual(EMPTY_CONTEXT_EXCLUSIONS);
+    useHistoryStore.setState({ activeId: "c1" });
+    await useChatStore.getState().sendMulti("对比", [{ providerId: "p1", modelKey: "m1" }, { providerId: "p1", modelKey: "m1" }]);
+    expect(requests("chat_send_multi")[0].contextExclusions).toEqual(exclusions);
+    expect(useContextOptionsStore.getState().drafts.c1).toBeUndefined();
+  });
+
+  it("changes fingerprint on text/model/options and reports frontend history trimming", () => {
+    useChatStore.setState({ messages: Array.from({ length: 45 }, (_, i) => ({ id: String(i), role: "user", content: `history ${i}`, status: "done" })) });
+    const initial = buildContextPreviewRequest("问题");
+    expect(initial.frontendDroppedMessageCount).toBe(6);
+    expect(buildContextPreviewRequest("新问题").fingerprint).not.toBe(initial.fingerprint);
+    arm();
+    expect(buildContextPreviewRequest("问题").fingerprint).not.toBe(initial.fingerprint);
+  });
+
+  it("clears temporary turn and draft exclusions after backup import", async () => {
+    arm();
+    useContextOptionsStore.getState().capture(contextScope(), "old-user");
+    arm();
+    await useChatStore.getState().importBackup("mock.json", "replace");
+    expect(useContextOptionsStore.getState().drafts).toEqual({});
+    expect(useContextOptionsStore.getState().turns).toEqual({});
+  });
+});
+
+describe("knowledge evidence lifecycle", () => {
+  const evidence = [{ index: 1, documentId: "doc", chunkIndex: 0, title: "原文档", snippet: "本轮片段", truncated: false }];
+
+  it("keeps background evidence through finish and conversation switching, ignoring late events", async () => {
+    await useChatStore.getState().send("问题");
+    const rid = Object.keys(useChatStore.getState().streams)[0];
+    const cid = useHistoryStore.getState().activeId!;
+    useChatStore.getState().startNewConversation();
+    useChatStore.getState().markKbUsed(rid, 1, ["原文档"], evidence);
+    useChatStore.getState().appendDelta(rid, "回答");
+    useChatStore.getState().onFinish(rid);
+    useChatStore.getState().markKbUsed(rid, 0, [], []);
+    await useChatStore.getState().loadConversation(cid);
+    expect(useChatStore.getState().messages[1].kbEvidence).toEqual(evidence);
+    expect(historyApi.getConversation).not.toHaveBeenCalled();
+  });
+
+  it("clears retry evidence and restores the correct local version snapshot", async () => {
+    useHistoryStore.setState({ historyEnabled: false });
+    useChatStore.setState({ messages: [
+      { id: "u", role: "user", content: "问题", status: "done" },
+      { id: "a", role: "assistant", content: "旧回答", status: "done", kbHits: 1, kbEvidence: evidence },
+    ] });
+    await useChatStore.getState().regenerate("a");
+    expect(useChatStore.getState().messages[1].kbEvidence).toBeUndefined();
+    const rid = Object.keys(useChatStore.getState().streams)[0];
+    useChatStore.getState().appendDelta(rid, "新回答");
+    useChatStore.getState().onFinish(rid);
+    await useChatStore.getState().switchMessageVersion("a", 0);
+    expect(useChatStore.getState().messages[1].kbEvidence).toEqual(evidence);
+    await useChatStore.getState().switchMessageVersion("a", 1);
+    expect(useChatStore.getState().messages[1].kbEvidence).toBeUndefined();
+  });
+
+  it("preserves per-version evidence through persisted regenerate and activation", async () => {
+    useHistoryStore.setState({ activeId: "c1" });
+    useChatStore.setState({ messages: [
+      { id: "u", role: "user", content: "问题", status: "done" },
+      { id: "a", role: "assistant", content: "旧回答", status: "done", kbHits: 1, kbEvidence: evidence },
+    ] });
+    const versions = [{ content: "旧回答", status: "done", createdAt: 1 },
+      { content: "", status: "streaming", createdAt: 2 }];
+    vi.mocked(historyApi.startMessageVersion).mockResolvedValue(storedRow({ id: "a", role: "assistant",
+      status: "streaming", versionsJson: JSON.stringify(versions), activeVersion: 1 }));
+    await useChatStore.getState().regenerate("a");
+    expect(useChatStore.getState().messages[1].kbEvidence).toBeUndefined();
+    const rid = Object.keys(useChatStore.getState().streams)[0];
+    const nextEvidence = [{ ...evidence[0], snippet: "新片段" }];
+    useChatStore.getState().markKbUsed(rid, 1, ["原文档"], nextEvidence);
+    useChatStore.getState().appendDelta(rid, "新回答");
+    useChatStore.getState().onFinish(rid);
+    versions[1] = { content: "新回答", status: "done", createdAt: 2 };
+    for (const index of [0, 1]) {
+      vi.mocked(historyApi.activateMessageVersion).mockResolvedValue(storedRow({ id: "a", role: "assistant",
+        content: versions[index].content, versionsJson: JSON.stringify(versions), activeVersion: index }));
+      await useChatStore.getState().switchMessageVersion("a", index);
+      expect(useChatStore.getState().messages[1].kbEvidence).toEqual(index === 0 ? evidence : nextEvidence);
+    }
+  });
+
+  it("keeps evidence on cancellation, rejects late events, and isolates concurrent targets", () => {
+    useChatStore.setState({ messages: [
+      { id: "a", role: "assistant", content: "", status: "streaming" },
+      { id: "b", role: "assistant", content: "", status: "streaming" },
+    ], streams: {
+      r1: { messageId: "a", startedAt: 1, conversationId: null },
+      r2: { messageId: "b", startedAt: 1, conversationId: null },
+    } });
+    useChatStore.getState().markKbUsed("r1", 1, ["原文档"], evidence);
+    useChatStore.getState().stopStream("r1");
+    useChatStore.getState().markKbUsed("r1", 1, ["伪造"], [{ ...evidence[0], snippet: "迟到" }]);
+    expect(useChatStore.getState().messages[0].kbEvidence).toEqual(evidence);
+    expect(useChatStore.getState().messages[1].kbEvidence).toBeUndefined();
+    expect(useChatStore.getState().streams.r2).toBeDefined();
+  });
+
+  it("does not resurrect pre-import evidence on same-ID restored history", async () => {
+    seedImport();
+    useChatStore.setState({ messages: [{ id: "a1", role: "assistant", content: "旧回答", status: "done", kbEvidence: evidence }] });
+    await useChatStore.getState().importBackup("mock.json", "replace");
+    expect(useChatStore.getState().messages[0]).toMatchObject({ kbEvidenceUnavailable: true });
+    expect(useChatStore.getState().messages[0].kbEvidence).toBeUndefined();
+  });
+});
 
 describe("version persistence review regressions", () => {
   it("rechecks persistence after a fast finish waits for initial history", async () => {
@@ -411,7 +572,10 @@ describe("backup import coordination regressions", () => {
     await Promise.all([sending, importing]);
     expect(historyApi.beginChatTurn).not.toHaveBeenCalled();
     const commands = mockedInvoke.mock.calls.map(([command]) => command);
-    expect(commands).toEqual(["chat_send", "chat_cancel", "chat_cancel", "import_data"]);
+    expect(commands).toEqual([
+      "chat_send", "chat_cancel", "chat_cancel", "import_data",
+      "list_assistants", "list_image_generations", "tasks_list",
+    ]);
   });
 
   it("drains history initialization and its cancelled final write before import", async () => {
@@ -563,6 +727,7 @@ describe("chat-store send()", () => {
         conversationId: expect.any(String),
         approvalSessionId: expect.any(String),
         skillIds: [],
+        contextExclusions: EMPTY_CONTEXT_EXCLUSIONS,
       },
     });
 
@@ -735,6 +900,7 @@ describe("chat-store send()", () => {
         conversationId: expect.any(String),
         approvalSessionId: expect.any(String),
         skillIds: [],
+        contextExclusions: EMPTY_CONTEXT_EXCLUSIONS,
       },
     });
   });

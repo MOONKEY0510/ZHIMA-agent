@@ -4,9 +4,22 @@
 use serde::Serialize;
 use tauri::{Manager, State};
 
-use crate::mcp::McpToolInfo;
+use crate::mcp::{McpManager, McpToolInfo, Refresh};
 use crate::state::AppState;
-use crate::storage::config::{ConfigStore, McpServerConfig};
+use crate::storage::config::{ConfigStore, McpServerConfig, ProvidersConfig};
+
+/// Keep consecutive MCP writes (including A→B→A) ordered through invalidation.
+/// Discovery runs outside this lock; reads prepare their tickets under ConfigStore's lock.
+fn update_and_prepare(
+    config: &ConfigStore,
+    manager: &McpManager,
+    update: impl FnOnce(&mut ProvidersConfig) -> Result<(), String>,
+) -> Result<Refresh, String> {
+    static UPDATES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = UPDATES.lock().unwrap();
+    config.update(update)?;
+    Ok(config.read(|cfg| manager.prepare_refresh(&cfg.mcp_servers)))
+}
 
 /// One server plus its live state, as shown in the settings panel.
 #[derive(Debug, Serialize)]
@@ -73,7 +86,7 @@ pub async fn upsert_mcp_server(
         server.id = new_server_id();
     }
 
-    config.update(|cfg| {
+    let refresh = update_and_prepare(&config, &state.mcp, |cfg| {
         match cfg
             .mcp_servers
             .iter_mut()
@@ -85,8 +98,7 @@ pub async fn upsert_mcp_server(
         Ok(())
     })?;
 
-    let servers = config.read(|cfg| cfg.mcp_servers.clone());
-    let errors = state.mcp.refresh(&servers).await;
+    let errors = state.mcp.finish_refresh(refresh).await;
     if !errors.is_empty() {
         // The server is saved; surface why discovery failed.
         return Err(errors.join("\n"));
@@ -100,12 +112,11 @@ pub async fn delete_mcp_server(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<McpView, String> {
-    config.update(|cfg| {
+    let refresh = update_and_prepare(&config, &state.mcp, |cfg| {
         cfg.mcp_servers.retain(|server| server.id != id);
         Ok(())
     })?;
-    let servers = config.read(|cfg| cfg.mcp_servers.clone());
-    state.mcp.refresh(&servers).await;
+    state.mcp.finish_refresh(refresh).await;
     Ok(build_view(&config, &state))
 }
 
@@ -116,16 +127,18 @@ pub async fn test_mcp_server(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<Vec<McpToolInfo>, String> {
-    let servers = config.read(|cfg| cfg.mcp_servers.clone());
-    let server = servers
-        .iter()
-        .find(|server| server.id == id)
-        .ok_or_else(|| "服务器不存在".to_string())?;
-    if !server.enabled {
-        return Err("该服务器处于禁用状态".into());
-    }
-
-    let errors = state.mcp.refresh(&servers).await;
+    let (server, refresh) = config.read(|cfg| {
+        let server = cfg
+            .mcp_servers
+            .iter()
+            .find(|server| server.id == id)
+            .ok_or_else(|| "服务器不存在".to_string())?;
+        if !server.enabled {
+            return Err("该服务器处于禁用状态".to_string());
+        }
+        Ok((server.clone(), state.mcp.prepare_refresh(&cfg.mcp_servers)))
+    })?;
+    let errors = state.mcp.finish_refresh(refresh).await;
     let tools: Vec<McpToolInfo> = state
         .mcp
         .cached_tools()
@@ -151,14 +164,13 @@ pub async fn set_mcp_server_enabled(
     id: String,
     enabled: bool,
 ) -> Result<McpView, String> {
-    config.update(|cfg| {
+    let refresh = update_and_prepare(&config, &state.mcp, |cfg| {
         if let Some(server) = cfg.mcp_servers.iter_mut().find(|s| s.id == id) {
             server.enabled = enabled;
         }
         Ok(())
     })?;
-    let servers = config.read(|cfg| cfg.mcp_servers.clone());
-    let errors = state.mcp.refresh(&servers).await;
+    let errors = state.mcp.finish_refresh(refresh).await;
     if !errors.is_empty() {
         return Err(errors.join("\n"));
     }
@@ -167,9 +179,9 @@ pub async fn set_mcp_server_enabled(
 
 /// Best-effort refresh used for the post-launch idle warm-up.
 pub async fn refresh_from_config(config: &ConfigStore, state: &AppState) {
-    let servers = config.read(|cfg| cfg.mcp_servers.clone());
-    if servers.iter().any(|server| server.enabled) {
-        state.mcp.ensure_warm(&servers).await;
+    let refresh = config.read(|cfg| state.mcp.prepare_warm(&cfg.mcp_servers));
+    if let Some(refresh) = refresh {
+        state.mcp.finish_warm(refresh).await;
     }
 }
 
@@ -185,10 +197,7 @@ pub fn warm_in_background(window: &tauri::Window) {
     tauri::async_runtime::spawn(async move {
         let config = handle.state::<ConfigStore>();
         let state = handle.state::<AppState>();
-        let servers = config.read(|cfg| cfg.mcp_servers.clone());
-        if servers.iter().any(|server| server.enabled) {
-            state.mcp.ensure_warm(&servers).await;
-        }
+        refresh_from_config(&config, &state).await;
     });
 }
 
@@ -198,11 +207,7 @@ pub async fn warm_mcp_servers(
     config: State<'_, ConfigStore>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let servers = config.read(|cfg| cfg.mcp_servers.clone());
-    if !servers.iter().any(|server| server.enabled) {
-        return Ok(());
-    }
-    state.mcp.ensure_warm(&servers).await;
+    refresh_from_config(&config, &state).await;
     Ok(())
 }
 
@@ -214,6 +219,90 @@ fn new_server_id() -> String {
         .map(|d| d.as_millis())
         .unwrap_or(0);
     format!("mcp-{millis:x}-{:x}", SEQ.fetch_add(1, Ordering::Relaxed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn persisted_updates_invalidate_before_discovery_and_keep_latest_ticket() {
+        let root = std::env::temp_dir().join(new_server_id());
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        // New path, containing only synthetic MCP fixture data.
+        let config = ConfigStore::load(root.join("config.json"));
+        let manager = McpManager::new();
+        let mut server = McpServerConfig {
+            id: "fixture".into(),
+            name: "Fixture".into(),
+            command: std::env::current_exe().unwrap().to_str().unwrap().into(),
+            args: vec![
+                "--exact".into(),
+                "mcp::tests::fake_mcp_process".into(),
+                "--ignored".into(),
+                "--nocapture".into(),
+            ],
+            env: std::collections::HashMap::from([("ZM_MCP_TEST_TAG".into(), "first".into())]),
+            enabled: true,
+        };
+        let first = update_and_prepare(&config, &manager, |cfg| {
+            cfg.mcp_servers = vec![server.clone()];
+            Ok(())
+        })
+        .unwrap();
+        assert!(manager.finish_refresh(first).await.is_empty());
+        assert_eq!(manager.cached_tools()[0].tool_name, "first");
+        server.env.insert("ZM_MCP_TEST_TAG".into(), "second".into());
+        let second = update_and_prepare(&config, &manager, |cfg| {
+            cfg.mcp_servers = vec![server.clone()];
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            manager.cached_tools().is_empty(),
+            "invalidation cannot wait for discovery"
+        );
+        server.env.insert("ZM_MCP_TEST_TAG".into(), "third".into());
+        let third = update_and_prepare(&config, &manager, |cfg| {
+            cfg.mcp_servers = vec![server.clone()];
+            Ok(())
+        })
+        .unwrap();
+        assert!(manager.finish_refresh(third).await.is_empty());
+        assert!(manager.finish_refresh(second).await.is_empty());
+        assert_eq!(manager.cached_tools()[0].tool_name, "third");
+        let servers = config.read(|cfg| cfg.mcp_servers.clone());
+        let result = manager
+            .call(&servers, "fixture", "probe", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(result["text"].as_str().unwrap().starts_with("third:"));
+        let disabled = update_and_prepare(&config, &manager, |cfg| {
+            cfg.mcp_servers[0].enabled = false;
+            Ok(())
+        })
+        .unwrap();
+        assert!(manager.cached_tools().is_empty());
+        assert!(manager
+            .call(&servers, "fixture", "probe", serde_json::json!({}))
+            .await
+            .is_err());
+        assert!(manager.finish_refresh(disabled).await.is_empty());
+        let deleted = update_and_prepare(&config, &manager, |cfg| {
+            cfg.mcp_servers.clear();
+            Ok(())
+        })
+        .unwrap();
+        assert!(manager.finish_refresh(deleted).await.is_empty());
+        assert!(config.read(|cfg| cfg.mcp_servers.is_empty()));
+    }
 }
 
 /// Re-export for the settings UI's "JSON 快捷粘贴" helper.

@@ -1,4 +1,14 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+/// Ephemeral exclusions for this turn; never deletes or disables stored data.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextExclusions {
+    #[serde(default)]
+    pub memory_ids: Vec<String>,
+    #[serde(default)]
+    pub knowledge_document_ids: Vec<String>,
+}
 
 /// Default for optional booleans that should be `true` when absent.
 fn default_true() -> bool {
@@ -75,6 +85,8 @@ pub struct ChatSendRequest {
     /// (`agent::skills`); automatic matching still applies to the rest.
     #[serde(default)]
     pub skill_ids: Vec<String>,
+    #[serde(default)]
+    pub context_exclusions: ContextExclusions,
 }
 
 /// One model target of a multi-model turn (P1-6).
@@ -117,6 +129,8 @@ pub struct ChatSendMultiRequest {
     /// Skills the user activated manually (see [`ChatSendRequest::skill_ids`]).
     #[serde(default)]
     pub skill_ids: Vec<String>,
+    #[serde(default)]
+    pub context_exclusions: ContextExclusions,
 }
 
 /// Payload for the `describe_image` command: send one image to a vision

@@ -11,6 +11,14 @@ use std::sync::Mutex;
 use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use serde::{Deserialize, Serialize};
 
+#[path = "backup_config.rs"]
+pub mod backup_config;
+#[path = "backup_data.rs"]
+mod backup_data;
+#[path = "backup_files.rs"]
+pub mod backup_files;
+pub mod tasks;
+
 use crate::storage::assistants::Assistant;
 use crate::storage::skills::{new_skill_id, Skill, SkillDraft};
 
@@ -252,6 +260,8 @@ const MIGRATIONS: &[&str] = &[
     // composer). Without this a re-opened conversation lost the pictures it was
     // asked about, even though the question itself was stored.
     "ALTER TABLE messages ADD COLUMN images_json TEXT;",
+    // v23 — local tasks and persistent reminder state.
+    tasks::MIGRATION_SQL,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -789,10 +799,37 @@ pub struct BackupFile {
     /// User skills (v20); absent in backups written before the feature.
     #[serde(default)]
     pub skills: Vec<Skill>,
+    #[serde(default)]
+    pub assistants: Vec<Assistant>,
+    #[serde(default)]
+    pub documents: Vec<KbDocument>,
+    #[serde(default)]
+    pub chunks: Vec<BackupChunk>,
+    #[serde(default)]
+    pub summaries: Vec<ConversationSummary>,
+    #[serde(default)]
+    pub tasks: Vec<tasks::Task>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<backup_config::PortableConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupChunk {
+    pub id: String,
+    pub document_id: String,
+    pub seq: i64,
+    pub content: String,
+}
+
+impl BackupFile {
+    pub fn validate(&self) -> Result<(), String> {
+        backup_data::validate(self)
+    }
 }
 
 /// Current backup payload version.
-pub const BACKUP_FORMAT_VERSION: u32 = 1;
+pub const BACKUP_FORMAT_VERSION: u32 = 2;
 /// Marker written into every backup file.
 pub const BACKUP_APP_MARKER: &str = "zhima";
 
@@ -824,6 +861,12 @@ pub struct ImportReport {
     pub memories: usize,
     pub images: usize,
     pub skills: usize,
+    pub assistants: usize,
+    pub documents: usize,
+    pub chunks: usize,
+    pub summaries: usize,
+    pub tasks: usize,
+    pub pending_config: Option<backup_config::PortableConfig>,
     /// Rows left alone because their id already existed (merge only).
     pub skipped: usize,
 }
@@ -2637,29 +2680,11 @@ impl Database {
 
     /// Build the backup payload from the database contents.
     pub fn export_backup(&self, include_images: bool) -> Result<BackupFile, String> {
-        let conversations = self.list_conversations(u32::MAX)?;
-        let mut entries = Vec::with_capacity(conversations.len());
-        for conversation in conversations {
-            let messages = self.list_messages(&conversation.id)?;
-            entries.push(BackupConversation {
-                conversation,
-                messages,
-            });
-        }
-
-        Ok(BackupFile {
-            app: BACKUP_APP_MARKER.to_string(),
-            format_version: BACKUP_FORMAT_VERSION,
-            exported_at: now_ms(),
-            conversations: entries,
-            memories: self.list_memories()?,
-            image_generations: if include_images {
-                self.list_image_generations(u32::MAX)?
-            } else {
-                Vec::new()
-            },
-            skills: self.list_skills()?,
-        })
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let backup = backup_data::snapshot(&tx, include_images)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(backup)
     }
 
     /// Import a backup payload atomically.
@@ -2668,34 +2693,56 @@ impl Database {
     /// `Merge` keeps existing rows and skips incoming ids that are already
     /// present.  The FTS index is rebuilt afterwards so search sees the new
     /// data immediately.
+    #[cfg(test)]
     pub fn import_backup(
         &self,
         backup: &BackupFile,
         strategy: ImportStrategy,
     ) -> Result<ImportReport, String> {
+        self.import_backup_with_checkpoint(backup, strategy, |_| Ok(()))
+    }
+
+    /// The checkpoint runs under the same transaction/connection lock, before
+    /// any deletion. Failure aborts replace without modifying the database.
+    pub fn import_backup_with_checkpoint(
+        &self,
+        backup: &BackupFile,
+        strategy: ImportStrategy,
+        checkpoint: impl FnOnce(&BackupFile) -> Result<(), String>,
+    ) -> Result<ImportReport, String> {
+        backup_data::validate(backup)?;
         let mut conn = self.conn.lock().unwrap();
         let tx = conn
             .transaction()
             .map_err(|e| format!("开始事务失败：{e}"))?;
-        let mut report = ImportReport::default();
+        if strategy == ImportStrategy::Replace {
+            checkpoint(&backup_data::snapshot(&tx, true)?)?;
+        }
+        let mut report = ImportReport {
+            pending_config: backup.config.clone(),
+            ..Default::default()
+        };
 
         if strategy == ImportStrategy::Replace {
             tx.execute_batch(
                 "DELETE FROM messages; DELETE FROM conversations;
                  DELETE FROM conversation_summaries; DELETE FROM memories;
-                 DELETE FROM image_generations; DELETE FROM skills;",
+                 DELETE FROM image_generations; DELETE FROM skills;
+                 DELETE FROM assistants; DELETE FROM kb_chunks; DELETE FROM kb_documents; DELETE FROM tasks;",
             )
             .map_err(|e| format!("清空现有数据失败：{e}"))?;
         }
 
+        backup_data::import_independent(&tx, backup, &mut report)?;
+        let mut imported_conversations = std::collections::HashSet::new();
         for entry in &backup.conversations {
             let c = &entry.conversation;
             let inserted = tx
                 .execute(
                     "INSERT OR IGNORE INTO conversations
                         (id, title, provider_id, model_key, system_prompt, pinned,
-                         created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                         created_at, updated_at, assistant_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         c.id,
                         c.title,
@@ -2705,6 +2752,7 @@ impl Database {
                         c.pinned,
                         c.created_at,
                         c.updated_at,
+                        c.assistant_id,
                     ],
                 )
                 .map_err(|e| format!("导入会话失败：{e}"))?;
@@ -2715,6 +2763,7 @@ impl Database {
                 continue;
             }
             report.conversations += 1;
+            imported_conversations.insert(c.id.clone());
 
             for m in &entry.messages {
                 // A backup can carry pictures too; validate them at the same
@@ -2722,7 +2771,7 @@ impl Database {
                 validate_images_json(m.images_json.as_deref())?;
                 let inserted = tx
                     .execute(
-                        "INSERT OR IGNORE INTO messages
+                        "INSERT INTO messages
                             (id, conversation_id, role, content, status, reasoning, tool_calls,
                              model_name, duration_ms, versions_json, active_version,
                              attachments_json, images_json, input_tokens, output_tokens,
@@ -2841,8 +2890,9 @@ impl Database {
             }
         }
 
-        // Make the search index authoritative for the imported rows.
-        tx.execute_batch("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');")
+        backup_data::import_summaries(&tx, backup, &imported_conversations, &mut report)?;
+        // Make both search indexes authoritative for the imported rows.
+        tx.execute_batch("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild'); INSERT INTO kb_chunks_fts(kb_chunks_fts) VALUES ('rebuild');")
             .map_err(|e| format!("重建搜索索引失败：{e}"))?;
 
         tx.commit().map_err(|e| format!("提交事务失败：{e}"))?;
@@ -3830,7 +3880,7 @@ mod tests {
         assert_eq!(report.messages, 0);
         assert_eq!(report.memories, 0);
         assert_eq!(report.skills, 0);
-        assert_eq!(report.skipped, 4);
+        assert_eq!(report.skipped, 4 + backup.assistants.len());
 
         // Replacing into a fresh database restores everything, versions included.
         let fresh = Database::in_memory();
@@ -3854,6 +3904,113 @@ mod tests {
         // Search works immediately after import (index rebuilt).
         assert_eq!(fresh.search_messages("编辑后的提问", 10).unwrap().len(), 1);
         assert!(fresh.search_messages("原始提问", 10).unwrap().len() <= 1);
+    }
+
+    #[test]
+    fn backup_full_round_trip_includes_bindings_knowledge_summary_and_tasks() {
+        let source = Database::in_memory();
+        let mut conversation = conv("full", "完整备份", 1);
+        conversation.assistant_id = Some("custom-assistant".into());
+        source.create_conversation(&conversation).unwrap();
+        source
+            .save_message(&msg("full-message", "full", "user", "完整消息", "done", 2))
+            .unwrap();
+        {
+            let conn = source.conn.lock().unwrap();
+            conn.execute("INSERT INTO assistants (id,name,system_prompt,created_at,updated_at,tool_policies_json) VALUES ('custom-assistant','我的助手','prompt',1,1,'{\"shell\":\"always_allow\",\"read\":\"confirm\"}')", []).unwrap();
+            conn.execute("INSERT INTO conversation_summaries (conversation_id,summary,covered_until_message_id,source_message_count,updated_at) VALUES ('full','摘要','full-message',1,2)", []).unwrap();
+            conn.execute("INSERT INTO tasks (id,title,due_at,notified_at,reminder_pending,created_at,updated_at) VALUES ('task-1','任务',10,11,1,1,1)", []).unwrap();
+        }
+        source
+            .kb_ingest("knowledge", "知识", "text", None, "备份知识库可搜索内容")
+            .unwrap();
+        let backup = source.export_backup(true).unwrap();
+        assert_eq!(backup.tasks.len(), 1);
+        assert!(!serde_json::to_string(&backup)
+            .unwrap()
+            .contains("always_allow"));
+        let target = Database::in_memory();
+        let report = target
+            .import_backup(&backup, ImportStrategy::Replace)
+            .unwrap();
+        assert_eq!(report.tasks, 1);
+        assert_eq!(report.summaries, 1);
+        assert_eq!(report.documents, 1);
+        assert_eq!(
+            target
+                .get_conversation("full")
+                .unwrap()
+                .unwrap()
+                .assistant_id
+                .as_deref(),
+            Some("custom-assistant")
+        );
+        assert!(target
+            .list_assistants()
+            .unwrap()
+            .iter()
+            .any(|a| a.id == "custom-assistant"));
+        assert_eq!(target.get_summary("full").unwrap().unwrap().summary, "摘要");
+        assert!(!target.kb_search("知识库", 8).unwrap().is_empty());
+        assert_eq!(target.list_tasks().unwrap()[0].notified_at, Some(11));
+        assert!(target.list_tasks().unwrap()[0].reminder_pending);
+        let again = target
+            .import_backup(&backup, ImportStrategy::Merge)
+            .unwrap();
+        assert_eq!(again.tasks, 0);
+        assert_eq!(again.chunks, 0);
+        assert_eq!(again.summaries, 0);
+    }
+
+    #[test]
+    fn backup_replace_checkpoint_failure_keeps_everything() {
+        let db = Database::in_memory();
+        db.create_conversation(&conv("old", "保留", 1)).unwrap();
+        let incoming = Database::in_memory().export_backup(true).unwrap();
+        let generation = db.summary_generation();
+        let result =
+            db.import_backup_with_checkpoint(&incoming, ImportStrategy::Replace, |before| {
+                assert_eq!(before.conversations[0].conversation.id, "old");
+                Err("disk full".into())
+            });
+        assert_eq!(result.unwrap_err(), "disk full");
+        assert!(db.get_conversation("old").unwrap().is_some());
+        assert_eq!(db.summary_generation(), generation);
+    }
+
+    #[test]
+    fn backup_late_import_failure_rolls_back_all_categories() {
+        let db = Database::in_memory();
+        db.create_conversation(&conv("old", "保留", 1)).unwrap();
+        let source = Database::in_memory();
+        source.create_conversation(&conv("new", "新", 1)).unwrap();
+        let mut backup = source.export_backup(true).unwrap();
+        backup.summaries.push(ConversationSummary {
+            conversation_id: "new".into(),
+            summary: "bad".into(),
+            covered_until_message_id: "missing".into(),
+            source_message_count: 1,
+            model_key: None,
+            version: 1,
+            updated_at: 1,
+        });
+        assert!(db.import_backup(&backup, ImportStrategy::Replace).is_err());
+        assert!(db.get_conversation("old").unwrap().is_some());
+        assert!(db.get_conversation("new").unwrap().is_none());
+    }
+
+    #[test]
+    fn backup_legacy_v1_defaults_new_categories() {
+        let backup: BackupFile = serde_json::from_str(
+            r#"{"app":"zhima","formatVersion":1,"exportedAt":1,"conversations":[],"skills":[]}"#,
+        )
+        .unwrap();
+        assert!(backup.assistants.is_empty());
+        assert!(backup.tasks.is_empty());
+        assert!(backup.config.is_none());
+        Database::in_memory()
+            .import_backup(&backup, ImportStrategy::Replace)
+            .unwrap();
     }
 
     #[test]
@@ -4057,6 +4214,12 @@ mod tests {
             memories: Vec::new(),
             image_generations: Vec::new(),
             skills: Vec::new(),
+            assistants: vec![],
+            documents: vec![],
+            chunks: vec![],
+            summaries: vec![],
+            tasks: vec![],
+            config: None,
         };
 
         let target = Database::in_memory();

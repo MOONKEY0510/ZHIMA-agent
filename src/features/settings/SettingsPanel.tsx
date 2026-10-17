@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Activity,
@@ -70,12 +70,6 @@ import {
   type WebSearchTestResult,
 } from "../../services/web-search-api";
 import {
-  exportData,
-  previewBackup,
-  type BackupPreview,
-  type ImportStrategy,
-} from "../../services/backup-api";
-import {
   addKbFile,
   addKbText,
   addKbUrl,
@@ -113,6 +107,10 @@ import { ModelsTab } from "./tabs/models";
 import { AppearanceTab } from "./tabs/appearance";
 import { AgentToolsTab, POLICY_OPTIONS } from "./tabs/agent-tools";
 import { DiagnosticsTab } from "./tabs/diagnostics";
+import { DesktopActionsSettings } from "../actions/DesktopActionsSettings";
+import { TasksPanel } from "../tasks/TasksPanel";
+import { BackupSettings } from "../backup/BackupSettings";
+import { SettingsSection } from "./ui";
 
 type SettingsTab =
   | "models"
@@ -125,7 +123,8 @@ type SettingsTab =
   | "persona"
   | "context"
   | "integrations"
-  | "data";
+  | "data"
+  | "tasks";
 
 /** Fully custom dropdown. The browser-native `<select>` popup cannot be
  *  styled consistently across platforms, so we render our own menu.
@@ -208,6 +207,7 @@ const TABS: { id: SettingsTab; label: string; icon: typeof SettingsIcon }[] = [
   { id: "skills", label: "技能", icon: Puzzle },
   { id: "integrations", label: "网络与集成", icon: Globe },
   { id: "data", label: "数据与存储", icon: Database },
+  { id: "tasks", label: "待办与提醒", icon: Check },
   { id: "usage", label: "用量统计", icon: BarChart3 },
   { id: "diagnostics", label: "诊断信息", icon: Activity },
   { id: "general", label: "通用", icon: Wrench },
@@ -222,7 +222,7 @@ const NAV_GROUPS: { label: string; tabs: SettingsTab[] }[] = [
   },
   {
     label: "应用",
-    tabs: ["appearance", "data", "usage", "diagnostics", "general"],
+    tabs: ["appearance", "tasks", "data", "usage", "diagnostics", "general"],
   },
 ];
 
@@ -296,7 +296,7 @@ export function SettingsPanel() {
 
       {/* Tab content. Keyed by tab so every switch replays the enter
           animation from a clean mount. */}
-      <div className="min-w-0 flex-1 overflow-y-auto px-8 pb-8 pt-6">
+      <div className="cf-settings-content min-w-0 flex-1 overflow-y-auto px-4 pb-8 pt-6 sm:px-8">
         <div
           key={tab}
           className={`cf-settings-page mx-auto w-full max-w-2xl ${
@@ -319,6 +319,7 @@ export function SettingsPanel() {
           {tab === "skills" && <SkillsTab />}
           {tab === "integrations" && <IntegrationsTab />}
           {tab === "data" && <DataTab />}
+          {tab === "tasks" && <TasksPanel onOpenSource={() => useWindowStore.getState().switchToChat()} />}
           {tab === "usage" && <UsageTab />}
           {tab === "diagnostics" && <DiagnosticsTab />}
           {tab === "general" && <GeneralTab />}
@@ -1228,246 +1229,6 @@ const ENGINE_HINTS: Record<
     linkLabel: "查看自建部署文档",
   },
 };
-
-/* ------------------------------------------------------------------------ */
-/* Data backup: export / import (P0-4)                                       */
-/* ------------------------------------------------------------------------ */
-
-function BackupSection() {
-  const [includeImages, setIncludeImages] = useState(false);
-  const [includeMemories, setIncludeMemories] = useState(true);
-  const [busy, setBusy] = useState<"export" | "import" | null>(null);
-  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
-  const [pendingPath, setPendingPath] = useState<string | null>(null);
-  const [preview, setPreview] = useState<BackupPreview | null>(null);
-  const [strategy, setStrategy] = useState<ImportStrategy>("merge");
-  const [confirming, setConfirming] = useState(false);
-
-  const doExport = async () => {
-    setMessage(null);
-    const now = new Date();
-    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
-    let path: string | null = null;
-    try {
-      path = await saveDialog({
-        title: "导出芝麻数据",
-        defaultPath: `zhima-backup-${stamp}.json`,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-    } catch (err) {
-      setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
-      return;
-    }
-    if (!path) return;
-
-    setBusy("export");
-    try {
-      const report = await exportData(path, { includeImages, includeMemories });
-      setMessage({
-        ok: true,
-        text: `已导出 ${report.conversations} 个会话 · ${report.messages} 条消息${
-          report.memories ? ` · ${report.memories} 条记忆` : ""
-        }${report.skills ? ` · ${report.skills} 个技能` : ""}${
-          report.images ? ` · ${report.images} 张图片` : ""
-        }（${(report.bytes / 1024).toFixed(1)} KB）`,
-      });
-    } catch (err) {
-      setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const pickImportFile = async () => {
-    setMessage(null);
-    let path: string | null = null;
-    try {
-      const picked = await openDialog({
-        title: "选择芝麻备份文件",
-        multiple: false,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-      path = typeof picked === "string" ? picked : null;
-    } catch (err) {
-      setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
-      return;
-    }
-    if (!path) return;
-
-    setBusy("import");
-    try {
-      const info = await previewBackup(path);
-      setPendingPath(path);
-      setPreview(info);
-      setStrategy("merge");
-      setConfirming(false);
-    } catch (err) {
-      setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const confirmImport = async () => {
-    if (!pendingPath) return;
-    setBusy("import");
-    setMessage(null);
-    try {
-      const report = await useChatStore.getState().importBackup(pendingPath, strategy);
-      setMessage({
-        ok: true,
-        text: `导入完成：新增 ${report.conversations} 个会话 · ${report.messages} 条消息 · ${report.memories} 条记忆${
-          report.skills ? ` · ${report.skills} 个技能` : ""
-        }${report.skipped > 0 ? `，跳过 ${report.skipped} 条已存在内容` : ""}`,
-      });
-      setPendingPath(null);
-      setPreview(null);
-      setConfirming(false);
-    } catch (err) {
-      setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  return (
-    <SettingsSection
-      title="数据备份"
-      description="导出/导入会话、记忆、技能与生成图片。备份中不包含 API Key，换机器后需要重新填写。"
-    >
-      <div className="space-y-2 px-3 pb-2 pt-1">
-        <label className="flex items-center gap-2 text-meta text-ink">
-          <input
-            type="checkbox"
-            checked={includeMemories}
-            onChange={(e) => setIncludeMemories(e.target.checked)}
-            className="rounded border-line"
-          />
-          包含长期记忆
-        </label>
-        <label className="flex items-center gap-2 text-meta text-ink">
-          <input
-            type="checkbox"
-            checked={includeImages}
-            onChange={(e) => setIncludeImages(e.target.checked)}
-            className="rounded border-line"
-          />
-          包含生成图片（体积较大）
-        </label>
-      </div>
-
-      <div className="flex items-center justify-end gap-2 px-3 py-2">
-        <button
-          type="button"
-          onClick={() => void doExport()}
-          disabled={busy !== null}
-          className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
-        >
-          {busy === "export" && <Loader2 size={12} className="animate-spin" />}
-          导出备份…
-        </button>
-        <button
-          type="button"
-          onClick={() => void pickImportFile()}
-          disabled={busy !== null}
-          className="flex items-center gap-1.5 rounded-btn border border-line px-3 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2 disabled:opacity-40"
-        >
-          {busy === "import" && <Loader2 size={12} className="animate-spin" />}
-          导入备份…
-        </button>
-      </div>
-
-      {preview && (
-        <div className="mx-3 mb-2 rounded-btn border border-line bg-panel-2 p-2.5">
-          <p className="text-meta text-ink">
-            该备份包含 {preview.conversations} 个会话 · {preview.messages} 条消息 ·{" "}
-            {preview.memories} 条记忆
-            {preview.skills > 0 ? ` · ${preview.skills} 个技能` : ""}
-            {preview.images > 0 ? ` · ${preview.images} 张图片` : ""}
-          </p>
-          <p className="mt-0.5 text-ui text-ink-2">
-            导出于 {new Date(preview.exportedAt).toLocaleString("zh-CN")}
-          </p>
-
-          <div className="mt-2 flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-1.5 text-ui text-ink">
-              <input
-                type="radio"
-                checked={strategy === "merge"}
-                onChange={() => setStrategy("merge")}
-                className="border-line"
-              />
-              合并（保留现有数据）
-            </label>
-            <label className="flex items-center gap-1.5 text-ui text-ink">
-              <input
-                type="radio"
-                checked={strategy === "replace"}
-                onChange={() => setStrategy("replace")}
-                className="border-line"
-              />
-              替换（先清空现有数据）
-            </label>
-          </div>
-
-          {strategy === "replace" && (
-            <p className="mt-1.5 text-ui text-danger">
-              替换会删除当前全部会话、记忆与生成图片，且无法撤销。
-            </p>
-          )}
-
-          <div className="mt-2 flex items-center gap-2">
-            {confirming ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => void confirmImport()}
-                  disabled={busy !== null}
-                  className="rounded-btn bg-danger px-2.5 py-1 text-ui text-white transition-opacity hover:opacity-85 disabled:opacity-40"
-                >
-                  确认导入
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirming(false)}
-                  className="rounded-btn border border-line px-2.5 py-1 text-ui text-ink-2 transition-colors hover:bg-panel"
-                >
-                  取消
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setConfirming(true)}
-                  className="rounded-btn bg-accent px-2.5 py-1 text-ui font-medium text-accent-fg transition-opacity hover:opacity-90"
-                >
-                  开始导入
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPreview(null);
-                    setPendingPath(null);
-                  }}
-                  className="rounded-btn border border-line px-2.5 py-1 text-ui text-ink-2 transition-colors hover:bg-panel"
-                >
-                  取消
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {message && (
-        <p className={`px-4 pb-2 text-ui ${message.ok ? "text-ink-2" : "text-danger"}`}>
-          {message.text}
-        </p>
-      )}
-    </SettingsSection>
-  );
-}
 
 /* ------------------------------------------------------------------------ */
 /* Knowledge base (P1-9)                                                     */
@@ -2540,6 +2301,7 @@ function ContextTab() {
   return (
     <>
       <PresetSection />
+      <DesktopActionsSettings />
       <MemorySection />
     </>
   );
@@ -2567,7 +2329,7 @@ function DataTab() {
   return (
     <>
       <KnowledgeSection />
-      <BackupSection />
+      <BackupSettings />
     </>
   );
 }
@@ -2670,8 +2432,7 @@ function MemorySection() {
     }
   };
 
-  const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-ui text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
+  const inputCls = "cf-input";
 
   return (
     <SettingsSection
@@ -2681,7 +2442,7 @@ function MemorySection() {
         editingId === null && (
           <button
             onClick={startAdd}
-            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-ui text-ink transition-colors hover:bg-panel-2"
+            className="cf-btn-secondary !text-ui"
           >
             <Plus size={11} />
             添加记忆
@@ -2692,7 +2453,7 @@ function MemorySection() {
       {error && <p className="px-4 pt-2 text-ui text-danger">{error}</p>}
 
       {editingId !== null && (
-        <div className="space-y-3 p-3">
+        <div className="cf-settings-editor space-y-3">
           <div>
             <label className="mb-1 block text-meta text-ink-2">类别</label>
             <Dropdown
@@ -2705,8 +2466,9 @@ function MemorySection() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-meta text-ink-2">内容</label>
+            <label htmlFor="memory-content" className="cf-field-label">内容</label>
             <textarea
+              id="memory-content"
               value={draftContent}
               onChange={(e) => setDraftContent(e.target.value)}
               rows={3}
@@ -2735,7 +2497,7 @@ function MemorySection() {
       {!loaded ? (
         <p className="px-4 py-6 text-meta text-ink-2">加载中…</p>
       ) : memories.length === 0 ? (
-        <p className="px-4 py-6 text-meta text-ink-2">暂无记忆。</p>
+        <p className="cf-settings-empty">暂无记忆。</p>
       ) : (
         <ul>
           {memories.map((m) => (
@@ -2846,18 +2608,17 @@ function PresetSection() {
     await setPresets(presets.filter((p) => p.id !== id));
   };
 
-  const inputCls =
-    "w-full rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-ui text-ink outline-none transition-colors placeholder:text-ink-2 focus:border-accent";
+  const inputCls = "cf-input";
 
   return (
     <SettingsSection
       title="快捷指令"
-      description="在输入框中输入 / 即可触发快捷指令，快速填充预设的提示词模板。"
+      description="在输入框中输入 /，快速填充提示词。标有「桌面动作」的条目与下方动作入口共享模板，不是重复创建；文本来源、助手与技能请在桌面动作中配置。"
       action={
         editingId === null && (
           <button
             onClick={startAdd}
-            className="flex items-center gap-1 rounded-btn border border-line px-2 py-1 text-meta text-ink transition-colors hover:bg-panel-2"
+            className="cf-btn-secondary !text-ui"
           >
             <Plus size={12} /> 添加
           </button>
@@ -2865,10 +2626,11 @@ function PresetSection() {
       }
     >
       {editingId !== null && (
-        <div className="space-y-3 p-3">
+        <div className="cf-settings-editor space-y-3">
           <div>
-            <label className="mb-1 block text-meta text-ink-2">名称</label>
+            <label htmlFor="preset-name" className="cf-field-label">名称</label>
             <input
+              id="preset-name"
               value={draftName}
               onChange={(e) => setDraftName(e.target.value)}
               placeholder="如：翻译"
@@ -2876,8 +2638,9 @@ function PresetSection() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-meta text-ink-2">触发指令</label>
+            <label htmlFor="preset-command" className="cf-field-label">触发指令</label>
             <input
+              id="preset-command"
               value={draftCommand}
               onChange={(e) => setDraftCommand(e.target.value)}
               placeholder="如：/翻译"
@@ -2886,8 +2649,9 @@ function PresetSection() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-meta text-ink-2">提示词内容</label>
+            <label htmlFor="preset-content" className="cf-field-label">提示词内容</label>
             <textarea
+              id="preset-content"
               value={draftContent}
               onChange={(e) => setDraftContent(e.target.value)}
               placeholder="如：请将以下内容翻译为中文："
@@ -2913,16 +2677,21 @@ function PresetSection() {
         </div>
       )}
 
-      <div className="space-y-1 p-3">
+      <div className="space-y-2">
         {presets.map((p) => (
           <div
             key={p.id}
-            className="cf-provider-card flex items-center gap-2 py-2"
+            className="cf-provider-card flex flex-wrap items-center gap-2 py-2"
           >
-            <span className="shrink-0 rounded bg-panel-2 px-1.5 py-px font-mono text-ui text-accent">
-              {p.command}
-            </span>
-            <span className="truncate text-meta text-ink">{p.name}</span>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                {p.command && <span className="break-all rounded bg-panel-2 px-1.5 py-px font-mono text-ui text-accent">
+                  {p.command}
+                </span>}
+                <span className="break-words text-ui text-ink">{p.name}</span>
+              </div>
+              {p.desktopAction && <span className="mt-1 block text-meta text-ink-2">桌面动作 · 共享模板</span>}
+            </div>
             <span className="ml-auto flex shrink-0 items-center gap-0.5">
               <button
                 onClick={() => startEdit(p)}
@@ -2942,8 +2711,8 @@ function PresetSection() {
           </div>
         ))}
         {presets.length === 0 && editingId === null && (
-          <p className="rounded-btn border border-dashed border-line px-3 py-3 text-center text-meta text-ink-2">
-            暂无快捷指令，点击右上角"添加"创建
+          <p className="cf-settings-empty">
+            暂无快捷指令，点击「添加」创建
           </p>
         )}
       </div>
@@ -3034,33 +2803,6 @@ function Modal({
 /* Shared settings UI primitives — used to reduce the "generated" look of   */
 /* every page looking like a stack of identical pale cards.                 */
 /* ------------------------------------------------------------------------ */
-
-function SettingsSection({
-  title,
-  description,
-  action,
-  children,
-  className,
-}: {
-  title: string;
-  description?: string;
-  action?: React.ReactNode;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <section className={`cf-settings-section ${className ?? ""}`}>
-      <div className="cf-settings-section-header">
-        <div>
-          <h2 className="cf-settings-section-title">{title}</h2>
-          {description && <p className="cf-settings-section-desc">{description}</p>}
-        </div>
-        {action}
-      </div>
-      <div className="cf-settings-section-body">{children}</div>
-    </section>
-  );
-}
 
 function FormRow({
   label,

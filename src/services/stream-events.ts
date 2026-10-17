@@ -108,7 +108,7 @@ export class DeltaBuffer {
         break;
 
       case "kb_used":
-        store.markKbUsed(event.requestId, event.count, event.titles);
+        store.markKbUsed(event.requestId, event.count, event.titles, event.evidence);
         break;
 
       case "tool_start":

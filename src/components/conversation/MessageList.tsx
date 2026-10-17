@@ -31,6 +31,8 @@ import { useWindowStore } from "../../stores/window-store";
 import { useSettingsStore, DEFAULT_PRESETS, type AvatarShape } from "../../stores/settings-store";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Markdown } from "../markdown/Markdown";
+import { KnowledgeEvidence } from "./KnowledgeEvidence";
+import { SaveTaskButton } from "../../features/tasks/SaveTaskButton";
 import { StreamingMarkdown } from "../markdown/StreamingMarkdown";
 import { markdownToPlainText } from "../../lib/markdown-plain";
 
@@ -457,16 +459,7 @@ const MessageItem = memo(function MessageItem({
           <SourcesBlock sources={message.sources} />
         )}
 
-        {/* Local knowledge base hint (P1-9) */}
-        {message.kbHits != null && message.kbHits > 0 && (
-          <div
-            className="mb-1 flex items-center gap-1.5 py-0.5 text-meta text-ink-2"
-            title={message.kbTitles?.join("\n")}
-          >
-            <Bookmark size={11} className="text-accent" />
-            已参考知识库 {message.kbHits} 条
-          </div>
-        )}
+        <KnowledgeEvidence key={`${message.id}-${message.activeVersion ?? 0}`} snapshot={message} />
         {message.toolCalls && message.toolCalls.length > 0 && (
           <ToolCallsBlock toolCalls={message.toolCalls} messageId={message.id} />
         )}
@@ -1115,6 +1108,7 @@ function MessageActions({
   durationMs?: number;
   messageId: string;
 }) {
+  const sourceConversationId = useHistoryStore((state) => state.activeId);
   const [copied, setCopied] = useState<"plain" | "md" | null>(null);
   const [memOpen, setMemOpen] = useState(false);
   const [memValue, setMemValue] = useState("");
@@ -1200,6 +1194,7 @@ function MessageActions({
         >
           <RefreshCw size={14} />
         </button>
+        <SaveTaskButton content={markdownToPlainText(content)} sourceConversationId={sourceConversationId} sourceMessageId={messageId} />
         <button className={btn} title="记住这条（保存为长期记忆）" onClick={openMemo}>
           <Bookmark size={14} />
         </button>

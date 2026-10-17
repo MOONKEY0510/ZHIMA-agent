@@ -27,31 +27,9 @@ const SIZE_OPTIONS = [
   { label: "4:3", value: "1024x768" },
 ] as const;
 
-const QUALITY_OPTIONS = [
-  { value: "auto", label: "auto" },
-  { value: "low", label: "low" },
-  { value: "medium", label: "medium" },
-  { value: "high", label: "high" },
-];
-
-const FORMAT_OPTIONS = [
-  { value: "png", label: "PNG" },
-  { value: "jpeg", label: "JPEG" },
-  { value: "webp", label: "WebP" },
-];
-
-const TRANSPARENT_OPTIONS = [
-  { value: "false", label: "false" },
-  { value: "true", label: "true" },
-];
-
-const MODERATION_OPTIONS = [
-  { value: "auto", label: "auto" },
-  { value: "low", label: "low" },
-];
-
-const COUNT_OPTIONS = [1, 2, 3, 4].map((n) => ({ value: String(n), label: String(n) }));
-
+// The current service contract has no optional image capability declaration.
+// Do not infer quality/format/background/moderation support from a model name:
+// compatible providers may expose that same name with a different protocol.
 const MAX_REFERENCE_IMAGES = 3;
 
 function parseSize(value: string): { w: number; h: number } | null {
@@ -97,17 +75,12 @@ function aspectOf(sizeLabel: string | null): string {
  * Layout:
  *   - Left history sidebar (rendered separately by HistorySidebar).
  *   - Center canvas: selected generation / empty state.
- *   - Bottom composer: prompt + reference chips + 6 param pickers + send.
+ *   - Bottom composer: prompt + reference chips + size picker + send.
  *   - Click the canvas image to open the detail drawer.
  */
 export function ImageGenView() {
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState<string>("auto");
-  const [quality, setQuality] = useState<string>("auto");
-  const [format, setFormat] = useState<string>("png");
-  const [transparent, setTransparent] = useState<string>("false");
-  const [moderation, setModeration] = useState<string>("auto");
-  const [count, setCount] = useState<string>("1");
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -226,7 +199,6 @@ export function ImageGenView() {
 
     setGenerating(true);
     setError(null);
-    const startedAt = performance.now();
     try {
       const dataUrl = await generateImage(
         imageModel.provider.id,
@@ -237,23 +209,9 @@ export function ImageGenView() {
         undefined,
         referenceImages.length > 0 ? referenceImages : undefined,
       );
-      const durationMs = Math.round(performance.now() - startedAt);
       await addHistory(text, dataUrl, resolvedSize.label, referenceImages);
       const item = useImageGenStore.getState().history[0];
-      if (item) {
-        setSelected(item);
-        // Stash extra params on the item for the detail panel; persistence
-        // schema stays unchanged.
-        (item as ImageGeneration & Record<string, unknown>).extraParams = {
-          quality,
-          format,
-          transparent,
-          moderation,
-          count,
-          durationMs,
-          source: `${imageModel.provider.name} · ${imageModel.model.displayName}`,
-        };
-      }
+      if (item) setSelected(item);
       setPrompt("");
       setReferenceImages([]);
     } catch (err) {
@@ -459,11 +417,7 @@ export function ImageGenView() {
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3.5 pb-2.5 pt-1">
             <ParamPicker label="尺寸" value={size} onChange={setSize}
               options={[{ value: "auto", label: "auto" }, ...SIZE_OPTIONS.map((s) => ({ value: s.value, label: s.label }))]} />
-            <ParamPicker label="质量" value={quality} onChange={setQuality} options={QUALITY_OPTIONS} />
-            <ParamPicker label="格式" value={format} onChange={setFormat} options={FORMAT_OPTIONS} />
-            <ParamPicker label="透明背景" value={transparent} onChange={setTransparent} options={TRANSPARENT_OPTIONS} />
-            <ParamPicker label="审核" value={moderation} onChange={setModeration} options={MODERATION_OPTIONS} />
-            <ParamPicker label="数量" value={count} onChange={setCount} options={COUNT_OPTIONS} />
+            <span className="text-meta text-ink-3">数量：1（每次仅生成 1 张，暂不支持批量）</span>
 
             <div className="ml-auto flex items-center gap-1">
               <button
@@ -494,6 +448,10 @@ export function ImageGenView() {
             </div>
           </div>
         </div>
+
+        <p className="mt-2 text-meta leading-5 text-ink-3">
+          当前接口未声明质量、格式、透明背景和审核参数能力，暂不提供这些设置，也不会发送这些参数。
+        </p>
 
         {error && (
           <p className="mt-2 rounded-btn border border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--cf-danger)_6%,transparent)] px-3 py-2 text-meta leading-5 text-danger">
@@ -576,12 +534,8 @@ function ImageDetailDrawer({
   onCopyPrompt: () => void;
 }) {
   const refs = getReferenceImages(item);
-  const extra = (item as ImageGeneration & { extraParams?: Record<string, unknown> })
-    .extraParams ?? {};
   const createdAt = new Date(item.createdAt);
   const createdText = `${createdAt.getFullYear()}/${String(createdAt.getMonth() + 1).padStart(2, "0")}/${String(createdAt.getDate()).padStart(2, "0")} ${String(createdAt.getHours()).padStart(2, "0")}:${String(createdAt.getMinutes()).padStart(2, "0")}:${String(createdAt.getSeconds()).padStart(2, "0")}`;
-  const durationMs = typeof extra.durationMs === "number" ? extra.durationMs : null;
-  const durationText = durationMs !== null ? `${Math.floor(durationMs / 60000)}:${String(Math.floor((durationMs % 60000) / 1000)).padStart(2, "0")}` : null;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -680,17 +634,8 @@ function ImageDetailDrawer({
             <section>
               <h3 className="mb-1.5 text-meta font-medium text-ink-3">参数配置</h3>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-ui">
-                <KV k="来源" v={typeof extra.source === "string" ? extra.source : "默认图像模型"} />
-                <KV k="尺寸" v={item.sizeLabel ?? "auto"} />
-                <KV k="质量" v={typeof extra.quality === "string" ? extra.quality : "auto"} />
-                <KV k="格式" v={typeof extra.format === "string" ? extra.format : "png"} />
-                <KV k="透明背景" v={typeof extra.transparent === "string" ? extra.transparent : "false"} />
-                <KV k="审核" v={typeof extra.moderation === "string" ? extra.moderation : "auto"} />
-                <KV k="数量" v={typeof extra.count === "string" ? extra.count : "1"} />
-                <KV
-                  k="创建于"
-                  v={durationText ? `${createdText} · ${durationText}` : createdText}
-                />
+                {item.sizeLabel && <KV k="尺寸" v={item.sizeLabel} />}
+                <KV k="创建于" v={createdText} />
               </dl>
             </section>
           </div>

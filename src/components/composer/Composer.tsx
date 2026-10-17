@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { appendActionTemplate, desktopPresets } from "../../features/actions/desktop-actions";
+import { useAssistantsStore } from "../../stores/assistants-store";
+import { useHistoryStore } from "../../services/history-store";
 import {
   ArrowUp,
   ChevronUp,
@@ -36,9 +39,13 @@ import { requestHide } from "../../lib/window";
 import { buildAttachmentBlocks, formatChars } from "../../lib/attachments";
 import { appendCapture, clampSelection } from "../../lib/selection-capture";
 import { listTools, readClipboardText, type ToolInfo } from "../../services/tools-api";
-import { parseDocumentPreview, pickDocument } from "../../services/document-api";
+import { pickDocument } from "../../services/document-api";
+import { useDraftStore } from "../../stores/draft-store";
+import { createDocumentStager, MAX_DOCUMENTS, type StagedDocument } from "../../lib/document-staging";
 import { listSkills, type SkillView } from "../../services/skills-api";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { readFile } from "@tauri-apps/plugin-fs";
 
 /** Quick clipboard actions: prepend an instruction, keep the original text. */
@@ -86,9 +93,73 @@ const THINKING_EFFORT_OPTIONS: { value: ThinkingEffort; label: string; hint: str
   { value: "max", label: "最大", hint: "最强推理" },
 ];
 
-export function Composer() {
-  const [text, setText] = useState("");
-  const [images, setImages] = useState<string[]>([]);
+export interface ComposerContextPreview {
+  /** Exact prepared message body, including successfully parsed attachments. */
+  text: string;
+  /** Opaque image-attachment revision; never includes image data or filenames. */
+  inputRevision: string;
+  skillIds: string[];
+  webSearch: boolean;
+  enableTools: boolean;
+  enableThinking: boolean;
+  thinkingEffort: ThinkingEffort;
+  disabled: boolean;
+}
+export interface ComposerProps {
+  renderContextPreview?: (context: ComposerContextPreview) => ReactNode;
+}
+type ActionHandoff = { scope: number; skills: SkillView[]; notice: string };
+
+export function Composer({ renderContextPreview }: ComposerProps = {}) {
+  const scope = useDraftStore((state) => state.scope);
+  const [handoff, setHandoff] = useState<ActionHandoff | null>(null);
+  const startActionConversation = (assistantId: string, prepared: string, skills: SkillView[], notice: string) => {
+    if (useChatStore.getState().importingBackup) return;
+    const previous = useDraftStore.getState();
+    const previousText = previous.drafts[previous.key] ?? "";
+    useChatStore.getState().startNewConversation();
+    // This explicit assistant action must use the target assistant's model,
+    // not a manual model retained from the previous chat. Ordinary new-chat
+    // navigation intentionally keeps its existing store behavior.
+    useChatStore.setState({ draftSelection: null });
+    // Fresh, unrecorded drafts are normally discarded on explicit navigation;
+    // an action-driven transition preserves their text as well as the new copy.
+    if (previousText) useDraftStore.getState().setText(previous.key, previousText);
+    useAssistantsStore.getState().setActive(assistantId);
+    const draft = useDraftStore.getState();
+    draft.setText(draft.key, prepared);
+    setHandoff({ scope: draft.scope, skills, notice });
+  };
+  return <ConversationComposer key={scope} scope={scope} renderContextPreview={renderContextPreview} handoff={handoff?.scope === scope ? handoff : null} startActionConversation={startActionConversation} />;
+}
+
+function ConversationComposer({ scope, renderContextPreview, handoff, startActionConversation }: ComposerProps & {
+  scope: number;
+  handoff: ActionHandoff | null;
+  startActionConversation: (assistantId: string, prepared: string, skills: SkillView[], notice: string) => void;
+}) {
+  const text = useDraftStore((state) => state.drafts[state.key] ?? "");
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const isCurrent = useCallback(() => mounted.current && useDraftStore.getState().scope === scope, [scope]);
+  const textRevision = useRef(0);
+  const setText = useCallback((value: string | ((current: string) => string)) => {
+    if (!isCurrent()) return;
+    const state = useDraftStore.getState();
+    textRevision.current++;
+    state.setText(state.key, typeof value === "function" ? value(state.drafts[state.key] ?? "") : value);
+  }, [isCurrent]);
+  const [imageState, setImageState] = useState({ items: [] as string[], revision: 0 });
+  const images = imageState.items;
+  const setImages = useCallback((value: string[] | ((current: string[]) => string[])) => {
+    setImageState((previous) => {
+      const items = typeof value === "function" ? value(previous.items) : value;
+      return items === previous.items ? previous : { items, revision: previous.revision + 1 };
+    });
+  }, []);
   const [presetIndex, setPresetIndex] = useState(0);
   const [webSearch, setWebSearch] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -151,6 +222,10 @@ export function Composer() {
   const stop = useChatStore((s) => s.stop);
   const view = useWindowStore((s) => s.view);
   const presets = useSettingsStore((s) => s.presets);
+  const actions = desktopPresets(presets);
+  const [actionNotice, setActionNotice] = useState<string | null>(handoff?.notice ?? null);
+  const [pendingAction, setPendingAction] = useState<{ assistantId: string; prepared: string; skills: SkillView[]; notice: string; revision: number; skillRevision: number; draft: string } | null>(null);
+  const actionRequest = useRef(0);
 
   const conversationNonce = useChatStore((s) => s.conversationNonce);
 
@@ -208,8 +283,12 @@ export function Composer() {
 
   // Parsed document attachments (P1-8): their extracted text is folded into
   // the prompt, so only the metadata travels with the message.
-  const [docs, setDocs] = useState<{ name: string; chars: number; text: string }[]>([]);
-  const [docBusy, setDocBusy] = useState(false);
+  const [docs, setDocs] = useState<StagedDocument[]>([]);
+  const [documentStager] = useState(() => createDocumentStager(setDocs, isCurrent));
+  const [filePicking, setFilePicking] = useState(false);
+  const pendingFiles = useRef(0);
+  const docBusy = filePicking || docs.some((doc) => doc.status === "queued" || doc.status === "parsing");
+  const readyDocs = docs.filter((doc) => doc.status === "ready");
   const [docNotice, setDocNotice] = useState<{ ok: boolean; text: string } | null>(null);
   /** Attachment menu: one button exposing 图片 / 文档. */
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
@@ -217,27 +296,85 @@ export function Composer() {
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [skillQuery, setSkillQuery] = useState("");
   const [availableSkills, setAvailableSkills] = useState<SkillView[]>([]);
-  const [activeSkills, setActiveSkills] = useState<SkillView[]>([]);
+  const [activeSkills, setActiveSkills] = useState<SkillView[]>(handoff?.skills ?? []);
+  const skillRevision = useRef(0);
+
+  const runDesktopAction = async (preset: PromptPreset) => {
+    const action = preset.desktopAction;
+    if (!action || !isCurrent()) return;
+    const revision = textRevision.current;
+    const skillsAtStart = skillRevision.current;
+    const initialDraft = useDraftStore.getState().drafts[useDraftStore.getState().key] ?? "";
+    const request = ++actionRequest.current;
+    const current = () => {
+      if (!isCurrent() || revision !== textRevision.current || request !== actionRequest.current
+        || (useDraftStore.getState().drafts[useDraftStore.getState().key] ?? "") !== initialDraft) return false;
+      if (skillsAtStart !== skillRevision.current) {
+        setClipboardHint("技能选择已更新，请重新选择动作。");
+        return false;
+      }
+      return true;
+    };
+    setClipboardBusy(true);
+    setClipboardHint(null);
+    setPendingAction(null);
+    try {
+      const input = action.source === "clipboard" ? await readClipboardText() : selection;
+      if (!current()) return;
+      if (!input?.trim()) { setClipboardHint(action.source === "selection" ? "请先使用划词快捷键获取选中文本" : "剪贴板中没有文本内容"); return; }
+      const allSkills = action.skillIds.length ? await listSkills() : [];
+      if (!current()) return;
+      const requestedSkills = action.skillIds.map((id) => allSkills.find((skill) => skill.id === id && skill.enabled));
+      if (requestedSkills.some((skill) => !skill)) { setClipboardHint("动作包含不可用或已禁用技能，请先编辑动作；未改动草稿或权限。"); return; }
+      const mergedSkills = [...activeSkills, ...requestedSkills.filter((skill): skill is SkillView => !!skill && !activeSkills.some((active) => active.id === skill.id))];
+      const assistantId = action.assistantId;
+      if (assistantId && !useAssistantsStore.getState().assistants.some((assistant) => assistant.id === assistantId)) { setClipboardHint("动作配置的助手已不可用，请先编辑动作。"); return; }
+      const prepared = appendActionTemplate(initialDraft, action, clampSelection(input));
+      const notice = `${preset.name}：已保留原草稿并追加模板，请检查后手动发送。${action.output === "copy" ? "需要复制时，使用回答的复制按钮；不会自动覆盖剪贴板或原应用。" : "结果仅显示在对话中；需要时使用回答的复制按钮。"}`;
+      const history = useHistoryStore.getState();
+      const bound = history.activeId ? history.conversations.find((conversation) => conversation.id === history.activeId)?.assistantId ?? null : useAssistantsStore.getState().activeId;
+      const hasConversation = !!history.activeId || useChatStore.getState().messages.length > 0;
+      if (assistantId && hasConversation && assistantId !== bound) {
+        setPendingAction({ assistantId, prepared, skills: mergedSkills, notice, revision, skillRevision: skillsAtStart, draft: initialDraft });
+        setClipboardOpen(false);
+        return;
+      }
+      if (assistantId) useAssistantsStore.getState().setActive(assistantId);
+      setActiveSkills(mergedSkills);
+      setText(prepared);
+      setActionNotice(notice);
+      setSelection(null);
+      setClipboardOpen(false);
+      textareaRef.current?.focus();
+    } catch (err) { if (current()) setClipboardHint(String(err)); }
+    finally { if (isCurrent() && request === actionRequest.current) setClipboardBusy(false); }
+  };
 
   const addImages = useCallback((files: FileList | File[]) => {
     if (comparing) {
       setDocNotice({ ok: false, text: "对比模式下不支持图片，请先移除对比模型或使用单模型发送" });
       return;
     }
-    const arr = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    if (!isCurrent()) return;
+    const arr = Array.from(files).filter((f) => f.type.startsWith("image/")).slice(0, MAX_IMAGES - images.length);
     for (const file of arr) {
-      if (images.length >= MAX_IMAGES) break;
+      pendingFiles.current++;
+      setFilePicking(true);
       const reader = new FileReader();
+      reader.onloadend = () => {
+        pendingFiles.current--;
+        if (isCurrent()) setFilePicking(pendingFiles.current > 0);
+      };
       reader.onload = () => {
         const result = reader.result;
-        if (typeof result === "string") {
+        if (isCurrent() && typeof result === "string") {
           setImages((prev) => (prev.length < MAX_IMAGES ? [...prev, result] : prev));
         }
       };
       reader.onerror = () => console.error("读取图片失败:", file.name);
       reader.readAsDataURL(file);
     }
-  }, [comparing, images.length]);
+  }, [comparing, images.length, isCurrent]);
 
   /** Stage already-decoded data URLs (used by native drag & drop). */
   const addImageDataUrls = useCallback((urls: string[]) => {
@@ -263,7 +400,6 @@ export function Composer() {
     let offAction: (() => void) | undefined;
     let offError: (() => void) | undefined;
     void (async () => {
-      const { listen } = await import("@tauri-apps/api/event");
       const first = await listen<string>("quick-action", (event) => {
         const captured = clampSelection(event.payload);
         setSelection(captured);
@@ -316,8 +452,8 @@ export function Composer() {
    * Apply an action to the captured selection.  When the composer still holds
    * exactly what the capture produced, only the captured part is rewritten —
    * a draft the user typed before capturing is preserved.  The user reviews
-   * and presses Enter; nothing is sent automatically, and the reply is
-   * written back to the clipboard so it can replace the selected text.
+   * and presses Enter; nothing is sent or copied automatically. The existing
+   * answer copy button is the only output-copy entry point.
    */
   const runSelectionAction = (action: { label: string; instruction: string }) => {
     if (!selection) return;
@@ -328,11 +464,11 @@ export function Composer() {
     if (captureIntact && capture) {
       setText(`${capture.before}${wrapped}`);
     } else {
-      setText(wrapped);
+      setText((current) => current ? `${current}\n\n${wrapped}` : wrapped);
     }
     captureRef.current = null;
     setSelection(null);
-    useChatStore.getState().armClipboardWriteback(action.label);
+    setActionNotice("请检查后手动发送；需要复制时，使用回答的复制按钮，不自动覆盖剪贴板或原应用。");
     requestAnimationFrame(() => {
       const el = textareaRef.current;
       if (el) {
@@ -342,42 +478,28 @@ export function Composer() {
     });
   };
 
-  /** Parse a document path on the Rust side and stage it for sending.
-   *  Shared by the file picker and native drag & drop. */
-  const stageDocument = useCallback(async (path: string) => {
-    setDocNotice(null);
-    setDocBusy(true);
-    try {
-      const preview = await parseDocumentPreview(path);
-      setDocs((prev) => [
-        ...prev.filter((doc) => doc.name !== preview.name),
-        { name: preview.name, chars: preview.chars, text: preview.text },
-      ]);
-      if (preview.truncated) {
-        setDocNotice({
-          ok: true,
-          text: `${preview.name} 共 ${formatChars(preview.totalChars)}，本次仅取前 ${formatChars(
-            preview.chars,
-          )}；需要全文可让模型用 read_document 工具按需读取。`,
-        });
-      }
-    } catch (err) {
-      setDocNotice({ ok: false, text: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setDocBusy(false);
-    }
-  }, []);
+  /** Single picker, quick actions and drops all share the bounded parser queue. */
+  const stageDocument = useCallback((paths: string[]) => {
+    if (!isCurrent()) return;
+    const skipped = documentStager.stage(paths);
+    setDocNotice(skipped ? { ok: false, text: `最多附加 ${MAX_DOCUMENTS} 个文档，已跳过 ${skipped} 个文件。` } : null);
+  }, [documentStager, isCurrent]);
 
-  /** Pick a document via the native dialog, then stage it. */
   const addDocument = async () => {
-    const path = await pickDocument();
-    if (!path) return;
-    void stageDocument(path);
+    pendingFiles.current++;
+    setFilePicking(true);
+    try {
+      const path = await pickDocument();
+      if (path && isCurrent()) stageDocument([path]);
+    } catch (error) {
+      if (isCurrent()) setDocNotice({ ok: false, text: String(error) });
+    } finally {
+      pendingFiles.current--;
+      if (isCurrent()) setFilePicking(pendingFiles.current > 0);
+    }
   };
 
-  const removeDocument = (idx: number) => {
-    setDocs((prev) => prev.filter((_, i) => i !== idx));
-  };
+  const removeDocument = (id: number) => documentStager.remove(id);
 
   /** Stage files dropped onto the window: images become attachments, documents
    *  are parsed.  Uses Tauri's native drag-drop because the webview never
@@ -386,19 +508,24 @@ export function Composer() {
     async (paths: string[]) => {
       const imageExts = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
       const docExts = ["docx", "xlsx", "xlsm", "pptx", "pdf", "txt", "md", "csv", "json", "log"];
-      const droppedImages: string[] = [];
-      for (const path of paths) {
-        const ext = path.split(".").pop()?.toLowerCase() ?? "";
-        if (imageExts.includes(ext)) {
+      const extension = (path: string) => path.split(".").pop()?.toLowerCase() ?? "";
+      stageDocument(paths.filter((path) => docExts.includes(extension(path))));
+      pendingFiles.current++;
+      setFilePicking(true);
+      try {
+        const droppedImages: string[] = [];
+        for (const path of paths.filter((path) => imageExts.includes(extension(path))).slice(0, MAX_IMAGES)) {
+          if (!isCurrent()) return;
           const dataUrl = await readImageAsDataUrl(path);
           if (dataUrl) droppedImages.push(dataUrl);
-        } else if (docExts.includes(ext)) {
-          await stageDocument(path);
         }
+        if (isCurrent()) addImageDataUrls(droppedImages);
+      } finally {
+        pendingFiles.current--;
+        if (isCurrent()) setFilePicking(pendingFiles.current > 0);
       }
-      addImageDataUrls(droppedImages);
     },
-    [stageDocument, addImageDataUrls],
+    [stageDocument, addImageDataUrls, isCurrent],
   );
 
   useEffect(() => {
@@ -406,7 +533,6 @@ export function Composer() {
     let unlisten: (() => void) | undefined;
     void (async () => {
       try {
-        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
         const off = await getCurrentWebview().onDragDropEvent((event) => {
           if (event.payload.type === "drop") {
             void handleDroppedPaths(event.payload.paths);
@@ -435,6 +561,7 @@ export function Composer() {
   };
 
   const toggleSkill = (skill: SkillView) => {
+    skillRevision.current++;
     setActiveSkills((prev) =>
       prev.some((s) => s.id === skill.id)
         ? prev.filter((s) => s.id !== skill.id)
@@ -454,25 +581,49 @@ export function Composer() {
     }
   };
 
+  const preparedAttachmentText = readyDocs.length > 0 ? buildAttachmentBlocks(readyDocs.map((doc) => ({
+    ...doc, text: doc.notice ? `${doc.text}\n\n[${doc.notice}]` : doc.text,
+  }))) : "";
+  const preparedContent = preparedAttachmentText
+    ? text.trim() ? `${preparedAttachmentText}\n\n${text.trim()}` : preparedAttachmentText
+    : text.trim();
+
   const submit = useCallback(() => {
     const value = text.trim();
-    if ((!value && images.length === 0 && docs.length === 0) || streaming) return;
+    if (!isCurrent() || pendingFiles.current > 0 || documentStager.busy()) return;
+    if ((!value && images.length === 0 && readyDocs.length === 0) || streaming) return;
 
-    // Fold staged documents into the prompt as 【附件：…】 blocks (P1-8).
-    const attachmentText = docs.length > 0 ? buildAttachmentBlocks(docs) : "";
+    // Only successfully extracted bodies become source-labelled attachments.
+    const attachmentText = readyDocs.length > 0 ? buildAttachmentBlocks(readyDocs.map((doc) => ({
+      ...doc, text: doc.notice ? `${doc.text}\n\n[${doc.notice}]` : doc.text,
+    }))) : "";
     const content = attachmentText
       ? value
         ? `${attachmentText}\n\n${value}`
         : attachmentText
       : value;
-    const attachmentMeta = docs.map((doc) => ({ name: doc.name, chars: doc.chars }));
+    const attachmentMeta = readyDocs.map((doc) => ({ name: doc.name, chars: doc.chars }));
+    const submittedKey = useDraftStore.getState().key;
+    const submittedRevision = textRevision.current;
 
-    setText("");
-    setImages([]);
-    setDocs([]);
-    setDocNotice(null);
-    setWebSearch(false); // Reset after send (one-shot toggle like ChatGPT).
-    setEnableTools(defaultEnableTools);
+    // The store owns model/key, busy and import validation. Clear only once
+    // it accepts the turn, synchronously before async setup; late failures
+    // remain on the message and must never restore over the user's next draft.
+    const onAccepted = () => {
+      const state = useDraftStore.getState();
+      const key = state.scope === scope ? state.key : submittedKey;
+      if ((state.drafts[key] ?? "") === text && textRevision.current === submittedRevision) state.setText(key, "");
+      if (!isCurrent()) return;
+      setImages([]);
+      documentStager.clear();
+      setDocNotice(null);
+      setWebSearch(false);
+      setEnableTools(defaultEnableTools);
+    };
+    const callbacks = {
+      onAccepted,
+      onRejected: (message: string) => { if (isCurrent()) setDocNotice({ ok: false, text: message }); },
+    };
     const imgs = images;
     // Read the live toggle state via ref so the callback never captures a
     // stale value (bug fix: toggling tools then sending used the old value).
@@ -490,6 +641,7 @@ export function Composer() {
         enableThinkingRef.current,
         thinkingEffortRef.current,
         activeSkills.map((skill) => skill.id),
+        callbacks,
       );
       return;
     }
@@ -502,6 +654,7 @@ export function Composer() {
       thinkingEffortRef.current,
       attachmentMeta.length > 0 ? attachmentMeta : undefined,
       activeSkills.map((skill) => skill.id),
+      callbacks,
     );
   }, [
     text,
@@ -517,7 +670,8 @@ export function Composer() {
     activeSkills,
   ]);
 
-  const applyPreset = useCallback((preset: PromptPreset) => {
+  const applyPreset = (preset: PromptPreset) => {
+    if (preset.desktopAction) { void runDesktopAction(preset); return; }
     setText(preset.content + "\n");
     setPresetIndex(0);
     // Focus and move cursor to end.
@@ -528,24 +682,29 @@ export function Composer() {
         el.setSelectionRange(el.value.length, el.value.length);
       }
     });
-  }, []);
+  };
 
   // Read the clipboard and prefill the composer with the chosen action's
   // instruction.  The user reviews and presses Enter to send — we never send
   // automatically, so clipboard contents stay under the user's control.
   const runClipboardAction = async (action: (typeof CLIPBOARD_ACTIONS)[number]) => {
+    const revision = textRevision.current;
+    const initialDraft = useDraftStore.getState().drafts[useDraftStore.getState().key] ?? "";
+    const request = ++actionRequest.current;
+    const current = () => isCurrent() && revision === textRevision.current && request === actionRequest.current
+      && (useDraftStore.getState().drafts[useDraftStore.getState().key] ?? "") === initialDraft;
     setClipboardBusy(true);
     setClipboardHint(null);
     try {
       const content = await readClipboardText();
+      if (!current()) return;
       if (!content.trim()) {
         setClipboardHint("剪贴板中没有文本内容");
         return;
       }
       const wrapped = content.length > 12000 ? `${content.slice(0, 12000)}…` : content;
-      setText(`${action.instruction}\n\n${wrapped}`);
-      // When this action sends, the reply is written back to the clipboard.
-      useChatStore.getState().armClipboardWriteback(action.label.replace("剪贴板", ""));
+      setText((current) => `${current ? `${current}\n\n` : ""}${action.instruction}\n\n${wrapped}`);
+      setActionNotice("已保留原草稿，请检查后手动发送；需要复制时，使用回答的复制按钮，不自动覆盖剪贴板或原应用。");
       setClipboardOpen(false);
       requestAnimationFrame(() => {
         const el = textareaRef.current;
@@ -555,37 +714,36 @@ export function Composer() {
         }
       });
     } catch (err) {
-      setClipboardHint(String(err));
+      if (current()) setClipboardHint(String(err));
     } finally {
-      setClipboardBusy(false);
+      if (isCurrent() && request === actionRequest.current) setClipboardBusy(false);
     }
   };
 
-  // Pick one or more files and prefill the composer with the chosen
-  // processing instruction.  Files are listed by name; the agent tools can
-  // open them on request (read_pdf / file reader), so we never inline the
-  // full content here.
+  // Stage actual bodies, never pass selected paths off as already-read content.
   const pickFilesForAction = async (action: (typeof FILE_ACTIONS)[number]) => {
+    const revision = textRevision.current;
+    pendingFiles.current++;
+    setFilePicking(true);
     setClipboardBusy(true);
     setClipboardHint(null);
     try {
       const selected = await open({ multiple: true, title: "选择文件" });
+      if (!isCurrent()) return;
       const files = Array.isArray(selected) ? selected : selected ? [selected] : [];
       if (files.length === 0) return;
-      const listing = files.map((f) => `- ${f}`).join("\n");
-      setText(`${action.instruction}\n\n文件列表：\n${listing}\n\n请使用文件读取工具打开并分析以上文件。`);
+      if (textRevision.current === revision) setText((current) => current.trim() ? `${current}\n\n${action.instruction}` : action.instruction);
+      stageDocument(files);
       setClipboardOpen(false);
-      requestAnimationFrame(() => {
-        const el = textareaRef.current;
-        if (el) {
-          el.focus();
-          el.setSelectionRange(el.value.length, el.value.length);
-        }
-      });
+      textareaRef.current?.focus();
     } catch (err) {
-      setClipboardHint(String(err));
+      if (isCurrent()) setClipboardHint(String(err));
     } finally {
-      setClipboardBusy(false);
+      pendingFiles.current--;
+      if (isCurrent()) {
+        setFilePicking(pendingFiles.current > 0);
+        setClipboardBusy(false);
+      }
     }
   };
 
@@ -623,7 +781,7 @@ export function Composer() {
     }
   };
 
-  const canSend = (text.trim().length > 0 || images.length > 0 || docs.length > 0) && !streaming;
+  const canSend = (text.trim().length > 0 || images.length > 0 || readyDocs.length > 0) && !streaming && !docBusy;
 
   return (
     <div className="cf-print-hide relative shrink-0 px-3 pb-3 pt-1.5">
@@ -634,12 +792,15 @@ export function Composer() {
       {selection && (
         <div
           className="mx-auto mb-2 flex max-w-[760px] flex-wrap items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5"
-          title="文字已追加到输入框，可直接编辑发送；选择动作会套用对应指令（回答将写回剪贴板）。"
+          title="文字已追加到输入框，可直接编辑发送；动作不会自动发送或复制，使用回答复制按钮。"
         >
           <Sparkles size={12} className="shrink-0 text-accent" />
           <span className="shrink-0 text-meta text-ink">
             已获取选中文本 · {selection.length} 字
           </span>
+          {actions.filter((preset) => preset.desktopAction.source === "selection").map((preset) => (
+            <button key={preset.id} type="button" disabled={clipboardBusy || streaming} onClick={() => void runDesktopAction(preset)} className="rounded-full border border-line px-2 py-0.5 text-meta text-ink hover:bg-panel disabled:opacity-40">{preset.desktopAction.favorite ? "收藏 · " : ""}{preset.name}</button>
+          ))}
           {QUICK_ACTIONS.map((action) => (
             <button
               key={action.id}
@@ -660,6 +821,20 @@ export function Composer() {
           </button>
         </div>
       )}
+
+      {actionNotice && <p role="status" className="mx-auto mb-2 max-w-[760px] text-meta text-ink-2">{actionNotice}</p>}
+      {pendingAction && <div role="alert" className="mx-auto mb-2 max-w-[760px] rounded-btn border border-line p-2 text-ui">
+        <p>此动作需要更换助手，必须新建会话才能生效。原草稿保留；新会话将携带草稿副本和动作模板，不自动发送。</p>
+        {(images.length > 0 || docs.length > 0 || docBusy) && <p>当前有附件或正在选取文件。为保留附件，请先完成或移除附件，再新建动作会话。</p>}
+        <button type="button" className="mr-3 text-accent disabled:opacity-40" disabled={images.length > 0 || docs.length > 0 || docBusy} onClick={() => {
+          const live = useDraftStore.getState();
+          if (!isCurrent() || pendingAction.revision !== textRevision.current || (live.drafts[live.key] ?? "") !== pendingAction.draft) { setPendingAction(null); setClipboardHint("草稿已更新，请重新选择动作。"); return; }
+          if (pendingAction.skillRevision !== skillRevision.current) { setPendingAction(null); setClipboardHint("技能选择已更新，请重新选择动作。"); return; }
+          if (useChatStore.getState().importingBackup) { setClipboardHint("正在导入备份，请稍后重试。"); return; }
+          startActionConversation(pendingAction.assistantId, pendingAction.prepared, pendingAction.skills, pendingAction.notice);
+        }}>新建会话并填入（保留原草稿）</button>
+        <button type="button" onClick={() => setPendingAction(null)}>取消动作</button>
+      </div>}
 
       {/* Preset picker dropdown */}
       {showPresets && filteredPresets.length > 0 && (
@@ -745,18 +920,25 @@ export function Composer() {
         {/* Document attachments (P1-8) */}
         {docs.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
-            {docs.map((doc, idx) => (
+            {docs.map((doc) => (
               <span
-                key={`${doc.name}-${idx}`}
-                className="flex items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1 text-meta text-ink"
+                key={doc.id}
+                className="flex flex-wrap items-center gap-1.5 rounded-btn border border-line bg-panel-2 px-2 py-1 text-meta text-ink"
                 title={doc.name}
               >
                 <FileText size={11} className="shrink-0 text-ink-2" />
                 <span className="max-w-[11rem] truncate">{doc.name}</span>
-                <span className="shrink-0 text-ink-2">{formatChars(doc.chars)}</span>
+                <span className="shrink-0 text-ink-2">{doc.status === "queued" ? "等待解析" : doc.status === "parsing" ? "解析中" : doc.status === "error" ? "解析失败" : `已读取 ${formatChars(doc.chars)}`}</span>
+                {doc.notice && <span className={doc.status === "error" ? "text-danger" : "text-ink-2"}>{doc.notice}</span>}
+                {doc.status === "ready" && (
+                  <details className="max-w-full">
+                    <summary className="cursor-pointer">预览正文</summary>
+                    <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all">{doc.text}</pre>
+                  </details>
+                )}
                 <button
                   type="button"
-                  onClick={() => removeDocument(idx)}
+                  onClick={() => removeDocument(doc.id)}
                   title="移除附件"
                   className="grid h-3.5 w-3.5 shrink-0 place-items-center rounded text-ink-2 transition-colors hover:text-danger"
                 >
@@ -1063,7 +1245,9 @@ export function Composer() {
             <ClipboardPaste size={15} />
           </button>
           {clipboardOpen && (
-            <div className="cf-menu-pop absolute bottom-8 right-0 z-40 w-48 overflow-hidden rounded-menu border border-line bg-panel shadow-menu">
+            <div className="cf-menu-pop absolute bottom-8 right-0 z-40 max-h-[min(420px,60vh)] w-56 overflow-y-auto rounded-menu border border-line bg-panel shadow-menu">
+              <p className="border-b border-line bg-panel-2 px-2.5 py-1.5 text-meta font-medium text-ink-2">桌面动作 · 仅填入，检查后发送</p>
+              {actions.map((preset) => <button key={preset.id} type="button" disabled={clipboardBusy || (preset.desktopAction.source === "selection" && !selection)} onClick={() => void runDesktopAction(preset)} className="block w-full px-2.5 py-1.5 text-left text-ui text-ink hover:bg-hover disabled:opacity-40">{preset.desktopAction.favorite ? "收藏 · " : ""}{preset.name}</button>)}
               <p className="border-b border-line bg-panel-2 px-2.5 py-1.5 text-meta font-medium text-ink-2">
                 剪贴板快捷操作
               </p>
@@ -1103,6 +1287,7 @@ export function Composer() {
               the primary action always sits in the same corner (Claude-style
               composer: options drift left, commit controls anchor right). */}
           <div className="flex shrink-0 items-center gap-1">
+          {renderContextPreview?.({ text: preparedContent, inputRevision: `images:${scope}:${imageState.revision}`, skillIds: activeSkills.map((skill) => skill.id), webSearch, enableTools: !comparing && enableTools, enableThinking, thinkingEffort, disabled: docBusy || streaming || clipboardBusy || !!pendingAction })}
           <ModelPicker />
           <button
             onClick={() => setEnableTools((value) => !value)}

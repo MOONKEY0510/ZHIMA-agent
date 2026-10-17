@@ -1,3 +1,25 @@
+export interface ContextExclusions {
+  memoryIds: string[];
+  knowledgeDocumentIds: string[];
+}
+
+export interface ContextPreview {
+  memories: { id: string; category: string; content: string; excluded: boolean }[];
+  knowledge: KnowledgeEvidence[];
+  excludedKnowledgeDocumentIds: string[];
+  skillsBlock: string | null;
+  summary: string | null;
+  systemPrompt: string;
+  inputMessageCount: number;
+  retainedMessageCount: number;
+  droppedMessageCount: number;
+  estimatedTokens: number;
+  inputBudget: number;
+  oversizedMessage: boolean;
+  overBudget: boolean;
+  dynamicContent: string[];
+}
+
 export interface SearchResult {
   title: string;
   url: string;
@@ -28,11 +50,33 @@ export interface ToolCallStep {
   durationMs?: number;
 }
 
+/** Bounded passage prepared in the request prompt, not proof of delivery or citation. */
+export interface KnowledgeEvidence {
+  index: number;
+  documentId: string;
+  chunkIndex: number;
+  title: string;
+  snippet: string;
+  truncated: boolean;
+  sourceType?: string;
+  sourceRef?: string;
+}
+
+/** Transient only; never reconstructed by searching the current knowledge base. */
+export interface KnowledgeSnapshot {
+  kbHits?: number;
+  kbTitles?: string[];
+  kbEvidence?: KnowledgeEvidence[];
+  /** Always preparation only, including after refusal, cancellation or HTTP failure. */
+  kbEvidenceStage?: "prepared";
+  kbEvidenceUnavailable?: boolean;
+}
+
 export type ChatStreamEvent =
   | { type: "start"; seq: number; requestId: string }
   | { type: "search_start"; seq: number; requestId: string; query: string }
   | { type: "search_end"; seq: number; requestId: string; results: SearchResult[] }
-  | { type: "kb_used"; seq: number; requestId: string; count: number; titles: string[] }
+  | { type: "kb_used"; seq: number; requestId: string; count: number; titles: string[]; evidence?: KnowledgeEvidence[]; stage?: "prepared" }
   | {
       type: "tool_start";
       seq: number;
@@ -107,7 +151,7 @@ export interface AttachmentMeta {
  * of the message content (oldest first) and is what the `‹ n/m ›` switcher
  * walks through; `Message.activeVersion` points at the visible entry.
  */
-export interface MessageVersion {
+export interface MessageVersion extends KnowledgeSnapshot {
   content: string;
   reasoning?: string;
   modelName?: string;
@@ -116,7 +160,7 @@ export interface MessageVersion {
   createdAt: number;
 }
 
-export interface Message {
+export interface Message extends KnowledgeSnapshot {
   id: string;
   role: Role;
   content: string;
@@ -152,10 +196,6 @@ export interface Message {
    * `content`; this is the metadata used for the badge.
    */
   attachments?: AttachmentMeta[];
-  /** Knowledge-base passages injected into this turn (P1-9). */
-  kbHits?: number;
-  /** Titles of those passages (tooltip of the hint chip). */
-  kbTitles?: string[];
 }
 
 export interface ModelEntry {

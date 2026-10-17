@@ -19,9 +19,9 @@ use zip::ZipArchive;
 pub const MAX_DOCUMENT_BYTES: u64 = 20 * 1024 * 1024;
 /// Characters kept from one document (the agent tool caps at the same size).
 pub const MAX_TEXT_CHARS: usize = 100_000;
-/// One XML part may not expand beyond this.  The archive itself is already
-/// capped at 20 MiB compressed; a single entry is the realistic zip-bomb
-/// vector, and document text is truncated far below this anyway.
+/// Per-part decompression ceiling, in addition to the per-document budget.
+/// Office extraction fails explicitly on a budget violation: returning a prefix
+/// here would make callers report an incorrect total_chars / truncated value.
 const MAX_ZIP_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 /// How many slides / worksheets one document may contribute.
 const MAX_ARCHIVE_ENTRIES: usize = 256;
@@ -117,39 +117,69 @@ pub fn truncate_chars(text: &str, max: usize) -> (String, bool) {
 
 /* ---------------- office formats (zip + XML) ---------------- */
 
-/// Read one entry of a ZIP container as UTF-8 text.
-///
-/// The declared size is checked first and the read is capped again, because a
-/// hostile archive can lie about the former.
-fn zip_text(archive: &mut ZipArchive<std::io::Cursor<&[u8]>>, entry: &str) -> Option<String> {
-    let file = archive.by_name(entry).ok()?;
-    if file.size() > MAX_ZIP_ENTRY_BYTES {
-        return None;
+/// Every XML read (including optional metadata) spends the same byte budget.
+/// Only FileNotFound is optional; corrupt or oversized entries must not vanish.
+fn zip_text(
+    archive: &mut ZipArchive<std::io::Cursor<&[u8]>>,
+    entry: &str,
+    budget: &mut OfficeBudget,
+) -> Result<Option<String>, String> {
+    let file = match archive.by_name(entry) {
+        Ok(file) => file,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(e) => return Err(format!("Office ZIP 项读取失败：{entry}：{e}")),
+    };
+    let remaining = budget.limits.total_bytes - budget.bytes;
+    if file.size() > budget.limits.entry_bytes {
+        return Err("Office ZIP 单项解压字节超出预算".into());
     }
+    if file.size() > remaining {
+        return Err("Office ZIP 累计解压字节超出预算".into());
+    }
+    let cap = remaining.min(budget.limits.entry_bytes);
+    // One probe byte distinguishes an exact fit from a lying size header.
     let mut raw = Vec::new();
-    file.take(MAX_ZIP_ENTRY_BYTES).read_to_end(&mut raw).ok()?;
-    Some(String::from_utf8_lossy(&raw).into_owned())
+    file.take(cap.saturating_add(1))
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("Office ZIP 项读取失败：{entry}：{e}"))?;
+    if raw.len() as u64 > cap {
+        return Err("Office ZIP 单项或累计解压字节超出预算".into());
+    }
+    budget.bytes += raw.len() as u64;
+    Ok(Some(match String::from_utf8(raw) {
+        Ok(text) => text,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+    }))
 }
 
 /// Entry names inside the archive, filtered by a prefix and sorted naturally
 /// (`slide2` before `slide10`).
-fn sorted_entries(archive: &ZipArchive<std::io::Cursor<&[u8]>>, prefix: &str) -> Vec<String> {
-    let mut names: Vec<String> = archive
+fn sorted_entries(
+    archive: &ZipArchive<std::io::Cursor<&[u8]>>,
+    prefix: &str,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    let mut names = Vec::new();
+    for name in archive
         .file_names()
         .filter(|n| n.starts_with(prefix) && n.ends_with(".xml"))
-        .map(|n| n.to_string())
-        .collect();
-    names.sort_by_key(|n| {
-        n.chars()
-            .filter(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse::<u64>()
-            .unwrap_or(0)
-    });
-    // A workbook or deck with thousands of parts contributes nothing useful
-    // (the extracted text is truncated later) but would keep the loop busy.
-    names.truncate(MAX_ARCHIVE_ENTRIES);
-    names
+    {
+        if names.len() == limit {
+            return Err("Office 工作表或幻灯片数量超出预算".into());
+        }
+        names.push(name.to_string());
+    }
+    names.sort_by_key(|name| numeric_index(name));
+    Ok(names)
+}
+
+fn numeric_index(name: &str) -> u64 {
+    name.bytes()
+        .filter(u8::is_ascii_digit)
+        .try_fold(0u64, |n, digit| {
+            n.checked_mul(10)?.checked_add(u64::from(digit - b'0'))
+        })
+        .unwrap_or(0)
 }
 
 fn archive(bytes: &[u8]) -> Result<ZipArchive<std::io::Cursor<&[u8]>>, String> {
@@ -159,26 +189,50 @@ fn archive(bytes: &[u8]) -> Result<ZipArchive<std::io::Cursor<&[u8]>>, String> {
 
 /// Collect the text of every paragraph: paragraph tags become line breaks,
 /// text-run tags carry the characters.
-fn xml_paragraphs(xml: &str, paragraph: &str, text_tag: &str) -> String {
+fn xml_paragraphs(
+    xml: &str,
+    paragraph: &str,
+    text_tag: &str,
+    out: &mut LimitedText,
+) -> Result<(), String> {
     let para_re = Regex::new(&format!(r"(?s)<{paragraph}[ >].*?</{paragraph}>"))
         .expect("invalid paragraph regex");
     let text_re = Regex::new(&format!(r"(?s)<{text_tag}(?:\s[^>]*)?>(.*?)</{text_tag}>"))
         .expect("invalid text regex");
-
-    let mut lines: Vec<String> = Vec::new();
     for para in para_re.find_iter(xml) {
-        let mut line = String::new();
+        let mut line = LimitedText::new(out.remaining(), out.label);
+        let mut pending = String::new();
+        let mut pending_chars = 0usize;
         for cap in text_re.captures_iter(para.as_str()) {
-            if let Some(inner) = cap.get(1) {
-                line.push_str(&unescape_xml(inner.as_str()));
-            }
+            decode_xml(cap.get(1).unwrap().as_str(), |ch| {
+                if ch.is_whitespace() {
+                    if !line.text.is_empty() {
+                        // Retain only whitespace that could still fit. Trailing
+                        // whitespace is discarded without ever allocating it all.
+                        pending_chars = pending_chars.saturating_add(1);
+                        if pending_chars <= line.remaining() {
+                            pending.push(ch);
+                        }
+                    }
+                    return Ok(());
+                }
+                if pending_chars > line.remaining() {
+                    return Err(line.error());
+                }
+                line.push(&pending)?;
+                pending.clear();
+                pending_chars = 0;
+                line.push_char(ch)
+            })?;
         }
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            lines.push(trimmed.to_string());
+        if !line.text.is_empty() {
+            if !out.text.is_empty() {
+                out.push("\n")?;
+            }
+            out.push(&line.text)?;
         }
     }
-    lines.join("\n")
+    Ok(())
 }
 
 /// Decode the XML entities that appear in document text.
@@ -217,84 +271,251 @@ fn unescape_xml(input: &str) -> String {
     out
 }
 
-fn parse_docx(bytes: &[u8]) -> Result<String, String> {
+// Injectable limits also let the regression tests use tiny, harmless archives.
+#[derive(Clone, Copy)]
+struct OfficeLimits {
+    output_chars: usize,
+    entry_bytes: u64,
+    total_bytes: u64,
+    shared_chars: usize,
+    shared_items: usize,
+    entries: usize,
+}
+
+impl Default for OfficeLimits {
+    fn default() -> Self {
+        Self {
+            output_chars: MAX_TEXT_CHARS,
+            entry_bytes: MAX_ZIP_ENTRY_BYTES,
+            total_bytes: 128 * 1024 * 1024,
+            shared_chars: 1_000_000,
+            shared_items: 100_000,
+            entries: MAX_ARCHIVE_ENTRIES,
+        }
+    }
+}
+
+struct OfficeBudget {
+    limits: OfficeLimits,
+    bytes: u64,
+}
+
+/// Bounded storage, measured in Unicode scalar values, not UTF-8 bytes.
+struct LimitedText {
+    text: String,
+    chars: usize,
+    limit: usize,
+    label: &'static str,
+}
+
+impl LimitedText {
+    fn new(limit: usize, label: &'static str) -> Self {
+        Self {
+            text: String::new(),
+            chars: 0,
+            limit,
+            label,
+        }
+    }
+    fn remaining(&self) -> usize {
+        self.limit - self.chars
+    }
+    fn error(&self) -> String {
+        format!("Office {}超出预算（上限 {}）", self.label, self.limit)
+    }
+    fn push(&mut self, text: &str) -> Result<(), String> {
+        let count = text
+            .chars()
+            .take(self.remaining().saturating_add(1))
+            .count();
+        if count > self.remaining() {
+            return Err(self.error());
+        }
+        self.text.push_str(text);
+        self.chars += count;
+        Ok(())
+    }
+    fn push_char(&mut self, ch: char) -> Result<(), String> {
+        if self.remaining() == 0 {
+            return Err(self.error());
+        }
+        self.text.push(ch);
+        self.chars += 1;
+        Ok(())
+    }
+    fn decoded(&mut self, text: &str) -> Result<(), String> {
+        decode_xml(text, |ch| self.push_char(ch))
+    }
+}
+
+/// Match entities without allocating decoded copies of whole XML text runs.
+/// Preserve the old replacement order, including &amp;#65; -> A, while
+/// &amp;lt; remains &lt; (named entities are not recursively decoded).
+fn decode_xml(input: &str, mut emit: impl FnMut(char) -> Result<(), String>) -> Result<(), String> {
+    static ENTITY: OnceLock<Regex> = OnceLock::new();
+    let re = ENTITY.get_or_init(|| {
+        Regex::new(r"&(?:lt;|gt;|quot;|apos;|amp;(?:#x?[0-9A-Fa-f]+;)?|#x?[0-9A-Fa-f]+;)")
+            .expect("entity regex")
+    });
+    let mut last = 0;
+    for token in re.find_iter(input) {
+        for ch in input[last..token.start()].chars() {
+            emit(ch)?;
+        }
+        let raw = token.as_str();
+        let named = match raw {
+            "&lt;" => Some('<'),
+            "&gt;" => Some('>'),
+            "&quot;" => Some('"'),
+            "&apos;" => Some('\''),
+            "&amp;" => Some('&'),
+            _ => None,
+        };
+        if let Some(ch) = named {
+            emit(ch)?;
+        } else {
+            let numeric = raw.strip_prefix("&amp;").unwrap_or(&raw[1..]);
+            let value = &numeric[1..numeric.len() - 1];
+            let code = if let Some(hex) = value.strip_prefix('x') {
+                u32::from_str_radix(hex, 16).ok()
+            } else {
+                value.parse::<u32>().ok()
+            };
+            if let Some(ch) = code.and_then(char::from_u32) {
+                emit(ch)?;
+            } else {
+                emit('&')?;
+                for ch in numeric.chars() {
+                    emit(ch)?;
+                }
+            }
+        }
+        last = token.end();
+    }
+    for ch in input[last..].chars() {
+        emit(ch)?;
+    }
+    Ok(())
+}
+
+fn parse_office_with_limits(
+    kind: &str,
+    bytes: &[u8],
+    limits: OfficeLimits,
+) -> Result<String, String> {
     let mut zip = archive(bytes)?;
-    let document = zip_text(&mut zip, "word/document.xml").ok_or("文档缺少正文内容")?;
-    Ok(xml_paragraphs(&document, "w:p", "w:t"))
+    let mut budget = OfficeBudget { limits, bytes: 0 };
+    let mut out = LimitedText::new(limits.output_chars, "输出字符");
+    match kind {
+        "docx" => {
+            let document =
+                zip_text(&mut zip, "word/document.xml", &mut budget)?.ok_or("文档缺少正文内容")?;
+            xml_paragraphs(&document, "w:p", "w:t", &mut out)?;
+        }
+        "pptx" => extract_slides(&mut zip, &mut budget, &mut out)?,
+        _ => extract_sheets(&mut zip, &mut budget, &mut out)?,
+    }
+    Ok(out.text)
+}
+
+fn parse_docx(bytes: &[u8]) -> Result<String, String> {
+    parse_office_with_limits("docx", bytes, OfficeLimits::default())
 }
 
 fn parse_pptx(bytes: &[u8]) -> Result<String, String> {
-    let mut zip = archive(bytes)?;
-    let slides = sorted_entries(&zip, "ppt/slides/slide");
-    let mut out = String::new();
+    parse_office_with_limits("pptx", bytes, OfficeLimits::default())
+}
+
+fn extract_slides(
+    zip: &mut ZipArchive<std::io::Cursor<&[u8]>>,
+    budget: &mut OfficeBudget,
+    out: &mut LimitedText,
+) -> Result<(), String> {
+    let slides = sorted_entries(zip, "ppt/slides/slide", budget.limits.entries)?;
     for (index, name) in slides.iter().enumerate() {
-        let Some(xml) = zip_text(&mut zip, name) else {
-            continue;
-        };
-        let body = xml_paragraphs(&xml, "a:p", "a:t");
-        if body.trim().is_empty() {
+        let xml = zip_text(zip, name, budget)?.ok_or("幻灯片内容缺失")?;
+        let mut body = LimitedText::new(out.remaining(), out.label);
+        xml_paragraphs(&xml, "a:p", "a:t", &mut body)?;
+        if body.text.is_empty() {
             continue;
         }
-        if !out.is_empty() {
-            out.push_str("\n\n");
+        if !out.text.is_empty() {
+            out.push("\n\n")?;
         }
-        out.push_str(&format!("## 幻灯片 {}\n{}", index + 1, body));
+        out.push(&format!("## 幻灯片 {}\n", index + 1))?;
+        out.push(&body.text)?;
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Shared strings table of an xlsx workbook (cell text lives here).
-fn parse_shared_strings(xml: &str) -> Vec<String> {
+fn parse_shared_strings(xml: &str, limits: OfficeLimits) -> Result<Vec<String>, String> {
     static SI: OnceLock<Regex> = OnceLock::new();
     static T: OnceLock<Regex> = OnceLock::new();
     let si_re = SI.get_or_init(|| Regex::new(r"(?s)<si>(.*?)</si>").expect("si regex"));
     let t_re = T.get_or_init(|| Regex::new(r"(?s)<t(?:\s[^>]*)?>(.*?)</t>").expect("t regex"));
 
-    si_re
-        .captures_iter(xml)
-        .map(|cap| {
-            let inner = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-            let mut text = String::new();
-            for t in t_re.captures_iter(inner) {
-                if let Some(value) = t.get(1) {
-                    text.push_str(&unescape_xml(value.as_str()));
-                }
-            }
-            text
-        })
-        .collect()
+    let mut shared = Vec::new();
+    let mut remaining = limits.shared_chars;
+    for cap in si_re.captures_iter(xml) {
+        if shared.len() == limits.shared_items {
+            return Err("Office 共享字符串数量超出预算".into());
+        }
+        let inner = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let mut text = LimitedText::new(remaining, "共享字符串字符");
+        for t in t_re.captures_iter(inner) {
+            text.decoded(t.get(1).unwrap().as_str())?;
+        }
+        remaining -= text.chars;
+        shared.push(text.text);
+    }
+    Ok(shared)
 }
 
 /// One worksheet: cells joined by tab, rows by newline.
-fn parse_sheet(xml: &str, shared: &[String]) -> String {
+fn parse_sheet(xml: &str, shared: &[String], out: &mut LimitedText) -> Result<(), String> {
     static ROW: OnceLock<Regex> = OnceLock::new();
     static CELL: OnceLock<Regex> = OnceLock::new();
     let row_re = ROW.get_or_init(|| Regex::new(r"(?s)<row[^>]*>(.*?)</row>").expect("row regex"));
     let cell_re = CELL.get_or_init(|| Regex::new(r"(?s)<c([^>]*)>(.*?)</c>").expect("cell regex"));
 
-    let mut lines: Vec<String> = Vec::new();
     for row in row_re.captures_iter(xml) {
         let body = row.get(1).map(|m| m.as_str()).unwrap_or("");
-        let mut cells: Vec<String> = Vec::new();
+        let mut row_started = false;
+        let mut pending_tabs = 0usize;
         for cell in cell_re.captures_iter(body) {
             let attrs = cell.get(1).map(|m| m.as_str()).unwrap_or("");
             let inner = cell.get(2).map(|m| m.as_str()).unwrap_or("");
-            let value = cell_value(attrs, inner, shared);
-            cells.push(value);
+            let (value, encoded) = cell_value(attrs, inner, shared);
+            if value.is_empty() {
+                // No per-cell allocation, even for millions of empty cells.
+                pending_tabs = pending_tabs.saturating_add(1);
+                continue;
+            }
+            if !row_started && !out.text.is_empty() {
+                out.push("\n")?;
+            }
+            if pending_tabs > out.remaining() {
+                return Err(out.error());
+            }
+            for _ in 0..pending_tabs {
+                out.push_char('\t')?;
+            }
+            if encoded {
+                out.decoded(value)?;
+            } else {
+                out.push(value)?;
+            }
+            row_started = true;
+            pending_tabs = 1;
         }
-        // Trailing empty cells carry no information.
-        while cells.last().is_some_and(|c| c.is_empty()) {
-            cells.pop();
-        }
-        if !cells.is_empty() {
-            lines.push(cells.join("\t"));
-        }
+        // Discard pending tabs (trailing empty cells), just like the old join.
     }
-    lines.join("\n")
+    Ok(())
 }
 
 /// Resolve one cell: shared-string index, inline string, or literal value.
-fn cell_value(attrs: &str, inner: &str, shared: &[String]) -> String {
+fn cell_value<'a>(attrs: &str, inner: &'a str, shared: &'a [String]) -> (&'a str, bool) {
     static TYPE: OnceLock<Regex> = OnceLock::new();
     static VALUE: OnceLock<Regex> = OnceLock::new();
     static TEXT: OnceLock<Regex> = OnceLock::new();
@@ -305,42 +526,44 @@ fn cell_value(attrs: &str, inner: &str, shared: &[String]) -> String {
 
     let kind = type_re
         .captures(attrs)
-        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+        .and_then(|c| c.get(1).map(|m| m.as_str()))
         .unwrap_or_default();
-
     if kind == "s" {
-        // A shared-string cell stores the index into `sharedStrings.xml`.
-        return value_re
+        // Borrow cached text; each reference still spends the output budget.
+        let value = value_re
             .captures(inner)
             .and_then(|c| c.get(1))
             .and_then(|m| m.as_str().trim().parse::<usize>().ok())
-            .and_then(|index| shared.get(index).cloned())
+            .and_then(|index| shared.get(index))
+            .map(String::as_str)
             .unwrap_or_default();
+        return (value, false);
     }
-
-    if kind == "inlineStr" {
-        return text_re
+    let value = if kind == "inlineStr" {
+        text_re
             .captures(inner)
             .and_then(|c| c.get(1))
-            .map(|m| unescape_xml(m.as_str()))
-            .unwrap_or_default();
-    }
-
-    value_re
-        .captures(inner)
-        .and_then(|c| c.get(1))
-        .map(|m| unescape_xml(m.as_str().trim()))
-        .unwrap_or_default()
+            .map(|m| m.as_str())
+    } else {
+        value_re
+            .captures(inner)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().trim())
+    };
+    (value.unwrap_or_default(), true)
 }
 
 /// Map `rId` → sheet name from `xl/workbook.xml` + its relationship file, so
 /// sheets can be labelled with the name the user sees.
-fn sheet_names(zip: &mut ZipArchive<std::io::Cursor<&[u8]>>) -> Vec<String> {
-    let Some(workbook) = zip_text(zip, "xl/workbook.xml") else {
-        return Vec::new();
+fn sheet_names(
+    zip: &mut ZipArchive<std::io::Cursor<&[u8]>>,
+    budget: &mut OfficeBudget,
+) -> Result<Vec<String>, String> {
+    let Some(workbook) = zip_text(zip, "xl/workbook.xml", budget)? else {
+        return Ok(Vec::new());
     };
-    let Some(rels) = zip_text(zip, "xl/_rels/workbook.xml.rels") else {
-        return Vec::new();
+    let Some(rels) = zip_text(zip, "xl/_rels/workbook.xml.rels", budget)? else {
+        return Ok(Vec::new());
     };
 
     static SHEET: OnceLock<Regex> = OnceLock::new();
@@ -352,41 +575,63 @@ fn sheet_names(zip: &mut ZipArchive<std::io::Cursor<&[u8]>>) -> Vec<String> {
         Regex::new(r#"<Relationship[^>]*Id="([^"]*)"[^>]*Target="([^"]*)""#).expect("rel regex")
     });
 
-    let mut targets: Vec<(String, String)> = Vec::new(); // (rId, sheetN)
+    let mut targets: Vec<(&str, String)> = Vec::new(); // (rId, sheetN)
+    let mut metadata_remaining = budget.limits.shared_chars;
     for cap in rel_re.captures_iter(&rels) {
+        if targets.len() == budget.limits.entries {
+            return Err("Office 工作簿关系数量超出预算".into());
+        }
         let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
         let target = cap.get(2).map(|m| m.as_str()).unwrap_or("");
-        let digits: String = target.chars().filter(|c| c.is_ascii_digit()).collect();
-        targets.push((id.to_string(), digits));
+        let mut digits = LimitedText::new(metadata_remaining, "工作簿元数据字符");
+        for ch in target.chars().filter(char::is_ascii_digit) {
+            digits.push_char(ch)?;
+        }
+        metadata_remaining -= digits.chars;
+        targets.push((id, digits.text));
     }
 
     let mut names: Vec<String> = Vec::new();
     for cap in sheet_re.captures_iter(&workbook) {
+        if names.len() == budget.limits.entries {
+            return Err("Office 工作表名称数量超出预算".into());
+        }
         let name = cap.get(1).map(|m| m.as_str()).unwrap_or("");
         let rid = cap.get(2).map(|m| m.as_str()).unwrap_or("");
         let index = targets
             .iter()
-            .find(|(id, _)| id == rid)
-            .map(|(_, digits)| digits.clone())
+            .find(|(id, _)| *id == rid)
+            .map(|(_, digits)| digits.as_str())
             .unwrap_or_default();
-        names.push(if index.is_empty() {
-            name.to_string()
-        } else {
-            format!("{index}\u{0}{name}")
-        });
+        let mut entry = LimitedText::new(metadata_remaining, "工作簿元数据字符");
+        if !index.is_empty() {
+            entry.push(index)?;
+            entry.push_char('\0')?;
+        }
+        entry.push(name)?;
+        metadata_remaining -= entry.chars;
+        names.push(entry.text);
     }
-    names
+    Ok(names)
 }
 
 fn parse_xlsx(bytes: &[u8]) -> Result<String, String> {
-    let mut zip = archive(bytes)?;
+    parse_office_with_limits("xlsx", bytes, OfficeLimits::default())
+}
 
-    let shared = zip_text(&mut zip, "xl/sharedStrings.xml")
-        .map(|xml| parse_shared_strings(&xml))
-        .unwrap_or_default();
+fn extract_sheets(
+    zip: &mut ZipArchive<std::io::Cursor<&[u8]>>,
+    budget: &mut OfficeBudget,
+    out: &mut LimitedText,
+) -> Result<(), String> {
+    let sheets = sorted_entries(zip, "xl/worksheets/sheet", budget.limits.entries)?;
+    let shared = match zip_text(zip, "xl/sharedStrings.xml", budget)? {
+        Some(xml) => parse_shared_strings(&xml, budget.limits)?,
+        None => Vec::new(),
+    };
 
     // sheet1.xml ↔ name mapping (index prefix keeps the natural order).
-    let names = sheet_names(&mut zip);
+    let names = sheet_names(zip, budget)?;
     let name_for = |file: &str| -> String {
         let digits: String = file.chars().filter(|c| c.is_ascii_digit()).collect();
         names
@@ -402,22 +647,22 @@ fn parse_xlsx(bytes: &[u8]) -> Result<String, String> {
             .unwrap_or_else(|| format!("工作表 {digits}"))
     };
 
-    let sheets = sorted_entries(&zip, "xl/worksheets/sheet");
-    let mut out = String::new();
     for file in sheets {
-        let Some(xml) = zip_text(&mut zip, &file) else {
-            continue;
-        };
-        let body = parse_sheet(&xml, &shared);
-        if body.trim().is_empty() {
+        let xml = zip_text(zip, &file, budget)?.ok_or("工作表内容缺失")?;
+        let mut body = LimitedText::new(out.remaining(), out.label);
+        parse_sheet(&xml, &shared, &mut body)?;
+        if body.text.trim().is_empty() {
             continue;
         }
-        if !out.is_empty() {
-            out.push_str("\n\n");
+        if !out.text.is_empty() {
+            out.push("\n\n")?;
         }
-        out.push_str(&format!("## {}\n{}", name_for(&file), body));
+        out.push("## ")?;
+        out.push(&name_for(&file))?;
+        out.push("\n")?;
+        out.push(&body.text)?;
     }
-    Ok(out)
+    Ok(())
 }
 
 /* ---------------- plain text ---------------- */
@@ -444,11 +689,14 @@ mod tests {
 
     /// Build a minimal Office archive from (name, xml) pairs.
     fn make_zip(files: &[(&str, &str)]) -> Vec<u8> {
+        make_zip_with_method(files, zip::CompressionMethod::Stored)
+    }
+
+    fn make_zip_with_method(files: &[(&str, &str)], method: zip::CompressionMethod) -> Vec<u8> {
         let mut buffer = std::io::Cursor::new(Vec::new());
         {
             let mut writer = zip::ZipWriter::new(&mut buffer);
-            let options =
-                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            let options = SimpleFileOptions::default().compression_method(method);
             for (name, content) in files {
                 writer.start_file(*name, options).unwrap();
                 writer.write_all(content.as_bytes()).unwrap();
@@ -456,6 +704,422 @@ mod tests {
             writer.finish().unwrap();
         }
         buffer.into_inner()
+    }
+
+    fn assert_budget_error(kind: &str, files: &[(&str, &str)], limits: OfficeLimits, label: &str) {
+        let result = parse_office_with_limits(kind, &make_zip(files), limits);
+        assert!(
+            matches!(&result, Err(error) if error.contains(label)),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn budget_docx_output_is_checked_during_parsing() {
+        assert_budget_error(
+            "docx",
+            &[("word/document.xml", "<w:p><w:t>甲乙丙丁</w:t></w:p>")],
+            OfficeLimits {
+                output_chars: 3,
+                ..OfficeLimits::default()
+            },
+            "输出字符",
+        );
+    }
+
+    #[test]
+    fn budget_shared_references_and_sheets_share_output_limit() {
+        let sheet = "<row><c t=\"s\"><v>0</v></c><c t=\"s\"><v>0</v></c></row>";
+        assert_budget_error(
+            "xlsx",
+            &[
+                (
+                    "xl/sharedStrings.xml",
+                    "<sst><si><t>甲乙丙丁</t></si></sst>",
+                ),
+                ("xl/worksheets/sheet1.xml", sheet),
+                ("xl/worksheets/sheet2.xml", sheet),
+            ],
+            OfficeLimits {
+                output_chars: 25,
+                ..OfficeLimits::default()
+            },
+            "输出字符",
+        );
+    }
+
+    #[test]
+    fn budget_slides_share_output_limit() {
+        let slide = "<a:p><a:t>甲乙丙丁</a:t></a:p>";
+        assert_budget_error(
+            "pptx",
+            &[
+                ("ppt/slides/slide1.xml", slide),
+                ("ppt/slides/slide2.xml", slide),
+            ],
+            OfficeLimits {
+                output_chars: 20,
+                ..OfficeLimits::default()
+            },
+            "输出字符",
+        );
+    }
+
+    #[test]
+    fn budget_zip_parts_share_decompression_limit() {
+        let slide = "<a:p><a:t>甲乙</a:t></a:p>";
+        assert_budget_error(
+            "pptx",
+            &[
+                ("ppt/slides/slide1.xml", slide),
+                ("ppt/slides/slide2.xml", slide),
+            ],
+            OfficeLimits {
+                total_bytes: slide.len() as u64,
+                ..OfficeLimits::default()
+            },
+            "累计解压",
+        );
+    }
+
+    #[test]
+    fn budget_shared_cache_limits_empty_objects_and_characters() {
+        assert_budget_error(
+            "xlsx",
+            &[(
+                "xl/sharedStrings.xml",
+                "<sst><si></si><si></si><si></si></sst>",
+            )],
+            OfficeLimits {
+                shared_items: 2,
+                ..OfficeLimits::default()
+            },
+            "共享字符串数量",
+        );
+        assert_budget_error(
+            "xlsx",
+            &[(
+                "xl/sharedStrings.xml",
+                "<sst><si><t>甲乙</t></si><si><t>丙丁</t></si></sst>",
+            )],
+            OfficeLimits {
+                shared_chars: 3,
+                ..OfficeLimits::default()
+            },
+            "共享字符串字符",
+        );
+    }
+
+    #[test]
+    fn output_exact_boundaries_include_titles_separators_and_unicode() {
+        let doc = "<w:p><w:t> 甲&#x1F680; </w:t></w:p><w:p><w:t>乙</w:t></w:p>";
+        let slide = "<a:p><a:t>甲</a:t></a:p>";
+        let sheet = "<row><c><v>甲</v></c><c><v>乙</v></c></row><row><c><v>丙</v></c></row>";
+        let cases = [
+            ("docx", vec![("word/document.xml", doc)], "甲\u{1f680}\n乙"),
+            (
+                "pptx",
+                vec![
+                    ("ppt/slides/slide1.xml", slide),
+                    ("ppt/slides/slide2.xml", slide),
+                ],
+                "## 幻灯片 1\n甲\n\n## 幻灯片 2\n甲",
+            ),
+            (
+                "xlsx",
+                vec![
+                    ("xl/worksheets/sheet1.xml", sheet),
+                    ("xl/worksheets/sheet2.xml", sheet),
+                ],
+                "## 工作表 1\n甲\t乙\n丙\n\n## 工作表 2\n甲\t乙\n丙",
+            ),
+        ];
+        for (kind, files, expected) in cases {
+            let limits = OfficeLimits {
+                output_chars: expected.chars().count(),
+                ..OfficeLimits::default()
+            };
+            assert_eq!(
+                parse_office_with_limits(kind, &make_zip(&files), limits).unwrap(),
+                expected
+            );
+            assert_budget_error(
+                kind,
+                &files,
+                OfficeLimits {
+                    output_chars: limits.output_chars - 1,
+                    ..limits
+                },
+                "输出字符",
+            );
+        }
+    }
+
+    #[test]
+    fn limited_text_never_appends_past_budget() {
+        let mut text = LimitedText::new(3, "输出字符");
+        text.push("甲").unwrap();
+        assert!(text.push(&"乙".repeat(1000)).is_err());
+        assert_eq!(text.text, "甲");
+        assert!(text.decoded("&#x1F680;&#20013;&amp;").is_err());
+        assert_eq!(text.text, "甲\u{1f680}中");
+        assert_eq!(text.chars, 3);
+    }
+
+    #[test]
+    fn streamed_entities_preserve_existing_decoding() {
+        for input in [
+            "&lt;&gt;&quot;&apos;&amp;中文",
+            "&#20013;&#x1F680;&#xD800;&#999999999999999999999999;",
+            "&amp;#65;&amp;#x4E2D;&amp;#xD800;&amp;lt;&amp;amp;",
+            "&&bogus;&#X41;&#x;&#-1;&#abc;&#65;&amp;#abc;",
+        ] {
+            let mut text = LimitedText::new(1000, "输出字符");
+            text.decoded(input).unwrap();
+            assert_eq!(text.text, unescape_xml(input), "{input}");
+        }
+    }
+
+    #[test]
+    fn paragraph_trimming_does_not_store_discarded_whitespace() {
+        let whitespace = " \t\u{3000}".repeat(1000);
+        let doc = format!(
+            "<w:p><w:t>{whitespace}甲{whitespace}</w:t></w:p><w:p><w:t>{whitespace}</w:t></w:p>"
+        );
+        let limits = OfficeLimits {
+            output_chars: 1,
+            ..OfficeLimits::default()
+        };
+        assert_eq!(
+            parse_office_with_limits("docx", &make_zip(&[("word/document.xml", &doc)]), limits)
+                .unwrap(),
+            "甲"
+        );
+        let mut out = LimitedText::new(3, "输出字符");
+        xml_paragraphs(
+            "<w:p><w:t> 甲 </w:t><w:t>乙 </w:t></w:p>",
+            "w:p",
+            "w:t",
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(out.text, "甲 乙");
+    }
+
+    #[test]
+    fn shared_references_borrow_cache_and_stop_within_one_row() {
+        let shared = vec!["甲".repeat(128)];
+        let (value, encoded) = cell_value("t=\"s\"", "<v>0</v>", &shared);
+        assert_eq!(value.as_ptr(), shared[0].as_ptr());
+        assert!(!encoded);
+        let sheet = format!("<row>{}</row>", "<c t=\"s\"><v>0</v></c>".repeat(1000));
+        let mut out = LimitedText::new(130, "输出字符");
+        assert!(parse_sheet(&sheet, &shared, &mut out)
+            .unwrap_err()
+            .contains("输出字符"));
+        assert!(out.chars <= 130);
+    }
+
+    #[test]
+    fn empty_rows_and_cells_need_no_collections() {
+        let empties = "<c></c>".repeat(1000);
+        let sheet = format!(
+            "<row>{empties}</row><row><c><v>甲</v></c>{empties}</row>{}",
+            "<row></row>".repeat(1000)
+        );
+        let mut out = LimitedText::new(1, "输出字符");
+        parse_sheet(&sheet, &[], &mut out).unwrap();
+        assert_eq!(out.text, "甲");
+        let mut out = LimitedText::new(8, "输出字符");
+        assert!(parse_sheet(
+            &format!("<row>{empties}<c><v>甲</v></c></row>"),
+            &[],
+            &mut out
+        )
+        .is_err());
+        assert!(out.text.is_empty());
+        let mut out = LimitedText::new(100, "输出字符");
+        parse_sheet("<row><c></c><c><v>A</v></c><c></c><c><v>B</v></c><c></c></row><row><c></c></row><row><c><v>C</v></c></row>", &[], &mut out).unwrap();
+        assert_eq!(out.text, "\tA\t\tB\nC");
+    }
+
+    #[test]
+    fn shared_cache_exact_limits_and_rich_text() {
+        let limits = OfficeLimits {
+            shared_items: 2,
+            shared_chars: 3,
+            ..OfficeLimits::default()
+        };
+        let shared = parse_shared_strings(
+            "<sst><si></si><si><r><t>甲</t></r><r><t>&amp;&#x1F680;</t></r></si></sst>",
+            limits,
+        )
+        .unwrap();
+        assert_eq!(shared, ["", "甲&\u{1f680}"]);
+    }
+
+    #[test]
+    fn entry_count_limit_is_an_error_not_silent_truncation() {
+        for (kind, prefix) in [
+            ("pptx", "ppt/slides/slide"),
+            ("xlsx", "xl/worksheets/sheet"),
+        ] {
+            let names = [format!("{prefix}1.xml"), format!("{prefix}2.xml")];
+            assert_budget_error(
+                kind,
+                &[(names[0].as_str(), ""), (names[1].as_str(), "")],
+                OfficeLimits {
+                    entries: 1,
+                    ..OfficeLimits::default()
+                },
+                "数量",
+            );
+        }
+    }
+
+    #[test]
+    fn zip_exact_budget_and_optional_parts_spend_bytes() {
+        let shared = "<sst><si><t>甲</t></si></sst>";
+        let workbook = "<workbook/>";
+        let rels = "<Relationships/>";
+        let sheet = "<row><c t=\"s\"><v>0</v></c></row>";
+        let files = [
+            ("xl/sharedStrings.xml", shared),
+            ("xl/workbook.xml", workbook),
+            ("xl/_rels/workbook.xml.rels", rels),
+            ("xl/worksheets/sheet1.xml", sheet),
+        ];
+        let total_bytes = files.iter().map(|(_, text)| text.len() as u64).sum();
+        let limits = OfficeLimits {
+            total_bytes,
+            ..OfficeLimits::default()
+        };
+        assert_eq!(
+            parse_office_with_limits("xlsx", &make_zip(&files), limits).unwrap(),
+            "## 工作表 1\n甲"
+        );
+        assert_budget_error(
+            "xlsx",
+            &files,
+            OfficeLimits {
+                total_bytes: total_bytes - 1,
+                ..limits
+            },
+            "累计解压",
+        );
+        assert_budget_error(
+            "xlsx",
+            &files,
+            OfficeLimits {
+                entry_bytes: 8,
+                ..limits
+            },
+            "单项解压",
+        );
+        let doc = "<w:p><w:t>甲</w:t></w:p>";
+        assert_eq!(
+            parse_office_with_limits(
+                "docx",
+                &make_zip(&[("word/document.xml", doc)]),
+                OfficeLimits {
+                    entry_bytes: doc.len() as u64,
+                    total_bytes: doc.len() as u64,
+                    ..limits
+                }
+            )
+            .unwrap(),
+            "甲"
+        );
+    }
+
+    #[test]
+    fn metadata_objects_and_strings_are_bounded() {
+        let workbook = "<sheet name=\"一\" r:id=\"r1\"/><sheet name=\"二\" r:id=\"r2\"/>";
+        let rels = "<Relationship Id=\"r1\" Target=\"sheet1.xml\"/>";
+        let files = [
+            ("xl/workbook.xml", workbook),
+            ("xl/_rels/workbook.xml.rels", rels),
+        ];
+        assert_budget_error(
+            "xlsx",
+            &files,
+            OfficeLimits {
+                entries: 1,
+                ..OfficeLimits::default()
+            },
+            "名称数量",
+        );
+        assert_budget_error(
+            "xlsx",
+            &files,
+            OfficeLimits {
+                shared_chars: 2,
+                ..OfficeLimits::default()
+            },
+            "元数据字符",
+        );
+        let rels = format!("{rels}{rels}");
+        assert_budget_error(
+            "xlsx",
+            &[
+                ("xl/workbook.xml", workbook),
+                ("xl/_rels/workbook.xml.rels", &rels),
+            ],
+            OfficeLimits {
+                entries: 1,
+                ..OfficeLimits::default()
+            },
+            "关系数量",
+        );
+    }
+
+    #[test]
+    fn compressed_parts_enforce_cumulative_budget_and_probe_lying_sizes() {
+        let content = format!("<a:p><a:t>{}</a:t></a:p>", "甲".repeat(512));
+        let files = [
+            ("ppt/slides/slide1.xml", content.as_str()),
+            ("ppt/slides/slide2.xml", content.as_str()),
+        ];
+        let bytes = make_zip_with_method(&files, zip::CompressionMethod::Deflated);
+        let limits = OfficeLimits {
+            total_bytes: content.len() as u64,
+            ..OfficeLimits::default()
+        };
+        assert!(parse_office_with_limits("pptx", &bytes, limits)
+            .unwrap_err()
+            .contains("累计解压"));
+
+        // Tiny real decompression, not a bomb: lie about the uncompressed
+        // size in both headers, then verify the capped read detects byte 33.
+        let mut bytes = make_zip_with_method(&files[..1], zip::CompressionMethod::Deflated);
+        let central = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+        bytes[22..26].copy_from_slice(&1u32.to_le_bytes());
+        bytes[central + 24..central + 28].copy_from_slice(&1u32.to_le_bytes());
+        let mut zip = archive(&bytes).unwrap();
+        let mut budget = OfficeBudget {
+            limits: OfficeLimits {
+                entry_bytes: 32,
+                total_bytes: 32,
+                ..limits
+            },
+            bytes: 0,
+        };
+        let error = zip_text(&mut zip, files[0].0, &mut budget).unwrap_err();
+        assert!(error.contains("解压字节超出预算"), "{error}");
+    }
+
+    #[test]
+    fn corrupt_optional_zip_entry_is_not_treated_as_missing() {
+        let content = "<sst><si><t>unique-text</t></si></sst>";
+        let mut bytes = make_zip(&[("xl/sharedStrings.xml", content)]);
+        let start = bytes
+            .windows(content.len())
+            .position(|w| w == content.as_bytes())
+            .unwrap();
+        bytes[start] ^= 1; // Stored data no longer matches its CRC.
+        assert!(extract("test.xlsx", &bytes)
+            .unwrap_err()
+            .contains("ZIP 项读取失败"));
     }
 
     #[test]

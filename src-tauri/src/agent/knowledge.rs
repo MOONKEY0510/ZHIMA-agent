@@ -67,6 +67,56 @@ fn find_break(chars: &[char], start: usize, end: usize) -> Option<usize> {
     None
 }
 
+pub const MAX_TITLE_CHARS: usize = 256;
+const MAX_SOURCE_CHARS: usize = 2048;
+
+/// Bound before formatting: the event and prompt must share the same text,
+/// including any truncation. Imported chunks may exceed normal chunk sizes.
+pub fn prepare_kb_evidence(
+    hits: &[crate::storage::database::KbHit],
+    documents: &[crate::storage::database::KbDocument],
+) -> Vec<crate::models::response::KnowledgeEvidence> {
+    hits.iter()
+        .filter(|hit| !hit.snippet.trim().is_empty())
+        .take(MAX_TOP_K)
+        .enumerate()
+        .map(|(index, hit)| {
+            let text = hit.snippet.trim();
+            let document = documents.iter().find(|doc| doc.id == hit.document_id);
+            crate::models::response::KnowledgeEvidence {
+                index: index + 1,
+                document_id: hit.document_id.chars().take(128).collect(),
+                chunk_index: hit.seq,
+                title: hit.title.chars().take(MAX_TITLE_CHARS).collect(),
+                snippet: text
+                    .chars()
+                    .take(CHUNK_CHARS)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string(),
+                truncated: text.chars().count() > CHUNK_CHARS,
+                source_type: document.map(|doc| doc.source_type.chars().take(32).collect()),
+                // Never turn a shortened URL into an actionable different URL.
+                source_ref: document
+                    .and_then(|doc| doc.source_ref.as_ref())
+                    .filter(|source| source.chars().count() <= MAX_SOURCE_CHARS)
+                    .cloned(),
+            }
+        })
+        .collect()
+}
+
+pub fn format_evidence_context(evidence: &[crate::models::response::KnowledgeEvidence]) -> String {
+    let excerpts: Vec<_> = evidence
+        .iter()
+        .map(|item| KbExcerpt {
+            title: &item.title,
+            snippet: &item.snippet,
+        })
+        .collect();
+    format_kb_context(&excerpts)
+}
+
 /// One retrieved passage.
 pub struct KbExcerpt<'a> {
     pub title: &'a str,
@@ -97,6 +147,64 @@ pub fn format_kb_context(excerpts: &[KbExcerpt<'_>]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evidence_is_bounded_and_matches_prompt_exactly() {
+        let hits: Vec<_> = (0..MAX_TOP_K + 2)
+            .map(|seq| crate::storage::database::KbHit {
+                document_id: format!("doc-{seq}"),
+                title: "标".repeat(400),
+                seq: seq as i64,
+                snippet: format!("  {}  ", "文".repeat(2000)),
+                score: 0.0,
+            })
+            .collect();
+        let evidence = prepare_kb_evidence(&hits, &[]);
+        assert_eq!(evidence.len(), MAX_TOP_K);
+        for (i, item) in evidence.iter().enumerate() {
+            assert_eq!(item.index, i + 1);
+            assert_eq!(item.snippet.chars().count(), CHUNK_CHARS);
+            assert!(item.title.chars().count() <= MAX_TITLE_CHARS);
+            assert!(item.truncated);
+        }
+        let block = format_evidence_context(&evidence);
+        for item in &evidence {
+            assert!(block.contains(&format!(
+                "[资料{}] {}\n{}\n",
+                item.index, item.title, item.snippet
+            )));
+        }
+        assert!(!block.contains("[资料9]"));
+    }
+
+    #[test]
+    fn evidence_skips_empty_hits_and_keeps_source_metadata() {
+        let hit = |snippet: &str| crate::storage::database::KbHit {
+            document_id: "doc".into(),
+            title: "手册".into(),
+            seq: 4,
+            snippet: snippet.into(),
+            score: 0.0,
+        };
+        let docs = vec![crate::storage::database::KbDocument {
+            id: "doc".into(),
+            title: "手册".into(),
+            source_type: "url".into(),
+            source_ref: Some("https://example.test/manual".into()),
+            chunk_count: 5,
+            created_at: 0,
+        }];
+        let evidence = prepare_kb_evidence(&[hit("  "), hit(" 原文 \n")], &docs);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].index, 1);
+        assert_eq!(evidence[0].chunk_index, 4);
+        assert_eq!(evidence[0].snippet, "原文");
+        assert_eq!(
+            evidence[0].source_ref.as_deref(),
+            Some("https://example.test/manual")
+        );
+        assert!(!evidence[0].truncated);
+    }
 
     #[test]
     fn short_text_becomes_one_chunk() {

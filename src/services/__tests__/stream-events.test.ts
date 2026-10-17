@@ -54,6 +54,26 @@ beforeEach(() => {
   startStreaming();
 });
 
+describe("knowledge evidence events", () => {
+  it("routes the original snapshot in sequence and ignores duplicates", () => {
+    const buffer = new DeltaBuffer();
+    const evidence = [{ index: 1, documentId: "doc", chunkIndex: 2, title: "手册", snippet: "原始片段", truncated: false }];
+    buffer.handle({ type: "kb_used", seq: 1, requestId: "req-1", count: 1, titles: ["手册"], evidence });
+    expect(useChatStore.getState().messages[0].kbEvidence).toBeUndefined();
+    buffer.handle({ type: "start", seq: 0, requestId: "req-1" });
+    buffer.handle({ type: "kb_used", seq: 1, requestId: "req-1", count: 0, titles: [], evidence: [] });
+    buffer.handle(finish(2));
+    drainAllFrames();
+    expect(useChatStore.getState().messages[0].kbEvidence).toEqual(evidence);
+  });
+
+  it("accepts legacy count-only events without inventing evidence", () => {
+    new DeltaBuffer().handle({ type: "kb_used", seq: 0, requestId: "req-1", count: 2, titles: ["旧手册"] });
+    expect(useChatStore.getState().messages[0]).toMatchObject({ kbHits: 2, kbEvidenceUnavailable: true });
+    expect(useChatStore.getState().messages[0].kbEvidence).toBeUndefined();
+  });
+});
+
 describe("DeltaBuffer incremental rendering", () => {
   it("renders a whole-response burst across multiple frames, then finalizes", () => {
     const buffer = new DeltaBuffer();

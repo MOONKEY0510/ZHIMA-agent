@@ -4,6 +4,8 @@ import { animated, to, useSpring } from "@react-spring/web";
 import { TitleBar } from "../components/window-shell/TitleBar";
 import { Composer } from "../components/composer/Composer";
 import { MessageList } from "../components/conversation/MessageList";
+import { ContextPreviewButton } from "../features/context/ContextPreviewButton";
+import { TaskReminders } from "../features/tasks/TaskReminders";
 import { HistorySidebar } from "../components/history/HistorySidebar";
 import { ImageHistorySidebar } from "../components/history/ImageHistorySidebar";
 const SettingsPanel = lazy(() => import("../features/settings/SettingsPanel").then((m) => ({ default: m.SettingsPanel })));
@@ -232,7 +234,9 @@ export default function App() {
   // should not also take the whole window down with it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !e.defaultPrevented) requestHide();
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      requestHide();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -299,7 +303,7 @@ export default function App() {
                 ) : (
                   <>
                     <MessageList />
-                    <Composer />
+                    <Composer renderContextPreview={(context) => <ContextPreviewButton {...context} />} />
                   </>
                 )}
               </div>
@@ -314,6 +318,7 @@ export default function App() {
         </div>
       )}
 
+      <TaskReminders />
       <Suspense fallback={null}>
         <UpdateBanner />
       </Suspense>

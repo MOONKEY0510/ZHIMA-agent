@@ -2,6 +2,30 @@ use serde::Serialize;
 
 use crate::api::web_search::SearchResult;
 
+/// A bounded snapshot of one passage prepared in this turn's request prompt.
+/// Preparation precedes approval and HTTP: not proof of delivery or model citation.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeEvidenceStage {
+    Prepared,
+}
+
+/// The original prepared retrieval context, never reconstructed by a later search.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeEvidence {
+    pub index: usize,
+    pub document_id: String,
+    pub chunk_index: i64,
+    pub title: String,
+    pub snippet: String,
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+}
+
 /// Unified stream events emitted to the frontend on the `chat-event` channel.
 ///
 /// The frontend must never depend on raw vendor payload shapes: everything
@@ -27,13 +51,15 @@ pub enum ChatEvent {
         request_id: String,
         results: Vec<SearchResult>,
     },
-    /// Fired when local knowledge-base passages were injected into the prompt,
-    /// so the UI can show "参考了知识库 n 条" (P1-9).
+    /// Legacy event name retained for compatibility. Emitted when request
+    /// context is prepared, BEFORE approval/HTTP; it never confirms delivery.
     KbUsed {
         request_id: String,
         count: usize,
-        /// Document titles of the injected passages (for the tooltip).
+        /// Document titles of the prepared passages.
         titles: Vec<String>,
+        evidence: Vec<KnowledgeEvidence>,
+        stage: KnowledgeEvidenceStage,
     },
     /// Fired when the agent loop starts executing a tool call.
     ToolStart {
@@ -116,4 +142,41 @@ pub struct SequencedChatEvent {
     pub seq: u64,
     #[serde(flatten)]
     pub event: ChatEvent,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kb_used_serializes_numbered_snapshot_with_camel_case_fields() {
+        let event = SequencedChatEvent {
+            seq: 2,
+            event: ChatEvent::KbUsed {
+                request_id: "req".into(),
+                count: 1,
+                stage: KnowledgeEvidenceStage::Prepared,
+                titles: vec!["手册".into()],
+                evidence: vec![KnowledgeEvidence {
+                    index: 1,
+                    document_id: "doc".into(),
+                    chunk_index: 3,
+                    title: "手册".into(),
+                    snippet: "实际注入".into(),
+                    truncated: false,
+                    source_type: Some("url".into()),
+                    source_ref: Some("https://example.test".into()),
+                }],
+            },
+        };
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["type"], "kb_used");
+        assert_eq!(value["stage"], "prepared");
+        assert_eq!(value["seq"], 2);
+        assert_eq!(value["requestId"], "req");
+        assert_eq!(value["evidence"][0]["documentId"], "doc");
+        assert_eq!(value["evidence"][0]["chunkIndex"], 3);
+        assert_eq!(value["evidence"][0]["snippet"], "实际注入");
+        assert_eq!(value["evidence"][0]["sourceRef"], "https://example.test");
+    }
 }

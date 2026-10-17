@@ -1,6 +1,7 @@
 import { createPortal } from "react-dom";
 import { ChevronDown, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { IconButton } from "../../components/ui";
 
 /** Fully custom dropdown. The browser-native `<select>` popup cannot be
  *  styled consistently across platforms, so we render our own menu.
@@ -113,37 +114,87 @@ export function Notice({ ok, text }: { ok: boolean; text: string }) {
 /* Modal used for adding / editing providers                                 */
 /* ------------------------------------------------------------------------ */
 
+const modalStack: HTMLElement[] = [];
+
 export function Modal({
-  title,
-  onClose,
-  children,
+  title, subtitle, icon, actions, footer, size = "md", closeDisabled = false, onClose, children,
 }: {
   title: string;
+  subtitle?: string;
+  icon?: React.ReactNode;
+  actions?: React.ReactNode;
+  footer?: React.ReactNode;
+  size?: "md" | "lg";
+  closeDisabled?: boolean;
   onClose: () => void;
   children: React.ReactNode;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const returnFocusRef = useRef(document.activeElement as HTMLElement | null);
+  const closeRef = useRef(onClose);
+  const disabledRef = useRef(closeDisabled);
+  const subtitleId = useId();
+  closeRef.current = onClose;
+  disabledRef.current = closeDisabled;
+  useLayoutEffect(() => {
+    const panel = panelRef.current!;
+    const previousFocus = returnFocusRef.current;
+    modalStack.push(panel);
+    // Keep an explicit field autofocus; otherwise focus the panel's first action.
+    if (!panel.contains(document.activeElement)) {
+      (panel.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled), textarea:not(:disabled)") ?? panel).focus();
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (modalStack[modalStack.length - 1] !== panel) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!disabledRef.current) closeRef.current();
+      } else if (event.key === "Tab") {
+        const nodes = Array.from(panel.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], summary, [tabindex="0"]',
+        )).filter((node) => !node.hidden && !node.closest('[hidden]') &&
+          (!node.closest("details:not([open])") || node.matches("details > summary")));
+        const first = nodes[0];
+        const last = nodes[nodes.length - 1];
+        if (!first) { event.preventDefault(); panel.focus(); }
+        else if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+          event.preventDefault(); last.focus();
+        } else if (!event.shiftKey && (document.activeElement === last || !panel.contains(document.activeElement))) {
+          event.preventDefault(); first.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      modalStack.splice(modalStack.indexOf(panel), 1);
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, []);
+
   return createPortal(
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className="relative flex w-full max-w-lg flex-col rounded-xl border border-line bg-panel shadow-menu"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <h3 className="text-ui font-semibold text-ink">{title}</h3>
-          <button onClick={onClose} className="cf-icon-btn" title="关闭">
-            <X size={14} />
-          </button>
-        </div>
-        <div className="max-h-[80vh] overflow-y-auto p-4">{children}</div>
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 p-3 backdrop-blur-sm sm:p-4"
+      onClick={() => { if (!closeDisabled) onClose(); }}>
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label={title}
+        aria-describedby={subtitle ? subtitleId : undefined} tabIndex={-1}
+        className={`relative flex max-h-[calc(100dvh-2rem)] w-full min-w-0 flex-col overflow-hidden rounded-input border border-line bg-panel text-ui text-ink shadow-menu ${size === "lg" ? "max-w-2xl" : "max-w-lg"}`}
+        onClick={(event) => event.stopPropagation()}>
+        <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
+            {icon && <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-btn bg-panel-2 text-accent" aria-hidden="true">{icon}</span>}
+            <div className="min-w-0"><h2 className="text-ui font-semibold text-ink">{title}</h2>
+              {subtitle && <p id={subtitleId} className="mt-0.5 text-meta text-ink-2">{subtitle}</p>}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">{actions}
+            <IconButton aria-label="关闭" title="关闭" icon={<X size={15} />} disabled={closeDisabled} onClick={onClose} />
+          </div>
+        </header>
+        <div className="min-h-0 overflow-y-auto overscroll-contain p-4">{children}</div>
+        {footer && <footer className="shrink-0 border-t border-line px-4 py-3">{footer}</footer>}
       </div>
-    </div>,
-    document.body,
+    </div>, document.body,
   );
 }
 
@@ -158,21 +209,23 @@ export function SettingsSection({
   action,
   children,
   className,
+  ariaLabel,
 }: {
   title: string;
   description?: string;
   action?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
+  ariaLabel?: string;
 }) {
   return (
-    <section className={`cf-settings-section ${className ?? ""}`}>
+    <section aria-label={ariaLabel} className={`cf-settings-section ${className ?? ""}`}>
       <div className="cf-settings-section-header">
-        <div className="min-w-0 flex-1">
+        <div className="cf-settings-section-copy">
           <h2 className="cf-settings-section-title">{title}</h2>
           {description && <p className="cf-settings-section-desc">{description}</p>}
         </div>
-        {action && <div className="shrink-0">{action}</div>}
+        {action && <div className="cf-settings-section-actions">{action}</div>}
       </div>
       <div className="cf-settings-section-body">{children}</div>
     </section>

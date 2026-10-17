@@ -347,11 +347,13 @@
   opacity: 0.4;
 }
 
-/* Page-level: in the Claude-style flat layout the page is no longer a card;
-   it is a clean column. The padding comes from the scroll container, not
-   from a framed surface. */
+/* Settings-only reading surface. Preserve the user's image and chat styling. */
+.cf-settings-content {
+  background: color-mix(in srgb, var(--cf-panel) 92%, transparent);
+}
+
 .cf-settings-page {
-  margin: 0 0 1rem;
+  margin: 0 auto 1rem;
   padding: 0;
 }
 
@@ -359,7 +361,7 @@
    generous whitespace, not by nested cards — Claude's settings page reads
    as one continuous list of related fields. */
 .cf-settings-section {
-  margin-bottom: 2.25rem;
+  margin-bottom: 2rem;
 }
 
 .cf-settings-page > .cf-settings-section:last-child {
@@ -369,9 +371,94 @@
 .cf-settings-section-header {
   margin-bottom: 1rem;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 0.75rem;
+  gap: 0.75rem 1rem;
+}
+
+.cf-settings-section-copy {
+  min-width: 0;
+  flex: 1 1 16rem;
+}
+
+/* Wrap whole controls onto another row, never individual Chinese characters. */
+.cf-settings-section-actions,
+.cf-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 0 auto;
+}
+
+.cf-settings-section-actions button,
+.cf-settings-actions button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.cf-settings-section-actions svg,
+.cf-settings-actions svg {
+  flex-shrink: 0;
+}
+
+.cf-settings-empty {
+  padding: 1.25rem 1rem;
+  border: 1px dashed var(--cf-border);
+  border-radius: var(--rounded-input, 14px);
+  background: color-mix(in srgb, var(--cf-panel-2) 55%, var(--cf-panel));
+  color: var(--cf-text-2);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.cf-settings-action-card {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--cf-border);
+  border-radius: var(--rounded-input, 14px);
+  background: var(--cf-panel);
+}
+
+.cf-settings-editor {
+  min-width: 0;
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--cf-border);
+  border-radius: var(--rounded-input, 14px);
+  background: var(--cf-panel-2);
+}
+
+.cf-settings-editor > legend {
+  padding: 0 0.375rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--cf-text);
+}
+
+.cf-settings-field {
+  display: grid;
+  min-width: 0;
+  gap: 0.375rem;
+  color: var(--cf-text-2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.cf-settings-editor .cf-input {
+  min-width: 0;
+  background: var(--cf-panel);
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+
+.cf-settings-editor textarea.cf-input:focus-visible {
+  border-color: var(--cf-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cf-accent) 18%, transparent);
 }
 
 .cf-settings-section-title {

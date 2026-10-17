@@ -50,6 +50,7 @@ pub fn run() {
         .manage(state::AppState::new())
         .invoke_handler(tauri::generate_handler![
             commands::chat::chat_send,
+            commands::chat::chat_preview_context,
             commands::chat::chat_send_multi,
             commands::chat::chat_cancel,
             commands::chat::chat_approve_tool,
@@ -110,6 +111,17 @@ pub fn run() {
             commands::backup::export_data,
             commands::backup::preview_backup,
             commands::backup::import_data,
+            commands::backup::create_restore_point,
+            commands::backup::list_restore_points,
+            commands::backup::restore_backup_config,
+            commands::tasks::tasks_list,
+            commands::tasks::tasks_upsert,
+            commands::tasks::tasks_set_completed,
+            commands::tasks::tasks_delete,
+            commands::tasks::tasks_claim_due,
+            commands::tasks::tasks_ack_reminder,
+            commands::tasks::tasks_complete_reminder,
+            commands::tasks::tasks_reminders_ready,
             commands::web_search::get_web_search_config,
             commands::web_search::set_web_search_config,
             commands::web_search::set_web_search_api_key,
@@ -185,6 +197,7 @@ pub fn run() {
             let db = storage::database::Database::open(&data_dir.join("chatfloat.db"))
                 .map_err(|e| format!("database init failed: {e}"))?;
             app.manage(db);
+            commands::tasks::start_task_reminders(app.handle().clone());
 
             window::tray::create(app)?;
             window::shortcuts::register(app)?;

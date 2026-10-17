@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ThemeMode } from "../types";
 import { DIAGRAM_STYLES, type DiagramStyle } from "../lib/mermaid-theme";
+import { DEFAULT_DESKTOP_PRESETS, sanitizePresets } from "../features/actions/desktop-actions";
 
 /**
  * Non-sensitive UI preferences (plan §2.1: ordinary settings in store/JSON).
@@ -31,12 +32,24 @@ const DIAGRAM_STYLE_KEY = "diagramStyle";
 export const THINKING_EFFORTS = ["low", "medium", "high", "max"] as const;
 export type ThinkingEffort = (typeof THINKING_EFFORTS)[number];
 
+export interface DesktopActionConfig {
+  source: "selection" | "clipboard";
+  template: string;
+  /** Omitted: keep the current assistant. Explicit changes require a new chat if bound. */
+  assistantId?: string;
+  skillIds: string[];
+  /** copy means the user explicitly clicks the answer's copy button; never auto-write. */
+  output: "display" | "copy";
+  favorite?: boolean;
+}
+
 /** A user-customizable quick command triggered by typing `/` in the composer. */
 export interface PromptPreset {
   id: string;
   name: string;
   command: string;
   content: string;
+  desktopAction?: DesktopActionConfig;
 }
 
 /** Built-in presets shipped with the app; used on first launch or reset. */
@@ -46,7 +59,13 @@ export const DEFAULT_PRESETS: PromptPreset[] = [
   { id: "review", name: "代码审查", command: "/审查", content: "请审查以下代码，指出潜在问题、安全风险和改进建议：" },
   { id: "explain", name: "解释", command: "/解释", content: "请用通俗易懂的方式解释以下内容：" },
   { id: "polish", name: "润色", command: "/润色", content: "请润色以下文字，使其更加流畅自然，保持原意不变：" },
+  ...DEFAULT_DESKTOP_PRESETS,
 ];
+
+/** Non-secret UI export contract; never reads providers, credentials or captured input. */
+export function exportPromptPresets(): PromptPreset[] {
+  return sanitizePresets(useSettingsStore.getState().presets);
+}
 
 function resolvedTheme(mode: ThemeMode): string {
   if (mode === "system") {
@@ -228,7 +247,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       userAvatarColor: userAvatarColor ?? AVATAR_COLORS[5],
       userAvatarImage: userImg,
       backgroundImage: backgroundImg,
-      presets: presets ?? DEFAULT_PRESETS,
+      presets: presets == null ? DEFAULT_PRESETS : sanitizePresets(presets),
       defaultEnableTools: enableTools ?? false,
       defaultEnableThinking: enableThinking ?? true,
       defaultThinkingEffort: THINKING_EFFORTS.includes(thinkingEffort ?? "medium")
@@ -321,7 +340,8 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     }
   },
 
-  setPresets: async (presets) => {
+  setPresets: async (input) => {
+    const presets = sanitizePresets(input);
     await uiPrefsStore.set(PRESETS_KEY, presets);
     await uiPrefsStore.save();
     set({ presets });

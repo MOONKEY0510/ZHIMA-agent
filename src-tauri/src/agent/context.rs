@@ -8,6 +8,36 @@
 //! most recent complete rounds) instead of mid-message byte truncation.
 
 use crate::models::request::ChatMessage;
+use serde::Serialize;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewMemory {
+    pub id: String,
+    pub category: String,
+    pub content: String,
+    pub excluded: bool,
+}
+
+/// A read-only snapshot, not a frozen request or an exact token quote.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextPreview {
+    pub memories: Vec<PreviewMemory>,
+    pub knowledge: Vec<crate::models::response::KnowledgeEvidence>,
+    pub excluded_knowledge_document_ids: Vec<String>,
+    pub skills_block: Option<String>,
+    pub summary: Option<String>,
+    pub system_prompt: String,
+    pub input_message_count: usize,
+    pub retained_message_count: usize,
+    pub dropped_message_count: usize,
+    pub estimated_tokens: usize,
+    pub input_budget: usize,
+    pub oversized_message: bool,
+    pub over_budget: bool,
+    pub dynamic_content: Vec<String>,
+}
 
 /// Conservative default: tokens ≈ bytes / 2.  For Chinese (≈3 bytes/token)
 /// this over-estimates by ~50%, which is the safe direction; for English it

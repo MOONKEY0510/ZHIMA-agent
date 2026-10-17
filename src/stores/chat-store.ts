@@ -2,6 +2,10 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AttachmentMeta,
+  ContextPreview,
+  ContextExclusions,
+  KnowledgeEvidence,
+  KnowledgeSnapshot,
   Message,
   MessageStatus,
   MessageVersion,
@@ -19,6 +23,43 @@ import { importData, type ImportReport, type ImportStrategy } from "../services/
 import { writeClipboardText } from "../services/tools-api";
 import { useWindowStore } from "./window-store";
 import type { ThinkingEffort } from "./settings-store";
+import { previewContext as requestContextPreview, type ContextPreviewRequest } from "../services/context-api";
+import { EMPTY_CONTEXT_EXCLUSIONS, useContextOptionsStore } from "./context-options-store";
+import { useImageGenStore } from "./imagegen-store";
+import { setTaskWriteGuard, settleTaskWrites, useTasksStore } from "../features/tasks/stores/tasks-store";
+
+export interface PreviewOptions { skillIds?: string[]; webSearch?: boolean; enableTools?: boolean; enableThinking?: boolean; thinkingEffort?: ThinkingEffort }
+export interface TurnContextPreview extends ContextPreview { modelLabel: string; frontendDroppedMessageCount: number; fingerprint: string }
+
+export function contextScope(): string {
+  return useHistoryStore.getState().activeId ?? useChatStore.getState().approvalSessionId;
+}
+
+/** Same selection, prompt and text window as send, without image processing or network. */
+export function buildContextPreviewRequest(text: string, options: PreviewOptions = {}): { request: ContextPreviewRequest; modelLabel: string; frontendDroppedMessageCount: number; fingerprint: string } {
+  const state = useChatStore.getState();
+  const conversationId = useHistoryStore.getState().activeId;
+  const { selection: single, systemPrompt } = resolveTurnContext(conversationId);
+  const selections = state.compareTargets.slice(0, 4).map((t) => modelFor(t.providerId, t.modelKey)).filter((s) => s !== null);
+  const selection = selections[0] ?? single;
+  if (!selection) throw new Error("请先选择模型，再预览上下文。");
+  const user: Message = { id: "context-preview-draft", role: "user", content: text.trim(), status: "done" };
+  const source = [...state.messages, user];
+  const messages = buildTurnMessages(source, user.id, user.content);
+  const request: ContextPreviewRequest = {
+    providerId: selection.provider.id, modelKey: selection.model.modelKey, messages, systemPrompt,
+    conversationId: useHistoryStore.getState().historyEnabled ? conversationId ?? undefined : undefined,
+    webSearch: options.webSearch ?? false, enableTools: selections.length ? false : options.enableTools ?? false,
+    enableThinking: options.enableThinking ?? true, thinkingEffort: options.thinkingEffort ?? "medium",
+    skillIds: [...(options.skillIds ?? [])],
+    contextExclusions: useContextOptionsStore.getState().drafts[contextScope()] ?? EMPTY_CONTEXT_EXCLUSIONS,
+  };
+  const modelLabel = (selections.length ? selections : [selection]).map((s) => s.model.displayName || s.model.modelKey).join(" / ");
+  return { request, modelLabel,
+    frontendDroppedMessageCount: Math.max(0, source.filter((m) => m.content.length > 0 && m.status !== "error").length - messages.length),
+    fingerprint: JSON.stringify([contextScope(), request, modelLabel, state.importingBackup, state.conversationNonce]),
+  };
+}
 
 let seq = 0;
 const nextId = () => `msg-${Date.now().toString(36)}-${++seq}`;
@@ -67,7 +108,10 @@ function storedMessageToMessage(m: historyApi.StoredMessage): Message {
             outputTokens: m.outputTokens ?? undefined,
           }
         : undefined,
-    versions: historyApi.parseVersionsJson(m.versionsJson),
+    versions: historyApi.parseVersionsJson(m.versionsJson)?.map((version) => ({
+      ...version, ...knowledgeSnapshot({ kbEvidenceUnavailable: m.role === "assistant" }),
+    })),
+    kbEvidenceUnavailable: m.role === "assistant",
     activeVersion: m.activeVersion ?? 0,
     attachments: historyApi.parseAttachmentsJson(m.attachmentsJson),
     images: historyApi.parseImagesJson(m.imagesJson),
@@ -78,6 +122,17 @@ function storedMessageToMessage(m: historyApi.StoredMessage): Message {
 /* Message version stacks (P0-1)                                       */
 /* ------------------------------------------------------------------ */
 
+/** Explicit undefined fields prevent stale evidence leaking across versions. */
+function knowledgeSnapshot(value: KnowledgeSnapshot = {}): KnowledgeSnapshot {
+  return {
+    kbHits: value.kbHits,
+    kbTitles: value.kbTitles,
+    kbEvidence: value.kbEvidence,
+    kbEvidenceStage: value.kbEvidenceStage,
+    kbEvidenceUnavailable: value.kbEvidenceUnavailable,
+  };
+}
+
 /** Snapshot a message's own fields as a version entry. */
 function snapshotVersion(msg: Message): MessageVersion {
   return {
@@ -86,6 +141,7 @@ function snapshotVersion(msg: Message): MessageVersion {
     modelName: msg.modelName,
     durationMs: msg.durationMs,
     status: msg.status,
+    ...knowledgeSnapshot(msg),
     createdAt: Date.now(),
   };
 }
@@ -119,6 +175,7 @@ function syncActiveVersion(msg: Message): Message {
             modelName: msg.modelName,
             durationMs: msg.durationMs,
             status: msg.status,
+            ...knowledgeSnapshot(msg),
           }
         : v,
     ),
@@ -138,6 +195,15 @@ type StoredRowMirror = {
 
 /** Apply a versioned row (returned by the version commands) onto a message. */
 function applyStoredRow(msg: Message, row: StoredRowMirror): Message {
+  // DB version rows do not persist evidence. Preserve only known local snapshots
+  // whose version/content still match; never attach today's search to old text.
+  const localVersions = msg.versions ? syncActiveVersion(msg).versions! : [snapshotVersion(msg)];
+  const versions = historyApi.parseVersionsJson(row.versionsJson)?.map((version, index) => {
+    const local = localVersions[index];
+    return { ...version, ...knowledgeSnapshot(local?.content === version.content
+      ? local : { kbEvidenceUnavailable: msg.role === "assistant" && version.status !== "streaming" }) };
+  });
+  const activeVersion = row.activeVersion ?? 0;
   return {
     ...msg,
     content: row.content,
@@ -146,8 +212,11 @@ function applyStoredRow(msg: Message, row: StoredRowMirror): Message {
     durationMs: row.durationMs ?? undefined,
     status: asStatus(row.status),
     error: undefined,
-    versions: historyApi.parseVersionsJson(row.versionsJson),
-    activeVersion: row.activeVersion ?? 0,
+    versions,
+    activeVersion,
+    ...knowledgeSnapshot(versions?.[activeVersion] ?? {
+      kbEvidenceUnavailable: msg.role === "assistant" && row.status !== "streaming",
+    }),
   };
 }
 
@@ -304,7 +373,16 @@ export function streamRequestIdForMessage(
   return null;
 }
 
+interface SendCallbacks {
+  /** Synchronous, after validation and local turn reservation, before async
+   * setup. Acceptance does not imply backend or persistence success. */
+  onAccepted: () => void;
+  /** Lets Composer report validation in place without navigation/unmount. */
+  onRejected: (message: string) => void;
+}
+
 interface ChatState {
+  previewContext: (text: string, options?: PreviewOptions) => Promise<TurnContextPreview>;
   /** Import owns a write barrier until caches have been refreshed. */
   importingBackup: boolean;
   importBackup: (path: string, strategy: ImportStrategy) => Promise<ImportReport>;
@@ -397,6 +475,9 @@ interface ChatState {
     attachments?: AttachmentMeta[],
     /** Skills manually activated in the composer (自定义技能). */
     skillIds?: string[],
+    callbacks?: SendCallbacks,
+    /** Internal retry snapshot, never mutates the next-turn draft options. */
+    replayExclusions?: ContextExclusions,
   ) => Promise<void>;
   /**
    * Send one prompt to several models at once (P1-6).  Text only; the agent
@@ -410,14 +491,15 @@ interface ChatState {
     thinkingEffort?: ThinkingEffort,
     /** Skills manually activated in the composer (自定义技能). */
     skillIds?: string[],
+    callbacks?: SendCallbacks,
   ) => Promise<void>;
   appendDelta: (requestId: string, text: string) => void;
   appendReasoning: (requestId: string, text: string) => void;
   setUsage: (requestId: string, inputTokens?: number, outputTokens?: number) => void;
   /** Show the "searching web…" status while the backend runs a web search. */
   setSearchStatus: (requestId: string, query: string) => void;
-  /** Record injected local knowledge-base passages for the hint chip (P1-9). */
-  markKbUsed: (requestId: string, count: number, titles: string[]) => void;
+  /** Retain prepared context on its message; not a delivery acknowledgement. */
+  markKbUsed: (requestId: string, count: number, titles: string[], evidence?: KnowledgeEvidence[]) => void;
   /** Attach the search results (sources) to the in-flight assistant message. */
   setSearchResults: (requestId: string, results: SearchResult[]) => void;
   /** Attach a running tool call to the in-flight assistant message. */
@@ -663,6 +745,12 @@ async function compressImage(dataUrl: string, maxDim = 768): Promise<string> {
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
+  previewContext: async (text, options) => {
+    if (get().importingBackup) throw new Error("正在导入备份，请稍候再预览。");
+    const snapshot = buildContextPreviewRequest(text, options);
+    const preview = await requestContextPreview(snapshot.request);
+    return { ...preview, modelLabel: snapshot.modelLabel, frontendDroppedMessageCount: snapshot.frontendDroppedMessageCount, fingerprint: snapshot.fingerprint };
+  },
   importingBackup: false,
   importBackup: async (path, strategy) => {
     if (get().importingBackup) throw new Error("正在导入备份，请稍候。");
@@ -675,8 +763,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       while (pendingOperations.size || finalWrites.size) {
         await Promise.allSettled([...pendingOperations, ...finalWrites.values()]);
       }
+      await settleTaskWrites();
       dataEpoch++;
       const report = await importData(path, strategy);
+      useContextOptionsStore.getState().reset();
       // Do not snapshot the old visible list while reloading a same-ID import.
       set((state) => ({
         messages: [], backgroundMessages: {}, unreadDone: {}, streams: {},
@@ -684,7 +774,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         conversationNonce: state.conversationNonce + 1, approvalSessionId: nextConvId(),
       }));
       useHistoryStore.getState().setActive(null);
-      useAssistantsStore.getState().setActive(null);
+      useAssistantsStore.setState({ activeId: null, assistants: [] });
+      useImageGenStore.setState({ history: [] });
+      await Promise.all([
+        useAssistantsStore.getState().refresh(),
+        useImageGenStore.getState().load(),
+      ]);
       await useHistoryStore.getState().refreshList();
       if (activeId && useHistoryStore.getState().conversations.some((conversation) => conversation.id === activeId)) {
         const detail = await historyApi.getConversation(activeId);
@@ -695,6 +790,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return report;
     } finally {
       set({ importingBackup: false });
+      await useTasksStore.getState().load();
     }
   },
   messages: [],
@@ -726,8 +822,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     thinkingEffort: ThinkingEffort = "medium",
     attachments,
     skillIds,
+    callbacks,
+    replayExclusions,
   ) => {
-    if (get().importingBackup) return;
+    if (get().importingBackup) {
+      callbacks?.onRejected("正在导入备份，请稍候再发送。");
+      return;
+    }
     const epoch = dataEpoch;
     const trimmed = text.trim();
     if (!trimmed && (!images || images.length === 0)) return;
@@ -748,7 +849,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       assistantId: boundAssistantId,
     } = resolveTurnContext(useHistoryStore.getState().activeId);
     if (!selection || !selection.provider.hasApiKey) {
-      useWindowStore.getState().openSettings();
+      if (callbacks) callbacks.onRejected("请先在设置中配置模型和 API Key，再发送。草稿已保留。");
+      else useWindowStore.getState().openSettings();
       return;
     }
 
@@ -766,6 +868,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
       status: "done",
     };
+    const contextExclusions = replayExclusions ?? useContextOptionsStore.getState().capture(contextScope(), userMessage.id);
+    if (replayExclusions) useContextOptionsStore.setState((state) => ({ turns: { ...state.turns, [userMessage.id]: replayExclusions } }));
     const assistantId = nextId();
     const assistantMessage: Message = {
       id: assistantId,
@@ -814,6 +918,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       },
     });
 
+    callbacks?.onAccepted();
+
     let history: RequestMessage[];
     try {
       // Text-only sends stay synchronous until the backend dispatch.
@@ -851,6 +957,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             conversationId: conversationId ?? undefined,
             approvalSessionId,
             skillIds: skillIds ?? [],
+            contextExclusions,
           },
         });
         if (!alive()) {
@@ -929,9 +1036,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     enableThinking = true,
     thinkingEffort: ThinkingEffort = "medium",
     skillIds,
+    callbacks,
   ) => {
     const trimmed = text.trim();
-    if (!trimmed || targets.length === 0 || get().importingBackup) return;
+    if (get().importingBackup) {
+      callbacks?.onRejected("正在导入备份，请稍候再发送。");
+      return;
+    }
+    if (!trimmed || targets.length === 0) return;
     const epoch = dataEpoch;
 
     const { streams, messages, approvalSessionId } = get();
@@ -947,8 +1059,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       .slice(0, 4)
       .map((t) => modelFor(t.providerId, t.modelKey))
       .filter((sel): sel is NonNullable<typeof sel> => sel !== null);
-    if (resolved.length === 0) {
-      useWindowStore.getState().openSettings();
+    if (resolved.length === 0 || resolved.some((sel) => !sel.provider.hasApiKey)) {
+      if (callbacks) callbacks.onRejected("请先在设置中配置模型和 API Key，再发送。草稿已保留。");
+      else useWindowStore.getState().openSettings();
       return;
     }
 
@@ -963,6 +1076,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       content: trimmed,
       status: "done",
     };
+
+    const contextExclusions = useContextOptionsStore.getState().capture(contextScope(), userMessage.id);
 
     // One assistant placeholder (and one request id) per column.
     const requestIds: string[] = [];
@@ -1018,6 +1133,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       },
     }));
 
+    callbacks?.onAccepted();
+
     const setup = async () => {
       try {
         await invoke<string[]>("chat_send_multi", {
@@ -1036,6 +1153,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             conversationId: conversationId ?? undefined,
             approvalSessionId,
             skillIds: skillIds ?? [],
+            contextExclusions,
           },
         });
 
@@ -1145,9 +1263,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => patchStream(state, requestId, (msg) => ({ ...msg, searchingQuery: query })));
   },
 
-  markKbUsed: (requestId, count, titles) => {
+  markKbUsed: (requestId, count, titles, evidence) => {
     set((state) =>
-      patchStream(state, requestId, (msg) => ({ ...msg, kbHits: count, kbTitles: titles })),
+      patchStream(state, requestId, (msg) => syncActiveVersion({
+        ...msg,
+        kbHits: evidence?.length ?? count,
+        kbTitles: evidence?.map((item) => item.title) ?? titles,
+        kbEvidence: evidence?.map((item) => ({ ...item })),
+        // kb_used is a legacy name: even legacy snapshots prove preparation only.
+        kbEvidenceStage: evidence ? "prepared" : undefined,
+        kbEvidenceUnavailable: !evidence && count > 0,
+      })),
     );
   },
 
@@ -1364,6 +1490,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       skillIds: [] as string[],
     };
     const enableTools = opts?.disableTools ? false : base.enableTools;
+    const retryExclusions = useContextOptionsStore.getState().turns[lastUser.id] ?? EMPTY_CONTEXT_EXCLUSIONS;
     void get().send(
       lastUser.content,
       lastUser.images,
@@ -1373,6 +1500,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       base.thinkingEffort,
       lastUser.attachments,
       base.skillIds,
+      undefined,
+      retryExclusions,
     );
   },
 
@@ -1485,7 +1614,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         });
         archived = { ...target, content: "", reasoning: undefined, durationMs: undefined,
           error: undefined, usage: undefined, status: "streaming", modelName: modelLabel,
-          versions, activeVersion };
+          versions, activeVersion, ...knowledgeSnapshot() };
       }
       set((state) => patchMessage(state, messageId, () => archived));
       const context = user.images?.length
@@ -1505,6 +1634,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           enableThinking: base.enableThinking, thinkingEffort: base.thinkingEffort,
           requestId, conversationId: conversationId ?? undefined,
           approvalSessionId, skillIds: base.skillIds,
+          contextExclusions: useContextOptionsStore.getState().turns[user.id] ?? EMPTY_CONTEXT_EXCLUSIONS,
         } });
         if (!alive()) await cancelBackend(requestId);
       })());
@@ -1558,6 +1688,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               status: version.status ?? "done",
               error: undefined,
               activeVersion: index,
+              ...knowledgeSnapshot(version),
             }
           : m,
       ),
@@ -1745,3 +1876,5 @@ export const useChatStore = create<ChatState>((set, get) => ({
     useHistoryStore.getState().setActive(null);
   },
 }));
+
+setTaskWriteGuard(() => !useChatStore.getState().importingBackup);
