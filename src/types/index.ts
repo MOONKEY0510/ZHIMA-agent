@@ -127,8 +127,10 @@ export interface Message {
   error?: string;
   /** Whether the failed request can be retried. */
   retryable?: boolean;
-  /** Image thumbnails attached to the message (data URLs). */
+  /** Original image data URLs, retained for display and turn replay. */
   images?: string[];
+  /** Transient: false until a newly created assistant placeholder is saved. */
+  historyPersisted?: boolean;
   /** Token usage from the API response (assistant messages only). */
   usage?: { inputTokens?: number; outputTokens?: number };
   /** Display name of the model that produced this assistant message. */

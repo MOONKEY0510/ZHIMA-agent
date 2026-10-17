@@ -15,6 +15,8 @@ pub struct PendingToolApproval {
     pub sender: oneshot::Sender<ApprovalVerdict>,
     pub tool_name: String,
     pub scope: String,
+    /// Persistent conversation binding, distinct from the approval-session scope.
+    pub conversation_id: Option<String>,
     /// Data transfers and MCP tools may only be approved one call at a time.
     pub can_remember: bool,
 }

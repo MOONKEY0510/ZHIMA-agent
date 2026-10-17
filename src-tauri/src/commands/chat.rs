@@ -377,6 +377,32 @@ fn merge_tool_policies(
     merged
 }
 
+/// Resolve the policy at the execution gate, rather than trusting advertised tools.
+fn execution_tool_policy(
+    config: &ConfigStore,
+    db: &Database,
+    conversation_id: Option<&str>,
+    name: &str,
+) -> crate::storage::config::ToolPolicy {
+    merge_tool_policies(config, db, conversation_id)
+        .get(name)
+        .copied()
+        .unwrap_or_default()
+}
+
+/// Initial data-flow state before any tool has run.
+fn initial_context_sensitive(
+    memory: &str,
+    knowledge: Option<&str>,
+    summary: Option<&str>,
+    skills: Option<&str>,
+) -> bool {
+    [Some(memory), knowledge, summary, skills]
+        .into_iter()
+        .flatten()
+        .any(|block| !block.trim().is_empty())
+}
+
 /// Retrieve the best knowledge-base passages for this turn (P1-9).
 ///
 /// Returns the formatted prompt block, the hit count and the source titles.
@@ -469,6 +495,7 @@ fn spawn_stream(
     let tool_approvals = state.tool_approvals.clone();
     let session_tool_approvals = state.session_tool_approvals.clone();
     let rid = request_id.clone();
+    let summary_generation = window.state::<Database>().summary_generation();
 
     tauri::async_runtime::spawn(async move {
         run_stream(
@@ -499,6 +526,7 @@ fn spawn_stream(
             ctx.kb_hits,
             ctx.kb_titles,
             ctx.skills_block,
+            summary_generation,
         )
         .await;
         cancellations.lock().unwrap().remove(&rid);
@@ -688,26 +716,45 @@ pub async fn chat_cancel(state: State<'_, AppState>, request_id: String) -> Resu
 pub async fn chat_approve_tool(
     state: State<'_, AppState>,
     config: State<'_, ConfigStore>,
+    db: State<'_, Database>,
     request_id: String,
     call_id: String,
     approved: bool,
     policy: Option<String>,
 ) -> Result<(), String> {
-    let policy = policy.unwrap_or_else(|| "once".into());
-    if !matches!(policy.as_str(), "once" | "session" | "always") {
+    resolve_tool_approval(
+        &state,
+        &config,
+        &db,
+        &format!("{request_id}:{call_id}"),
+        approved,
+        policy.as_deref().unwrap_or("once"),
+    )
+}
+
+fn resolve_tool_approval(
+    state: &AppState,
+    config: &ConfigStore,
+    db: &Database,
+    key: &str,
+    approved: bool,
+    policy: &str,
+) -> Result<(), String> {
+    if !matches!(policy, "once" | "session" | "always") {
         return Err("无效的审批策略".into());
     }
-    let key = format!("{request_id}:{call_id}");
     let mut pending = state.tool_approvals.lock().unwrap();
     let entry = pending
-        .get(&key)
+        .get(key)
         .ok_or_else(|| "该工具请求已失效或已处理".to_string())?;
-    let current = config.read(|cfg| {
-        cfg.tool_policies
-            .get(&entry.tool_name)
-            .copied()
-            .unwrap_or_default()
-    });
+    // The card's can_remember is only a snapshot. Re-read the actual bound
+    // conversation (not its ephemeral approval scope) before persisting grants.
+    let current = execution_tool_policy(
+        config,
+        db,
+        entry.conversation_id.as_deref(),
+        &entry.tool_name,
+    );
     if approved && current == crate::storage::config::ToolPolicy::Disabled {
         return Err("工具已被禁用，请拒绝此请求".into());
     }
@@ -733,7 +780,7 @@ pub async fn chat_approve_tool(
             .unwrap()
             .insert((entry.scope.clone(), entry.tool_name.clone()));
     }
-    let entry = pending.remove(&key).expect("pending approval was checked");
+    let entry = pending.remove(key).expect("pending approval was checked");
     entry
         .sender
         .send(crate::state::ApprovalVerdict { approved })
@@ -808,6 +855,8 @@ const TOOL_RESULT_BUDGET_BYTES: usize = 512 * 1024;
 /// and malformed requests fail immediately.  Backoff is exponential with
 /// jitter and honours `Retry-After` when present.
 const RETRY_MAX_ATTEMPTS: usize = 3;
+/// Per-attempt response-header deadline; successful response bodies have no total timeout.
+const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_CHAT_ERROR_RESPONSE_BYTES: usize = 128 * 1024;
 const MAX_CHAT_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -828,40 +877,43 @@ async fn send_with_retry(
     url: &str,
     api_key: &str,
     body: &Value,
+    token: &CancellationToken,
+    header_timeout: Duration,
 ) -> Result<(reqwest::Response, u32), (String, String, bool, u32)> {
     for attempt in 0..RETRY_MAX_ATTEMPTS {
-        let resp = match client
-            .post(url)
-            .bearer_auth(api_key)
-            .json(body)
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(err) => {
-                let (code, message, retryable) = if err.is_timeout() {
-                    (
-                        "timeout".to_string(),
-                        "连接超时：请检查网络或 Base URL".to_string(),
-                        true,
-                    )
+        // Bound only the send/response-header phase, never the successful SSE body.
+        let sent = tokio::select! {
+            biased;
+            _ = token.cancelled() => return Err(cancelled_send(attempt)),
+            result = tokio::time::timeout(header_timeout,
+                client.post(url).bearer_auth(api_key).json(body).send()) => result,
+        };
+        let failure = match sent {
+            Ok(Ok(resp)) => Ok(resp),
+            Err(_) => Err((
+                "timeout".to_string(),
+                "等待响应头超时：请检查网络或 Base URL".to_string(),
+            )),
+            Ok(Err(err)) => {
+                let code = if err.is_timeout() {
+                    "timeout"
                 } else if err.is_connect() {
-                    (
-                        "connect_failed".to_string(),
-                        format!("无法连接到服务：{}", brief(&err)),
-                        true,
-                    )
+                    "connect_failed"
                 } else {
-                    (
-                        "network".to_string(),
-                        format!("网络错误：{}", brief(&err)),
-                        true,
-                    )
+                    "network"
                 };
-                if !retryable || attempt + 1 >= RETRY_MAX_ATTEMPTS {
-                    return Err((code, message, retryable, attempt as u32 + 1));
+                Err((code.to_string(), format!("网络请求失败：{}", brief(&err))))
+            }
+        };
+        let resp = match failure {
+            Ok(resp) => resp,
+            Err((code, message)) => {
+                if attempt + 1 >= RETRY_MAX_ATTEMPTS {
+                    return Err((code, message, true, attempt as u32 + 1));
                 }
-                backoff_sleep(attempt, None).await;
+                if !backoff_sleep(attempt, None, token).await {
+                    return Err(cancelled_send(attempt));
+                }
                 eprintln!("chat: retrying after {code} (attempt {})", attempt + 1);
                 continue;
             }
@@ -878,14 +930,23 @@ async fn send_with_retry(
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.trim().parse::<u64>().ok());
-        let text = read_body_capped(resp, MAX_CHAT_ERROR_RESPONSE_BYTES)
-            .await
-            .unwrap_or_else(|err| err.to_string());
+        let text = tokio::select! {
+            biased;
+            _ = token.cancelled() => return Err(cancelled_send(attempt)),
+            result = tokio::time::timeout(header_timeout, read_body_capped(resp, MAX_CHAT_ERROR_RESPONSE_BYTES)) => {
+                match result {
+                    Ok(result) => result.unwrap_or_else(|err| err.to_string()),
+                    Err(_) => "读取错误响应超时".to_string(),
+                }
+            }
+        };
         let (code, message, retryable) = map_http_error(status, &text);
         if !retryable || attempt + 1 >= RETRY_MAX_ATTEMPTS {
             return Err((code, message, retryable, attempt as u32 + 1));
         }
-        backoff_sleep(attempt, retry_after).await;
+        if !backoff_sleep(attempt, retry_after, token).await {
+            return Err(cancelled_send(attempt));
+        }
         eprintln!(
             "chat: retrying after HTTP {status} (attempt {})",
             attempt + 1
@@ -896,15 +957,36 @@ async fn send_with_retry(
 
 /// Exponential backoff with jitter; a server-provided `retry_after` overrides
 /// the computed delay (capped to avoid long stalls).
-async fn backoff_sleep(attempt: usize, retry_after: Option<u64>) {
+async fn backoff_sleep(
+    attempt: usize,
+    retry_after: Option<u64>,
+    token: &CancellationToken,
+) -> bool {
     let base = 500u64 << attempt;
     let jitter = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0))
         % 200;
-    let wait = retry_after.unwrap_or(base + jitter).min(10_000);
-    tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+    // Retry-After's numeric form is seconds, while our computed delay is milliseconds.
+    let wait = retry_after
+        .map(|seconds| seconds.saturating_mul(1000))
+        .unwrap_or(base + jitter)
+        .min(10_000);
+    tokio::select! {
+        biased;
+        _ = token.cancelled() => false,
+        _ = tokio::time::sleep(Duration::from_millis(wait)) => true,
+    }
+}
+
+fn cancelled_send(attempt: usize) -> (String, String, bool, u32) {
+    (
+        "cancelled".into(),
+        "请求已取消".into(),
+        false,
+        attempt as u32 + 1,
+    )
 }
 
 /// How long to wait for the user to approve a sensitive tool call before
@@ -963,11 +1045,33 @@ fn needs_tool_approval(
         || (requires_confirmation && policy != ToolPolicy::AlwaysAllow && !session_approved)
 }
 
+fn execution_approval_valid(
+    policy: crate::storage::config::ToolPolicy,
+    approved_this_call: bool,
+    needs_approval: bool,
+) -> bool {
+    policy != crate::storage::config::ToolPolicy::Disabled
+        && (approved_this_call || !needs_approval)
+}
+
+fn can_remember_tool_approval(
+    known_tool: bool,
+    is_mcp: bool,
+    transfers_sensitive_data: bool,
+    policy: crate::storage::config::ToolPolicy,
+) -> bool {
+    known_tool
+        && !is_mcp
+        && !transfers_sensitive_data
+        && policy != crate::storage::config::ToolPolicy::Confirm
+}
+
 struct ApprovalPrompt<'a> {
     call_id: &'a str,
     name: &'a str,
     summary: String,
     scope: &'a str,
+    conversation_id: Option<&'a str>,
     can_remember: bool,
 }
 
@@ -992,6 +1096,7 @@ async fn request_approval(
             sender: tx,
             tool_name: prompt.name.to_owned(),
             scope: prompt.scope.to_owned(),
+            conversation_id: prompt.conversation_id.map(str::to_owned),
             can_remember: prompt.can_remember,
         },
     );
@@ -1053,6 +1158,7 @@ async fn run_stream(
     kb_hits: usize,
     kb_titles: Vec<String>,
     skills_block: Option<String>,
+    summary_generation: u64,
 ) {
     // Web-search engine and key, resolved once per request (P0-3).  Changing
     // the engine mid-request therefore applies from the next request onwards.
@@ -1106,7 +1212,12 @@ async fn run_stream(
     // first; nothing the user or an external source says can override it
     // (prompt-injection hardening, plan §3.5).
     let system_prompt = system_prompt.filter(|s| !s.trim().is_empty());
-    let injects_local_data = !memory_block.trim().is_empty() || kb_hits > 0;
+    let mut context_sensitive = initial_context_sensitive(
+        &memory_block,
+        kb_block.as_deref(),
+        session_summary.as_deref(),
+        skills_block.as_deref(),
+    );
     let memory_block = memory_block.trim().to_string();
     let session_summary = session_summary.filter(|s| !s.trim().is_empty());
 
@@ -1310,9 +1421,7 @@ async fn run_stream(
 
     // Set of `name::serialized_args` already executed this run (loop guard).
     let mut seen_tool_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // Becomes true once a local-sensitive tool produced a result; from then
-    // on network tools require a second confirmation (data-flow policy).
-    let mut context_sensitive = false;
+    // Sensitive context remains tainted across all agent rounds.
     // Cumulative bytes of tool results fed back to the model this run.  When
     // the budget is exhausted, further results are truncated so a long agent
     // session cannot silently grow the context without bound.
@@ -1333,17 +1442,13 @@ async fn run_stream(
         // Automatic knowledge/memory injection and successful local tool
         // results are not explicit user messages. Ask before giving them to
         // the model provider, including on subsequent agent rounds.
-        if (_step == 0 && injects_local_data) || context_sensitive {
+        if context_sensitive {
             let call_id = format!("provider-round-{_step}");
             let host = url::Url::parse(&url)
                 .ok()
                 .and_then(|parsed| parsed.host_str().map(str::to_owned))
                 .unwrap_or_else(|| "所选模型服务商".to_owned());
-            let source = if context_sensitive {
-                "本地工具结果"
-            } else {
-                "本地知识库或记忆"
-            };
+            let source = "本地知识库、记忆、摘要、技能或工具结果";
             match request_approval(
                 &emit,
                 &tool_approvals,
@@ -1354,6 +1459,7 @@ async fn run_stream(
                     name: "发送本地数据至模型",
                     summary: format!("即将把{source}发送到 {host}；本次请求需要单独确认。"),
                     scope: &approval_scope,
+                    conversation_id: conversation_id.as_deref(),
                     can_remember: false,
                 },
             )
@@ -1399,7 +1505,16 @@ async fn run_stream(
         // (connect failures, timeouts, 429, 5xx).  Exponential backoff with
         // jitter avoids hammering a rate-limited endpoint.  Non-retryable
         // errors (auth, not-found) fail immediately.
-        let response = match send_with_retry(&client, &url, &api_key, &body).await {
+        let response = match send_with_retry(
+            &client,
+            &url,
+            &api_key,
+            &body,
+            &token,
+            RESPONSE_HEADER_TIMEOUT,
+        )
+        .await
+        {
             Ok((resp, attempts)) => {
                 retry_count.store(
                     attempts.saturating_sub(1),
@@ -1412,6 +1527,14 @@ async fn run_stream(
                     attempts.saturating_sub(1),
                     std::sync::atomic::Ordering::Relaxed,
                 );
+                if code == "cancelled" {
+                    emit(ChatEvent::Finish {
+                        request_id: request_id.clone(),
+                        reason: Some("cancelled".into()),
+                    });
+                    record_run(&request_id, "cancelled", None);
+                    return;
+                }
                 let err_code = code.clone();
                 emit(ChatEvent::Error {
                     request_id: request_id.clone(),
@@ -1436,7 +1559,16 @@ async fn run_stream(
         // a regular JSON completion. Treat it as a valid fallback instead of
         // feeding it to the SSE parser (which would silently ignore it).
         if content_type.contains("application/json") {
-            match read_body_capped(response, MAX_CHAT_RESPONSE_BYTES).await {
+            let body_result = tokio::select! {
+                biased;
+                _ = token.cancelled() => {
+                    emit(ChatEvent::Finish { request_id: request_id.clone(), reason: Some("cancelled".into()) });
+                    record_run(&request_id, "cancelled", None);
+                    return;
+                }
+                result = read_body_capped(response, MAX_CHAT_RESPONSE_BYTES) => result,
+            };
+            match body_result {
                 Ok(raw) => match extract_completion_text(&raw) {
                     Ok(text) => {
                         emit(ChatEvent::Delta {
@@ -1760,12 +1892,12 @@ async fn run_stream(
                 //    silently approve "then upload it".
                 // A policy-disabled tool should never execute; treat it like a
                 // rejected call and tell the model to stop using it.
-                let policy = config_handle.read(|cfg| {
-                    cfg.tool_policies
-                        .get(&canonical)
-                        .copied()
-                        .unwrap_or_default()
-                });
+                let policy = execution_tool_policy(
+                    &config_handle,
+                    &db_handle,
+                    conversation_id.as_deref(),
+                    &canonical,
+                );
                 if policy == crate::storage::config::ToolPolicy::Disabled {
                     emit(ChatEvent::ToolRejected {
                         request_id: request_id.clone(),
@@ -1788,6 +1920,7 @@ async fn run_stream(
                     .lock()
                     .unwrap()
                     .contains(&(approval_scope.clone(), canonical.clone()));
+                let mut approved_this_call = false;
                 if needs_tool_approval(
                     policy,
                     requires_confirmation,
@@ -1801,10 +1934,12 @@ async fn run_stream(
                     } else if is_mcp {
                         summary.push_str("（MCP 进程可能读取本地数据或联网，仅允许单次授权）");
                     }
-                    let can_remember = def.is_some()
-                        && !is_mcp
-                        && !transfers_sensitive_data
-                        && policy != crate::storage::config::ToolPolicy::Confirm;
+                    let can_remember = can_remember_tool_approval(
+                        def.is_some(),
+                        is_mcp,
+                        transfers_sensitive_data,
+                        policy,
+                    );
                     match request_approval(
                         &emit,
                         &tool_approvals,
@@ -1815,12 +1950,13 @@ async fn run_stream(
                             name: &canonical,
                             summary,
                             scope: &approval_scope,
+                            conversation_id: conversation_id.as_deref(),
                             can_remember,
                         },
                     )
                     .await
                     {
-                        ApprovalOutcome::Approved => {}
+                        ApprovalOutcome::Approved => approved_this_call = true,
                         ApprovalOutcome::Rejected => {
                             openai_messages.push(json!({
                                 "role": "tool",
@@ -1840,6 +1976,45 @@ async fn run_stream(
                     }
                 }
 
+                // Revalidate all approval requirements after any policy change.
+                // A remembered grant is not explicit approval of this call; if
+                // policy tightened after the first gate, fail closed.
+                if token.is_cancelled() {
+                    emit(ChatEvent::Finish {
+                        request_id: request_id.clone(),
+                        reason: Some("cancelled".into()),
+                    });
+                    record_run(&request_id, "cancelled", None);
+                    return;
+                }
+                let latest_policy = execution_tool_policy(
+                    &config_handle,
+                    &db_handle,
+                    conversation_id.as_deref(),
+                    &canonical,
+                );
+                if !execution_approval_valid(
+                    latest_policy,
+                    approved_this_call,
+                    needs_tool_approval(
+                        latest_policy,
+                        requires_confirmation,
+                        session_approved,
+                        is_mcp,
+                        transfers_sensitive_data,
+                    ),
+                ) {
+                    emit(ChatEvent::ToolRejected {
+                        request_id: request_id.clone(),
+                        call_id: tc.id.clone(),
+                        name: canonical.clone(),
+                    });
+                    openai_messages.push(json!({
+                        "role": "tool", "tool_call_id": tc.id,
+                        "content": "工具策略已变更：该工具已禁用或本次调用缺少明确授权，已停止执行。",
+                    }));
+                    continue;
+                }
                 emit(ChatEvent::ToolStart {
                     request_id: request_id.clone(),
                     call_id: tc.id.clone(),
@@ -1922,7 +2097,16 @@ async fn run_stream(
             let u = url.clone();
             let k = api_key.clone();
             tauri::async_runtime::spawn(async move {
-                crate::agent::summary::maybe_update_summary(&win, Some(&cid), &m, &c, &u, &k).await;
+                crate::agent::summary::maybe_update_summary(
+                    &win,
+                    Some(&cid),
+                    &m,
+                    &c,
+                    &u,
+                    &k,
+                    summary_generation,
+                )
+                .await;
             });
         }
         return;
@@ -2155,6 +2339,235 @@ mod tests {
     use super::*;
 
     #[test]
+    fn regression_injected_context_stays_sensitive_for_network_tools() {
+        for blocks in [
+            ("memory", None, None, None),
+            ("", Some("knowledge"), None, None),
+            ("", None, Some("summary"), None),
+            ("", None, None, Some("skill")),
+        ] {
+            let sensitive = initial_context_sensitive(blocks.0, blocks.1, blocks.2, blocks.3);
+            assert!(sensitive);
+            assert!(needs_tool_approval(
+                crate::storage::config::ToolPolicy::AlwaysAllow,
+                false,
+                true,
+                false,
+                sensitive,
+            ));
+        }
+        assert!(!initial_context_sensitive(" ", Some(""), None, None));
+    }
+
+    #[test]
+    fn regression_open_resource_is_network_access() {
+        let registry = crate::tools::ToolRegistry::builtin();
+        let def = registry.find("open_resource").unwrap();
+        assert!(def.network_access);
+        let sensitive =
+            initial_context_sensitive("private memory", None, None, None) && def.network_access;
+        assert!(needs_tool_approval(
+            crate::storage::config::ToolPolicy::AlwaysAllow,
+            def.requires_confirmation,
+            true,
+            false,
+            sensitive
+        ));
+        assert!(!can_remember_tool_approval(
+            true,
+            false,
+            sensitive,
+            crate::storage::config::ToolPolicy::AlwaysAllow
+        ));
+    }
+
+    async fn read_mock_request_headers(
+        socket: &mut (impl tokio::io::AsyncRead + Unpin),
+    ) -> std::io::Result<()> {
+        use tokio::io::AsyncReadExt;
+        let mut headers = Vec::new();
+        let mut buf = [0; 1024];
+        loop {
+            let count = socket.read(&mut buf).await?;
+            if count == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed before complete request headers",
+                ));
+            }
+            headers.extend_from_slice(&buf[..count]);
+            if headers.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                return Ok(());
+            }
+            if headers.len() >= 16 * 1024 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "mock request headers exceed size limit",
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_request_headers_handle_fragmentation_and_early_eof() {
+        use tokio::io::AsyncWriteExt;
+        let (mut writer, mut reader) = tokio::io::duplex(8);
+        let send = tokio::spawn(async move {
+            for part in [
+                b"GET / HTTP/1.1\r\n".as_slice(),
+                b"Host: localhost\r\n\r",
+                b"\n",
+            ] {
+                writer.write_all(part).await.unwrap();
+            }
+        });
+        read_mock_request_headers(&mut reader).await.unwrap();
+        send.await.unwrap();
+
+        let mut incomplete = b"GET / HTTP/1.1\r\n".as_slice();
+        assert_eq!(
+            read_mock_request_headers(&mut incomplete)
+                .await
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof,
+        );
+        let oversized = vec![b'x'; 16 * 1024];
+        assert_eq!(
+            read_mock_request_headers(&mut oversized.as_slice())
+                .await
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidData,
+        );
+    }
+
+    // Local-only server; no real credentials, proxies, browser, or provider calls.
+    async fn mock_http(response: Option<&'static str>) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    if read_mock_request_headers(&mut socket).await.is_err() {
+                        return;
+                    }
+                    if let Some(response) = response {
+                        socket.write_all(response.as_bytes()).await.unwrap();
+                    }
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                });
+            }
+        });
+        (url, task)
+    }
+
+    async fn assert_send_cancelled(response: Option<&'static str>) {
+        let (url, server) = mock_http(response).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel.cancel();
+        });
+        let result = tokio::time::timeout(
+            Duration::from_millis(500),
+            send_with_retry(
+                &client,
+                &url,
+                "test-only",
+                &json!({}),
+                &token,
+                Duration::from_secs(5),
+            ),
+        )
+        .await;
+        server.abort();
+        assert_eq!(
+            result
+                .expect("cancellation must interrupt waiting")
+                .unwrap_err()
+                .0,
+            "cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_cancel_waiting_for_headers() {
+        assert_send_cancelled(None).await;
+    }
+
+    #[tokio::test]
+    async fn regression_cancel_during_backoff() {
+        assert_send_cancelled(Some("HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nRetry-After: 10\r\nConnection: close\r\n\r\n")).await;
+    }
+
+    #[tokio::test]
+    async fn successful_body_outlives_header_deadline() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_mock_request_headers(&mut socket).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            socket.write_all(b"ok").await.unwrap();
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (response, attempts) = send_with_retry(
+            &client,
+            &url,
+            "test-only",
+            &json!({}),
+            &CancellationToken::new(),
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+        assert_eq!(attempts, 1);
+        assert_eq!(response.text().await.unwrap(), "ok");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn regression_cancel_reading_error_body() {
+        assert_send_cancelled(Some(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 100\r\n\r\n",
+        ))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn regression_header_wait_is_bounded() {
+        let (url, server) = mock_http(None).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            send_with_retry(
+                &client,
+                &url,
+                "test-only",
+                &json!({}),
+                &CancellationToken::new(),
+                Duration::from_millis(20),
+            ),
+        )
+        .await;
+        server.abort();
+        assert_eq!(
+            result.expect("header wait must be bounded").unwrap_err().0,
+            "timeout"
+        );
+    }
+
+    #[test]
     fn approval_scope_and_outbound_override_remembered_permissions() {
         use crate::storage::config::ToolPolicy;
         let mut approvals = std::collections::HashSet::new();
@@ -2239,12 +2652,28 @@ mod tests {
                 name: "read_clipboard",
                 summary: "读取剪贴板".into(),
                 scope: "chat-a",
+                conversation_id: None,
                 can_remember: true,
             },
         )
         .await;
         assert!(matches!(result, ApprovalOutcome::Approved));
         assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn regression_final_gate_honors_new_confirm_without_current_approval() {
+        use crate::storage::config::ToolPolicy;
+        assert!(execution_approval_valid(
+            ToolPolicy::AlwaysAllow,
+            false,
+            false
+        ));
+        // Policy tightens after the initial gate, even with a remembered session approval.
+        let needs = needs_tool_approval(ToolPolicy::Confirm, false, true, false, false);
+        assert!(!execution_approval_valid(ToolPolicy::Confirm, false, needs));
+        assert!(execution_approval_valid(ToolPolicy::Confirm, true, needs));
+        assert!(!execution_approval_valid(ToolPolicy::Disabled, true, false));
     }
 
     #[test]
@@ -2311,9 +2740,62 @@ mod tests {
         // …while an assistant-only suggestion still takes effect.
         assert_eq!(merged.get("read_pdf"), Some(&ToolPolicy::Disabled));
 
+        assert_eq!(
+            execution_tool_policy(&store, &db, Some("c1"), "read_pdf"),
+            ToolPolicy::Disabled
+        );
+        let state = AppState::new();
+        let (sender, mut receiver) = tokio::sync::oneshot::channel();
+        // The approval card was opened while the assistant allowed this tool.
+        state.tool_approvals.lock().unwrap().insert(
+            "req:call".into(),
+            crate::state::PendingToolApproval {
+                sender,
+                tool_name: "open_resource".into(),
+                scope: "ephemeral-scope-not-conversation-id".into(),
+                conversation_id: Some("c1".into()),
+                can_remember: true,
+            },
+        );
+        let mut assistant = db.get_assistant("a1").unwrap().unwrap();
+        assistant.tool_policies_json =
+            Some(r#"{"read_pdf":"confirm","open_resource":"confirm"}"#.into());
+        db.upsert_assistant(&assistant).unwrap();
+        for remember in ["always", "session"] {
+            assert!(
+                resolve_tool_approval(&state, &store, &db, "req:call", true, remember).is_err()
+            );
+            assert!(state
+                .tool_approvals
+                .lock()
+                .unwrap()
+                .contains_key("req:call"));
+            assert!(state.session_tool_approvals.lock().unwrap().is_empty());
+            assert_eq!(
+                execution_tool_policy(&store, &db, None, "open_resource"),
+                ToolPolicy::Allow
+            );
+        }
+        resolve_tool_approval(&state, &store, &db, "req:call", true, "once").unwrap();
+        assert!(receiver.try_recv().unwrap().approved);
+        let policy = execution_tool_policy(&store, &db, Some("c1"), "read_pdf");
+        assert_eq!(policy, ToolPolicy::Confirm);
+        assert!(needs_tool_approval(policy, false, true, false, false));
+        store
+            .update(|cfg| {
+                cfg.tool_policies
+                    .insert("read_pdf".into(), ToolPolicy::Disabled);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            execution_tool_policy(&store, &db, Some("c1"), "read_pdf"),
+            ToolPolicy::Disabled
+        );
+
         // Without a bound conversation only the global map applies.
         let plain = merge_tool_policies(&store, &db, None);
-        assert!(!plain.contains_key("read_pdf"));
+        assert_eq!(plain.get("read_pdf"), Some(&ToolPolicy::Disabled));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

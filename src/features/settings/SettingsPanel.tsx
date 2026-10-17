@@ -71,7 +71,6 @@ import {
 } from "../../services/web-search-api";
 import {
   exportData,
-  importData,
   previewBackup,
   type BackupPreview,
   type ImportStrategy,
@@ -1314,7 +1313,7 @@ function BackupSection() {
     setBusy("import");
     setMessage(null);
     try {
-      const report = await importData(pendingPath, strategy);
+      const report = await useChatStore.getState().importBackup(pendingPath, strategy);
       setMessage({
         ok: true,
         text: `导入完成：新增 ${report.conversations} 个会话 · ${report.messages} 条消息 · ${report.memories} 条记忆${
@@ -1324,14 +1323,6 @@ function BackupSection() {
       setPendingPath(null);
       setPreview(null);
       setConfirming(false);
-
-      // Refresh the sidebar and re-load the open conversation so imported
-      // data shows up without a restart.
-      await useHistoryStore.getState().refreshList();
-      const activeId = useHistoryStore.getState().activeId;
-      if (activeId) {
-        await useChatStore.getState().loadConversation(activeId);
-      }
     } catch (err) {
       setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
     } finally {

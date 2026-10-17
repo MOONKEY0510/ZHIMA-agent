@@ -20,7 +20,8 @@ pub fn definition() -> ToolDefinition {
         timeout_ms: 10_000,
         max_result_bytes: 2_048,
         data_access: DataAccess::None,
-        network_access: false,
+        // Opening a URL sends its path/query to an external site via the browser.
+        network_access: true,
     }
 }
 

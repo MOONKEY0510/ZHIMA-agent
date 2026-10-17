@@ -122,6 +122,7 @@ pub async fn generate_summary(
 /// from the database, decides whether a new summary is due, generates it
 /// (if the conversation is long enough) and persists it.  All failures are
 /// silently logged — summary must never break the main chat.
+#[allow(clippy::too_many_arguments)]
 pub async fn maybe_update_summary(
     window: &tauri::Window,
     conversation_id: Option<&str>,
@@ -129,9 +130,13 @@ pub async fn maybe_update_summary(
     client: &reqwest::Client,
     url: &str,
     api_key: &str,
+    generation: u64,
 ) {
     let Some(cid) = conversation_id else { return };
     let db: tauri::State<'_, Database> = window.state::<Database>();
+    if db.summary_generation() != generation {
+        return;
+    }
     let messages = match db.list_messages(cid) {
         Ok(m) => m,
         Err(e) => {
@@ -203,7 +208,7 @@ pub async fn maybe_update_summary(
         version: prev.as_ref().map(|s| s.version).unwrap_or(1),
         updated_at: chrono::Utc::now().timestamp_millis(),
     };
-    if let Err(e) = db.save_summary(&new_summary) {
+    if let Err(e) = db.save_summary_if_current(&new_summary, generation) {
         eprintln!("summary: save failed: {e}");
     }
 }

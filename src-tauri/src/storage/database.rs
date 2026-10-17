@@ -830,6 +830,9 @@ pub struct ImportReport {
 
 pub struct Database {
     conn: Mutex<Connection>,
+    // Read/write only while holding conn: import and summary persistence share
+    // one serialization boundary without holding a DB lock across network I/O.
+    summary_generation: std::sync::atomic::AtomicU64,
 }
 
 impl Database {
@@ -842,6 +845,7 @@ impl Database {
         let conn = Connection::open(path).map_err(|e| format!("无法打开数据库：{e}"))?;
         let db = Self {
             conn: Mutex::new(conn),
+            summary_generation: std::sync::atomic::AtomicU64::new(0),
         };
         db.migrate().map_err(|e| format!("数据库迁移失败：{e}"))?;
         db.recover_interrupted()
@@ -952,6 +956,7 @@ impl Database {
         let conn = Connection::open_in_memory().expect("in-memory db");
         let db = Self {
             conn: Mutex::new(conn),
+            summary_generation: std::sync::atomic::AtomicU64::new(0),
         };
         db.migrate().unwrap();
         db.seed_builtin_assistants().unwrap();
@@ -1750,8 +1755,36 @@ impl Database {
         .map_err(|e| format!("读取会话摘要失败：{e}"))
     }
 
+    /// Generation captured before a background summary reads its source messages.
+    pub fn summary_generation(&self) -> u64 {
+        let _conn = self.conn.lock().unwrap();
+        self.summary_generation
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn save_summary_if_current(
+        &self,
+        summary: &ConversationSummary,
+        generation: u64,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        if self
+            .summary_generation
+            .load(std::sync::atomic::Ordering::Relaxed)
+            != generation
+        {
+            return Ok(());
+        }
+        Self::save_summary_locked(&conn, summary)
+    }
+
+    #[cfg(test)]
     pub fn save_summary(&self, summary: &ConversationSummary) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
+        Self::save_summary_locked(&conn, summary)
+    }
+
+    fn save_summary_locked(conn: &Connection, summary: &ConversationSummary) -> Result<(), String> {
         conn.execute(
             "INSERT INTO conversation_summaries
                 (conversation_id, summary, covered_until_message_id,
@@ -2813,6 +2846,10 @@ impl Database {
             .map_err(|e| format!("重建搜索索引失败：{e}"))?;
 
         tx.commit().map_err(|e| format!("提交事务失败：{e}"))?;
+        // The connection guard is still held, so a stale summary cannot pass
+        // its generation check between commit and invalidation.
+        self.summary_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(report)
     }
 }
@@ -3741,6 +3778,31 @@ mod tests {
             updated_at: 10,
             last_used_at: None,
             use_count: 0,
+        }
+    }
+
+    #[test]
+    fn regression_import_blocks_stale_background_summary() {
+        for strategy in [ImportStrategy::Replace, ImportStrategy::Merge] {
+            let db = Database::in_memory();
+            db.create_conversation(&conv("c1", "old", 1)).unwrap();
+            let generation = db.summary_generation();
+            let backup = db.export_backup(false).unwrap();
+            db.import_backup(&backup, strategy).unwrap();
+            let mut summary = ConversationSummary {
+                conversation_id: "c1".into(),
+                summary: "new".into(),
+                covered_until_message_id: "m1".into(),
+                source_message_count: 24,
+                model_key: None,
+                version: 1,
+                updated_at: 1,
+            };
+            db.save_summary_if_current(&summary, db.summary_generation())
+                .unwrap();
+            summary.summary = "stale-before-import".into();
+            db.save_summary_if_current(&summary, generation).unwrap();
+            assert_eq!(db.get_summary("c1").unwrap().unwrap().summary, "new");
         }
     }
 

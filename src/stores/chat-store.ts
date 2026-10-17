@@ -15,6 +15,7 @@ import { currentModel, modelFor, useProvidersStore } from "./providers-store";
 import { activeAssistant, useAssistantsStore } from "./assistants-store";
 import { useHistoryStore } from "../services/history-store";
 import * as historyApi from "../services/history-api";
+import { importData, type ImportReport, type ImportStrategy } from "../services/backup-api";
 import { writeClipboardText } from "../services/tools-api";
 import { useWindowStore } from "./window-store";
 import type { ThinkingEffort } from "./settings-store";
@@ -201,6 +202,8 @@ export interface ActiveStream {
   /** Reserved conversation ID from the beginning of a recorded turn; null
    * when history recording is disabled. Drives background routing. */
   conversationId: string | null;
+  /** Shared with async setup; cancellation survives removing the stream slot. */
+  lifecycle?: { cancelled: boolean; setupStarted: boolean };
 }
 
 /** One model of a multi-model turn (P1-6). */
@@ -302,6 +305,9 @@ export function streamRequestIdForMessage(
 }
 
 interface ChatState {
+  /** Import owns a write barrier until caches have been refreshed. */
+  importingBackup: boolean;
+  importBackup: (path: string, strategy: ImportStrategy) => Promise<ImportReport>;
   messages: Message[];
   /**
    * In-flight generations keyed by request id.  Normally exactly one entry;
@@ -436,11 +442,11 @@ interface ChatState {
   /** Cancel one column (used by the per-column stop button). */
   stopStream: (requestId: string) => void;
   /** Re-run the last user turn; `disableTools` optionally turns the agent loop off. */
-  retryLast: (opts?: { disableTools?: boolean }) => void;
+  retryLast: (opts?: RetryOptions) => void;
   /** Edit a user message (kept as a new version) and regenerate its reply. */
   editMessage: (messageId: string, content: string) => Promise<void>;
   /** Re-run an assistant reply in place, archiving the current answer. */
-  regenerate: (messageId: string, opts?: { disableTools?: boolean }) => Promise<void>;
+  regenerate: (messageId: string, opts?: RetryOptions) => Promise<void>;
   /** Switch the displayed version of a message. */
   switchMessageVersion: (messageId: string, index: number) => Promise<void>;
   clearConversation: () => void;
@@ -485,6 +491,79 @@ type TurnWrite = {
 };
 const turnWrites = new Map<string, TurnWrite>();
 const finalWrites = new Map<string, Promise<void>>();
+// Track setup/writes, not image decoding or model completion. Import can abandon
+// preprocessing immediately, but must drain every already-dispatched DB write.
+const pendingOperations = new Set<Promise<unknown>>();
+let dataEpoch = 0;
+function trackOperation<T>(promise: Promise<T>): Promise<T> {
+  pendingOperations.add(promise);
+  void promise.then(() => pendingOperations.delete(promise), () => pendingOperations.delete(promise));
+  return promise;
+}
+function cancelBackend(requestId: string): Promise<void> {
+  return trackOperation(invoke<void>("chat_cancel", { requestId }).catch(() => undefined));
+}
+function operationAllowed(epoch: number): boolean {
+  return epoch === dataEpoch && !useChatStore.getState().importingBackup;
+}
+
+type RequestMessage = { role: Role; content: string; images?: string[] };
+type RetryOptions = { disableTools?: boolean };
+
+/** Only the user turn being sent/replayed carries images. Old turns remain text
+ * only, so switching to a non-vision model never leaks previous raw images. */
+function buildTurnMessages(messages: Message[], userId: string, content: string, images?: string[]): RequestMessage[] {
+  return messages
+    .map((message) => message.id === userId ? { ...message, content } : message)
+    .filter((message) => message.content.length > 0 && message.status !== "error")
+    .slice(-CONTEXT_LIMIT)
+    .map((message) => ({
+      role: message.role,
+      content: message.content,
+      images: message.role === "user" && message.id === userId ? images : undefined,
+    }));
+}
+
+async function prepareTurnMessages(
+  messages: Message[], user: Message, model: ModelEntry, alive: () => boolean,
+): Promise<RequestMessage[] | null> {
+  let content = user.content;
+  let images: string[] | undefined;
+  if (user.images?.length) {
+    const { visionProviderId, visionModelKey } = useProvidersStore.getState();
+    if (!model.supportsVision && (!visionProviderId || !visionModelKey)) {
+      throw new Error("当前模型不支持图片，且未配置视觉模型。请在设置→模型设置中配置默认视觉模型。");
+    }
+    const descriptions: string[] = [];
+    images = [];
+    for (const [index, image] of user.images.entries()) {
+      if (!alive()) return null;
+      const compressed = await compressImage(image);
+      if (!alive()) return null;
+      if (model.supportsVision) {
+        images.push(compressed);
+      } else {
+        try {
+          const description = await invoke<string>("describe_image", { request: {
+            providerId: visionProviderId, modelKey: visionModelKey,
+            imageDataUrl: compressed,
+            prompt: "请详细描述这张图片的内容，包括所有可见的文字、物体、场景和布局。",
+          } });
+          if (!alive()) return null;
+          descriptions.push(`[图片${index + 1}]\n${description}`);
+        } catch {
+          if (!alive()) return null;
+          descriptions.push(`[图片${index + 1}]\n（图片描述失败）`);
+        }
+      }
+    }
+    if (!model.supportsVision) {
+      content = `${content}\n\n---\n以下是用户上传的图片内容描述：\n\n${descriptions.join("\n\n")}`;
+      images = undefined;
+    }
+  }
+  return alive() ? buildTurnMessages(messages, user.id, content, images) : null;
+}
 
 function reserveTurnWrite(messageId: string) {
   let complete!: (saved: boolean) => void;
@@ -518,13 +597,14 @@ function persistAssistantFinal(stream: ActiveStream, status: MessageStatus) {
   const state = useChatStore.getState();
   const msg = state.messages.find((m) => m.id === stream.messageId)
     ?? state.backgroundMessages[conversationId]?.find((m) => m.id === stream.messageId);
-  if (!msg) return;
+  if (!msg || (msg.historyPersisted === false && !turnWrites.has(msg.id))) return;
   const toolCalls = msg.toolCalls?.length ? persistedToolCalls(msg.toolCalls) : null;
   const barrier = turnWrites.get(msg.id);
+  const epoch = dataEpoch;
   const write = (async () => {
     try {
       if (barrier && (barrier.settled ? !barrier.saved : !(await barrier.ready))) return;
-      if (!useHistoryStore.getState().historyEnabled) return;
+      if (epoch !== dataEpoch || !useHistoryStore.getState().historyEnabled) return;
       await historyApi.saveMessage({
         id: msg.id,
         conversationId,
@@ -553,25 +633,29 @@ function persistAssistantFinal(stream: ActiveStream, status: MessageStatus) {
 
 /** Read a File/data-URL and return a compressed data URL (max ~512px). */
 async function compressImage(dataUrl: string, maxDim = 768): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      let { width, height } = img;
-      if (width > maxDim || height > maxDim) {
-        const ratio = Math.min(maxDim / width, maxDim / height);
-        width = Math.round(width * ratio);
-        height = Math.round(height * ratio);
+      try {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const ratio = Math.min(maxDim / width, maxDim / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve(dataUrl);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
+      } catch (error) {
+        reject(error);
       }
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        resolve(dataUrl);
-        return;
-      }
-      ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL("image/jpeg", 0.85));
     };
     img.onerror = () => resolve(dataUrl);
     img.src = dataUrl;
@@ -579,6 +663,40 @@ async function compressImage(dataUrl: string, maxDim = 768): Promise<string> {
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
+  importingBackup: false,
+  importBackup: async (path, strategy) => {
+    if (get().importingBackup) throw new Error("正在导入备份，请稍候。");
+    const activeId = useHistoryStore.getState().activeId;
+    set({ importingBackup: true, approvalSessionId: nextConvId() });
+    // Cancellation changes local state synchronously. Setup that is awaiting
+    // chat_send will cancel once more after backend registration acknowledges.
+    for (const requestId of Object.keys(get().streams)) get().stopStream(requestId);
+    try {
+      while (pendingOperations.size || finalWrites.size) {
+        await Promise.allSettled([...pendingOperations, ...finalWrites.values()]);
+      }
+      dataEpoch++;
+      const report = await importData(path, strategy);
+      // Do not snapshot the old visible list while reloading a same-ID import.
+      set((state) => ({
+        messages: [], backgroundMessages: {}, unreadDone: {}, streams: {},
+        lastSendOptions: null, focusMessageId: null, clipboardWriteback: null,
+        conversationNonce: state.conversationNonce + 1, approvalSessionId: nextConvId(),
+      }));
+      useHistoryStore.getState().setActive(null);
+      useAssistantsStore.getState().setActive(null);
+      await useHistoryStore.getState().refreshList();
+      if (activeId && useHistoryStore.getState().conversations.some((conversation) => conversation.id === activeId)) {
+        const detail = await historyApi.getConversation(activeId);
+        useHistoryStore.getState().setActive(activeId);
+        useAssistantsStore.getState().setActive(detail.conversation.assistantId ?? null);
+        set({ messages: detail.messages.map(storedMessageToMessage) });
+      }
+      return report;
+    } finally {
+      set({ importingBackup: false });
+    }
+  },
   messages: [],
   streams: {},
   conversationNonce: 0,
@@ -609,6 +727,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     attachments,
     skillIds,
   ) => {
+    if (get().importingBackup) return;
+    const epoch = dataEpoch;
     const trimmed = text.trim();
     if (!trimmed && (!images || images.length === 0)) return;
 
@@ -632,15 +752,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
-    // Determine if we need vision fallback.
-    const modelSupportsVision = selection.model.supportsVision;
-    const store = useProvidersStore.getState();
-    const hasVisionFallback = !!(store.visionProviderId && store.visionModelKey);
+    const lifecycle = { cancelled: false, setupStarted: false };
+    const alive = () => !lifecycle.cancelled && operationAllowed(epoch);
     const hasImages = images && images.length > 0;
-
-    // If images present but current model doesn't support vision, use fallback.
-    let effectiveText = trimmed;
-    let effectiveImages: string[] | undefined = images;
 
     // Create user + assistant messages early so the UI shows immediate
     // feedback (including during the vision-model processing phase).
@@ -658,6 +772,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       role: "assistant",
       content: "",
       status: "streaming",
+      historyPersisted: false,
       modelName: selection.model.displayName || selection.model.modelKey,
     };
 
@@ -674,6 +789,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ? historyState.activeId ?? nextConvId()
       : null;
     const createdNew = historyState.historyEnabled && historyState.activeId === null;
+    if (conversationId) reserveTurnWrite(assistantId);
     set({
       messages: [...messages, userMessage, assistantMessage],
       streams: {
@@ -682,188 +798,128 @@ export const useChatStore = create<ChatState>((set, get) => ({
           messageId: assistantId,
           startedAt: Date.now(),
           conversationId,
+          lifecycle,
         },
       },
     });
 
-    let history: { role: Role; content: string; images?: string[] }[] = [];
+    // Capture even a failed preprocessing attempt so retry keeps its options.
+    set({
+      lastSendOptions: {
+        webSearch: webSearch ?? false,
+        enableTools: enableTools ?? false,
+        enableThinking,
+        thinkingEffort,
+        skillIds: skillIds ?? [],
+      },
+    });
 
+    let history: RequestMessage[];
     try {
-      if (hasImages && !modelSupportsVision) {
-        if (!hasVisionFallback) {
-          // No fallback configured — fail the column in place.
-          set((state) => ({
-            streams: withoutStream(state.streams, requestId),
-            ...patchMessage(state, assistantId, (m) => ({
-              ...m,
-              status: "error" as const,
-              error:
-                "当前模型不支持图片，且未配置视觉模型。请在设置→模型设置中配置默认视觉模型。",
-              retryable: false,
-            })),
-          }));
-          return;
-        }
-
-        // The placeholder is already in the list, so the user sees
-        // "正在思考…" while the vision model processes each image.
-
-        // Compress images and call vision model to describe each.
-        const descriptions: string[] = [];
-        for (let i = 0; i < images!.length; i++) {
-          const compressed = await compressImage(images![i]);
-          try {
-            const desc = await invoke<string>("describe_image", {
-              request: {
-                providerId: store.visionProviderId,
-                modelKey: store.visionModelKey,
-                imageDataUrl: compressed,
-                prompt: "请详细描述这张图片的内容，包括所有可见的文字、物体、场景和布局。",
-              },
-            });
-            descriptions.push(`[图片${i + 1}]\n${desc}`);
-          } catch {
-            descriptions.push(`[图片${i + 1}]\n（图片描述失败）`);
-          }
-        }
-
-        // Combine descriptions with user text.
-        const imageContext = descriptions.join("\n\n");
-        effectiveText = trimmed
-          ? `${trimmed}\n\n---\n以下是用户上传的图片内容描述：\n\n${imageContext}`
-          : `用户上传了图片，以下是图片内容描述：\n\n${imageContext}`;
-        effectiveImages = undefined; // Don't send images to non-vision model
-      } else if (hasImages && modelSupportsVision) {
-        // Compress images for direct vision send.
-        effectiveImages = await Promise.all(images!.map((img) => compressImage(img)));
+      // Text-only sends stay synchronous until the backend dispatch.
+      const prepared = hasImages
+        ? await prepareTurnMessages([...messages, userMessage], userMessage, selection.model, alive)
+        : buildTurnMessages([...messages, userMessage], userMessage.id, trimmed);
+      if (!prepared || !alive()) {
+        discardTurnWrite(assistantId);
+        return;
       }
-
-      history = [...messages, { ...userMessage, content: effectiveText }]
-        .filter((m) => m.content.length > 0 && m.status !== "error")
-        .slice(-CONTEXT_LIMIT)
-        .map((m) => ({
-          role: m.role,
-          content: m.content,
-          images: m.role === "user" && m.id === userMessage.id ? effectiveImages : undefined,
-        }));
-
-      if (conversationId) reserveTurnWrite(assistantId);
+      history = prepared;
     } catch (err) {
-      // Unexpected failure during preprocessing (image compression, vision
-      // description or conversation creation).  Release the request slot and
-      // surface the error so the UI never stays stuck in the generating state.
-      const message = err instanceof Error ? err.message : String(err);
-      discardTurnWrite(assistantId);
-      set((state) => ({
-        streams: withoutStream(state.streams, requestId),
-        ...patchMessage(state, assistantId, (m) => ({
-          ...m,
-          status: "error" as const,
-          error: message,
-          retryable: true,
-        })),
-      }));
+      if (!alive()) { discardTurnWrite(assistantId); return; }
+      completeTurnWrite(assistantId, false);
+      get().onError(requestId, err instanceof Error ? err.message : String(err), true);
       return;
     }
 
-    try {
-      await invoke<string>("chat_send", {
-        request: {
-          providerId: selection.provider.id,
-          modelKey: selection.model.modelKey,
-          messages: history,
-          systemPrompt,
-          webSearch: webSearch ?? false,
-          enableTools: enableTools ?? false,
-          enableThinking,
-          thinkingEffort,
-          requestId,
-          conversationId: conversationId ?? undefined,
-          approvalSessionId,
-          skillIds: skillIds ?? [],
-        },
-      });
-      // Snapshot the send options so retryLast() can replay the exact same
-      // web-search / agent-tools configuration instead of silently dropping it.
-      set({
-        lastSendOptions: {
-          webSearch: webSearch ?? false,
-          enableTools: enableTools ?? false,
-          enableThinking,
-          thinkingEffort,
-          skillIds: skillIds ?? [],
-        },
-      });
-
-      if (conversationId) {
-        const now = Date.now();
-        const conversation = createdNew
-          ? {
-              id: conversationId,
-              title: (trimmed || "图片对话").slice(0, 32),
-              providerId: selection.provider.id,
-              modelKey: selection.model.modelKey,
-              systemPrompt: null,
-              assistantId: boundAssistantId,
-              pinned: false,
-              createdAt: now,
-              updatedAt: now,
-            }
-          : null;
-        try {
-          await historyApi.beginChatTurn({
-            conversation,
-            userMessage: {
-              id: userMessage.id,
-              conversationId,
-              role: "user",
-              content: userMessage.content,
-              status: "done",
-              attachmentsJson: userMessage.attachments
-                ? JSON.stringify(userMessage.attachments)
-                : null,
-              imagesJson: userMessage.images ? JSON.stringify(userMessage.images) : null,
-              createdAt: now,
-            },
-            assistantMessage: {
-              id: assistantId,
-              conversationId,
-              role: "assistant",
-              content: "",
-              status: "streaming",
-              createdAt: now,
-            },
-            updatedAt: now,
+    // Track the whole setup so import waits for both registration and the
+    // initial history transaction, including any final-write barrier it opens.
+    lifecycle.setupStarted = true;
+    const setup = async () => {
+      try {
+        await invoke<string>("chat_send", {
+          request: {
             providerId: selection.provider.id,
             modelKey: selection.model.modelKey,
-          });
-          completeTurnWrite(assistantId, true);
-          if (createdNew && useChatStore.getState().conversationNonce === initialNonce
-            && useHistoryStore.getState().activeId === null) {
-            useHistoryStore.getState().setActive(conversationId);
-          }
-          void useHistoryStore.getState().refreshList();
-        } catch (err) {
-          completeTurnWrite(assistantId, false);
-          console.error("保存聊天轮次失败:", err);
+            messages: history,
+            systemPrompt,
+            webSearch: webSearch ?? false,
+            enableTools: enableTools ?? false,
+            enableThinking,
+            thinkingEffort,
+            requestId,
+            conversationId: conversationId ?? undefined,
+            approvalSessionId,
+            skillIds: skillIds ?? [],
+          },
+        });
+        if (!alive()) {
+          discardTurnWrite(assistantId);
+          await cancelBackend(requestId);
+          return;
         }
+
+        if (conversationId) {
+          const now = Date.now();
+          const conversation = createdNew
+            ? {
+                id: conversationId,
+                title: (trimmed || "图片对话").slice(0, 32),
+                providerId: selection.provider.id,
+                modelKey: selection.model.modelKey,
+                systemPrompt: null,
+                assistantId: boundAssistantId,
+                pinned: false,
+                createdAt: now,
+                updatedAt: now,
+              }
+            : null;
+          try {
+            await historyApi.beginChatTurn({
+              conversation,
+              userMessage: {
+                id: userMessage.id,
+                conversationId,
+                role: "user",
+                content: userMessage.content,
+                status: "done",
+                attachmentsJson: userMessage.attachments
+                  ? JSON.stringify(userMessage.attachments)
+                  : null,
+                imagesJson: userMessage.images ? JSON.stringify(userMessage.images) : null,
+                createdAt: now,
+              },
+              assistantMessage: {
+                id: assistantId,
+                conversationId,
+                role: "assistant",
+                content: "",
+                status: "streaming",
+                createdAt: now,
+              },
+              updatedAt: now,
+              providerId: selection.provider.id,
+              modelKey: selection.model.modelKey,
+            });
+            completeTurnWrite(assistantId, true);
+            set((state) => patchMessage(state, assistantId, (message) => ({ ...message, historyPersisted: true })));
+            if (alive() && createdNew && useChatStore.getState().conversationNonce === initialNonce
+              && useHistoryStore.getState().activeId === null) {
+              useHistoryStore.getState().setActive(conversationId);
+            }
+            if (alive()) void useHistoryStore.getState().refreshList();
+          } catch (err) {
+            completeTurnWrite(assistantId, false);
+            console.error("保存聊天轮次失败:", err);
+          }
+        }
+      } catch (err) {
+        if (!alive()) { discardTurnWrite(assistantId); return; }
+        completeTurnWrite(assistantId, false);
+        get().onError(requestId, err instanceof Error ? err.message : String(err), true);
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      discardTurnWrite(assistantId);
-      set((state) => ({
-        streams: withoutStream(state.streams, requestId),
-        ...patchMessage(state, assistantId, (m) => ({
-          ...m,
-          status: "error" as const,
-          error: message,
-          retryable: true,
-        })),
-      }));
-      if (createdNew) {
-        useHistoryStore.getState().setActive(null);
-      }
-    }
+    };
+    await trackOperation(setup());
   },
 
   sendMulti: async (
@@ -875,7 +931,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     skillIds,
   ) => {
     const trimmed = text.trim();
-    if (!trimmed || targets.length === 0) return;
+    if (!trimmed || targets.length === 0 || get().importingBackup) return;
+    const epoch = dataEpoch;
 
     const { streams, messages, approvalSessionId } = get();
     // Only the displayed conversation is busy-checked (multi-conversation).
@@ -936,6 +993,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messageId: m.id,
         startedAt,
         conversationId,
+        lifecycle: { cancelled: false, setupStarted: true },
       };
     });
 
@@ -960,116 +1018,106 @@ export const useChatStore = create<ChatState>((set, get) => ({
       },
     }));
 
-    try {
-      await invoke<string[]>("chat_send_multi", {
-        request: {
-          targets: resolved.map((sel) => ({
-            providerId: sel.provider.id,
-            modelKey: sel.model.modelKey,
-          })),
-          requestIds,
-          messages: context,
-          systemPrompt,
-          webSearch: webSearch ?? false,
-          enableTools: false,
-          enableThinking,
-          thinkingEffort,
-          conversationId: conversationId ?? undefined,
-          approvalSessionId,
-          skillIds: skillIds ?? [],
-        },
-      });
+    const setup = async () => {
+      try {
+        await invoke<string[]>("chat_send_multi", {
+          request: {
+            targets: resolved.map((sel) => ({
+              providerId: sel.provider.id,
+              modelKey: sel.model.modelKey,
+            })),
+            requestIds,
+            messages: context,
+            systemPrompt,
+            webSearch: webSearch ?? false,
+            enableTools: false,
+            enableThinking,
+            thinkingEffort,
+            conversationId: conversationId ?? undefined,
+            approvalSessionId,
+            skillIds: skillIds ?? [],
+          },
+        });
 
-      if (conversationId) {
-        const now = Date.now();
-        const conversation = createdNew
-          ? {
-              id: conversationId,
-              title: trimmed.slice(0, 32),
+        const cancelled = requestIds.filter((id) => streamEntries[id].lifecycle?.cancelled);
+        await Promise.all(cancelled.map(cancelBackend));
+        if (!operationAllowed(epoch) || cancelled.length === requestIds.length) {
+          assistants.forEach((assistant) => discardTurnWrite(assistant.id));
+          return;
+        }
+        if (conversationId) {
+          const now = Date.now();
+          const conversation = createdNew
+            ? {
+                id: conversationId,
+                title: trimmed.slice(0, 32),
+                providerId: resolved[0].provider.id,
+                modelKey: resolved[0].model.modelKey,
+                systemPrompt: null,
+                assistantId: boundAssistantId,
+                pinned: false,
+                createdAt: now,
+                updatedAt: now,
+              }
+            : null;
+          try {
+            await historyApi.beginChatTurn({
+              conversation,
+              userMessage: {
+                id: userMessage.id,
+                conversationId,
+                role: "user",
+                content: userMessage.content,
+                status: "done",
+                createdAt: now,
+              },
+              assistantMessage: {
+                id: assistants[0].id,
+                conversationId,
+                role: "assistant",
+                content: "",
+                status: "streaming",
+                createdAt: now,
+              },
+              updatedAt: now,
               providerId: resolved[0].provider.id,
               modelKey: resolved[0].model.modelKey,
-              systemPrompt: null,
-              assistantId: boundAssistantId,
-              pinned: false,
-              createdAt: now,
-              updatedAt: now,
-            }
-          : null;
-        try {
-          await historyApi.beginChatTurn({
-            conversation,
-            userMessage: {
-              id: userMessage.id,
-              conversationId,
-              role: "user",
-              content: userMessage.content,
-              status: "done",
-              createdAt: now,
-            },
-            assistantMessage: {
-              id: assistants[0].id,
-              conversationId,
-              role: "assistant",
-              content: "",
-              status: "streaming",
-              createdAt: now,
-            },
-            updatedAt: now,
-            providerId: resolved[0].provider.id,
-            modelKey: resolved[0].model.modelKey,
-          });
-          completeTurnWrite(assistants[0].id, true);
-          // Every extra column is persisted too, so reopening the
-          // conversation restores the whole comparison.
-          for (const extra of assistants.slice(1)) {
-            await historyApi.saveMessage({
-              id: extra.id,
-              conversationId,
-              role: "assistant",
-              content: "",
-              status: "streaming",
-              modelName: extra.modelName ?? null,
-              createdAt: now,
             });
-            completeTurnWrite(extra.id, true);
+            completeTurnWrite(assistants[0].id, true);
+            // Every extra column is persisted too, so reopening the
+            // conversation restores the whole comparison.
+            for (const extra of assistants.slice(1)) {
+              await historyApi.saveMessage({
+                id: extra.id,
+                conversationId,
+                role: "assistant",
+                content: "",
+                status: "streaming",
+                modelName: extra.modelName ?? null,
+                createdAt: now,
+              });
+              completeTurnWrite(extra.id, true);
+            }
+            if (operationAllowed(epoch) && createdNew && useChatStore.getState().conversationNonce === initialNonce
+              && useHistoryStore.getState().activeId === null) {
+              useHistoryStore.getState().setActive(conversationId);
+            }
+            if (operationAllowed(epoch)) void useHistoryStore.getState().refreshList();
+          } catch (err) {
+            completeTurnWrite(assistants[0].id, false);
+            assistants.slice(1).forEach((assistant) => completeTurnWrite(assistant.id, false));
+            console.error("保存对比轮次失败:", err);
           }
-          if (createdNew && useChatStore.getState().conversationNonce === initialNonce
-            && useHistoryStore.getState().activeId === null) {
-            useHistoryStore.getState().setActive(conversationId);
-          }
-          void useHistoryStore.getState().refreshList();
-        } catch (err) {
-          completeTurnWrite(assistants[0].id, false);
-          assistants.slice(1).forEach((assistant) => completeTurnWrite(assistant.id, false));
-          console.error("保存对比轮次失败:", err);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        assistants.forEach((assistant) => discardTurnWrite(assistant.id));
+        for (const id of requestIds) {
+          if (!streamEntries[id].lifecycle?.cancelled && operationAllowed(epoch)) get().onError(id, message, true);
         }
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      assistants.forEach((assistant) => discardTurnWrite(assistant.id));
-      const failedIds = new Set(assistants.map((a) => a.id));
-      set((state) => {
-        // Release only this turn's streams; other conversations keep running.
-        const streams = { ...state.streams };
-        for (const id of requestIds) delete streams[id];
-        let messages = state.messages;
-        let backgroundMessages = state.backgroundMessages;
-        for (const messageId of failedIds) {
-          const patch = patchMessage({ messages, backgroundMessages }, messageId, (m) => ({
-            ...m,
-            status: "error" as const,
-            error: message,
-            retryable: true,
-          }));
-          if (patch.messages) messages = patch.messages;
-          if (patch.backgroundMessages) backgroundMessages = patch.backgroundMessages;
-        }
-        return { streams, messages, backgroundMessages };
-      });
-      if (createdNew) {
-        useHistoryStore.getState().setActive(null);
-      }
-    }
+    };
+    await trackOperation(setup());
   },
 
   appendDelta: (requestId, text) => {
@@ -1194,6 +1242,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const stream = get().streams[requestId];
     if (!stream) return;
     const status = reason === "cancelled" ? "cancelled" : "done";
+    if (status === "cancelled" && stream.lifecycle) stream.lifecycle.cancelled = true;
     const durationMs = Date.now() - stream.startedAt;
     const activeConvId = useHistoryStore.getState().activeId;
     // A generation that finishes while the user reads another conversation
@@ -1245,7 +1294,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   stopStream: (requestId) => {
     const stream = get().streams[requestId];
     if (!stream) return;
-    void invoke("chat_cancel", { requestId }).catch(() => undefined);
+    if (stream.lifecycle) stream.lifecycle.cancelled = true;
+    void cancelBackend(requestId);
 
     const durationMs = Date.now() - stream.startedAt;
     set((state) => ({
@@ -1254,7 +1304,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         syncActiveVersion({ ...m, status: "cancelled", durationMs }),
       ),
     }));
-    persistAssistantFinal(stream, "cancelled");
+    if (stream.lifecycle && !stream.lifecycle.setupStarted) {
+      discardTurnWrite(stream.messageId);
+    } else {
+      persistAssistantFinal(stream, "cancelled");
+    }
   },
 
   stop: () => {
@@ -1267,35 +1321,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     );
     if (entries.length === 0) return;
 
-    // Tell the backend to cancel those requests.
-    for (const [requestId] of entries) {
-      void invoke("chat_cancel", { requestId }).catch(() => undefined);
-    }
-
-    // Optimistically mark every column as cancelled immediately so the UI
-    // does not appear stuck if a stream is blocked on a slow read.
-    const now = Date.now();
-    const finished = new Map(entries.map(([, s]) => [s.messageId, now - s.startedAt]));
-    set((state) => ({
-      streams: Object.fromEntries(
-        Object.entries(state.streams).filter(([, stream]) => !finished.has(stream.messageId)),
-      ),
-      messages: state.messages.map((m) =>
-        finished.has(m.id)
-          ? syncActiveVersion({
-              ...m,
-              status: "cancelled" as const,
-              durationMs: finished.get(m.id),
-            })
-          : m,
-      ),
-    }));
-    for (const [, stream] of entries) {
-      persistAssistantFinal(stream, "cancelled");
-    }
+    for (const [requestId] of entries) get().stopStream(requestId);
   },
 
   retryLast: (opts) => {
+    if (get().importingBackup) return;
     const { messages, streams, lastSendOptions } = get();
     if (Object.keys(streams).length > 0) return;
 
@@ -1341,12 +1371,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       enableTools,
       base.enableThinking,
       base.thinkingEffort,
-      undefined,
+      lastUser.attachments,
       base.skillIds,
     );
   },
 
   editMessage: async (messageId, content) => {
+    if (get().importingBackup) return;
     const { messages, streams } = get();
     if (Object.keys(streams).length > 0) return;
     const index = messages.findIndex((m) => m.id === messageId);
@@ -1356,10 +1387,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!trimmed) return;
 
     const history = useHistoryStore.getState();
+    const epoch = dataEpoch;
+    const navigationScope = get().approvalSessionId;
     let updated: Message;
     if (history.historyEnabled && history.activeId) {
       try {
-        const row = await historyApi.editMessage(messageId, trimmed);
+        const row = await trackOperation(historyApi.editMessage(messageId, trimmed));
+        if (!operationAllowed(epoch) || get().approvalSessionId !== navigationScope) return;
         updated = applyStoredRow(target, row);
       } catch (err) {
         console.error("编辑消息失败:", err);
@@ -1388,131 +1422,115 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   regenerate: async (messageId, opts) => {
-    const { messages, streams, lastSendOptions } = get();
+    if (get().importingBackup) return;
+    const { messages, streams, lastSendOptions, approvalSessionId } = get();
     if (Object.keys(streams).length > 0) return;
     const index = messages.findIndex((m) => m.id === messageId);
-    if (index < 0) return;
     const target = messages[index];
-    if (target.role !== "assistant") return;
-
+    if (!target || target.role !== "assistant") return;
+    const preceding = messages.slice(0, index);
+    const user = [...preceding].reverse().find((message) => message.role === "user");
+    if (!user) return;
     const activeConversationId = useHistoryStore.getState().activeId;
     const { selection, systemPrompt } = resolveTurnContext(activeConversationId);
     if (!selection || !selection.provider.hasApiKey) {
       useWindowStore.getState().openSettings();
       return;
     }
+    const epoch = dataEpoch;
+    const lifecycle = { cancelled: false, setupStarted: false };
+    const alive = () => !lifecycle.cancelled && operationAllowed(epoch);
     const modelLabel = selection.model.displayName || selection.model.modelKey;
-    await finalWrites.get(messageId);
-    if (useHistoryStore.getState().activeId !== activeConversationId
-      || !get().messages.some((m) => m.id === messageId)) return;
-
-    // Archive the current answer so the version switcher can reach it again.
-    const history = useHistoryStore.getState();
-    let archived: Message;
-    if (history.historyEnabled && history.activeId) {
-      try {
-        const row = await historyApi.startMessageVersion(messageId);
-        // The fresh attempt starts clean: stale token counters from the
-        // archived answer must not leak into the regenerated one.
-        archived = { ...applyStoredRow(target, row), modelName: modelLabel, usage: undefined };
-      } catch (err) {
-        console.error("归档消息版本失败:", err);
+    const requestId = `req-${Date.now().toString(36)}-${(seq++).toString(36)}`;
+    // Reserve before the first await: stop and import must see pending setup.
+    set((state) => ({ streams: { ...state.streams, [requestId]: {
+      messageId, startedAt: Date.now(), conversationId: activeConversationId, lifecycle,
+    } } }));
+    try {
+      await finalWrites.get(messageId);
+      if (!alive()) return;
+      if (get().approvalSessionId !== approvalSessionId) {
+        get().stopStream(requestId);
         return;
       }
-    } else {
-      const { versions, activeVersion } = appendVersionLocally(target, {
-        content: "",
-        modelName: modelLabel,
-        status: "streaming",
-        createdAt: Date.now(),
-      });
-      archived = {
-        ...target,
-        content: "",
-        reasoning: undefined,
-        durationMs: undefined,
-        error: undefined,
-        usage: undefined,
-        status: "streaming",
-        modelName: modelLabel,
-        versions,
-        activeVersion,
+      // The initial turn may have become persistent while its final write was
+      // pending. Never archive/spread the pre-await placeholder snapshot.
+      const target = get().messages.find((message) => message.id === messageId);
+      if (!target || target.role !== "assistant") {
+        get().stopStream(requestId);
+        return;
+      }
+      const history = useHistoryStore.getState();
+      const conversationId = history.historyEnabled && target.historyPersisted !== false
+        ? history.activeId : null;
+      set((state) => ({ streams: { ...state.streams, [requestId]: {
+        ...state.streams[requestId], conversationId: history.activeId,
+      } } }));
+      let archived: Message;
+      if (conversationId) {
+        reserveTurnWrite(messageId);
+        lifecycle.setupStarted = true;
+        try {
+          const row = await trackOperation(historyApi.startMessageVersion(messageId));
+          completeTurnWrite(messageId, true);
+          if (!alive()) return;
+          archived = { ...applyStoredRow(target, row), modelName: modelLabel, usage: undefined };
+        } catch (err) {
+          completeTurnWrite(messageId, false);
+          throw err;
+        }
+      } else {
+        const { versions, activeVersion } = appendVersionLocally(target, {
+          content: "", modelName: modelLabel, status: "streaming", createdAt: Date.now(),
+        });
+        archived = { ...target, content: "", reasoning: undefined, durationMs: undefined,
+          error: undefined, usage: undefined, status: "streaming", modelName: modelLabel,
+          versions, activeVersion };
+      }
+      set((state) => patchMessage(state, messageId, () => archived));
+      const context = user.images?.length
+        ? await prepareTurnMessages(preceding, user, selection.model, alive)
+        : buildTurnMessages(preceding, user.id, user.content);
+      if (!context || !alive()) return;
+      const base = lastSendOptions ?? {
+        webSearch: false, enableTools: false, enableThinking: true,
+        thinkingEffort: "medium" as ThinkingEffort, skillIds: [],
       };
-    }
-
-    // Context is everything before the regenerated reply.
-    const base = lastSendOptions ?? {
-      webSearch: false,
-      enableTools: false,
-      enableThinking: true,
-      thinkingEffort: "medium" as ThinkingEffort,
-      skillIds: [] as string[],
-    };
-    const context = messages
-      .slice(0, index)
-      .filter((m) => m.content.length > 0 && m.status !== "error")
-      .slice(-CONTEXT_LIMIT)
-      .map((m) => ({ role: m.role, content: m.content }));
-
-    // In-place: the target message is already in the list, so the stream just
-    // fills it where it sits.
-    const requestId = `req-${Date.now().toString(36)}-${(seq++).toString(36)}`;
-    set((state) => ({
-      messages: state.messages.map((m) => (m.id === messageId ? archived : m)),
-      streams: {
-        ...state.streams,
-        [requestId]: {
-          messageId,
-          startedAt: Date.now(),
-          conversationId: useHistoryStore.getState().activeId,
-        },
-      },
-    }));
-
-    try {
-      const activeId = useHistoryStore.getState().activeId;
-      await invoke<string>("chat_send", {
-        request: {
-          providerId: selection.provider.id,
-          modelKey: selection.model.modelKey,
-          messages: context,
-          systemPrompt,
-          webSearch: base.webSearch,
+      lifecycle.setupStarted = true;
+      await trackOperation((async () => {
+        await invoke<string>("chat_send", { request: {
+          providerId: selection.provider.id, modelKey: selection.model.modelKey,
+          messages: context, systemPrompt, webSearch: base.webSearch,
           enableTools: opts?.disableTools ? false : base.enableTools,
-          enableThinking: base.enableThinking,
-          thinkingEffort: base.thinkingEffort,
-          requestId,
-          conversationId: activeId ?? undefined,
-          approvalSessionId: get().approvalSessionId,
-          skillIds: base.skillIds,
-        },
-      });
+          enableThinking: base.enableThinking, thinkingEffort: base.thinkingEffort,
+          requestId, conversationId: conversationId ?? undefined,
+          approvalSessionId, skillIds: base.skillIds,
+        } });
+        if (!alive()) await cancelBackend(requestId);
+      })());
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      set((state) => ({
-        streams: withoutStream(state.streams, requestId),
-        messages: state.messages.map((m) =>
-          m.id === messageId
-            ? syncActiveVersion({ ...m, status: "error", error: message, retryable: true })
-            : m,
-        ),
-      }));
-      persistAssistantFinal({ messageId, startedAt: Date.now(), conversationId: activeConversationId }, "error");
+      if (!alive()) return;
+      get().onError(requestId, err instanceof Error ? err.message : String(err), true);
     }
   },
 
   switchMessageVersion: async (messageId, index) => {
+    if (get().importingBackup) return;
     const { messages, streams } = get();
     if (Object.keys(streams).length > 0) return;
-    const target = messages.find((m) => m.id === messageId);
-    if (!target) return;
+    if (!messages.some((m) => m.id === messageId)) return;
 
-    const history = useHistoryStore.getState();
+    const epoch = dataEpoch;
+    const navigationScope = get().approvalSessionId;
     await finalWrites.get(messageId);
-    if (history.activeId !== useHistoryStore.getState().activeId) return;
-    if (history.historyEnabled && history.activeId) {
+    if (!operationAllowed(epoch) || get().approvalSessionId !== navigationScope) return;
+    const target = get().messages.find((message) => message.id === messageId);
+    if (!target) return;
+    const history = useHistoryStore.getState();
+    if (history.historyEnabled && history.activeId && target.historyPersisted !== false) {
       try {
-        const row = await historyApi.activateMessageVersion(messageId, index);
+        const row = await trackOperation(historyApi.activateMessageVersion(messageId, index));
+        if (!operationAllowed(epoch) || get().approvalSessionId !== navigationScope) return;
         set((state) => ({
           messages: state.messages.map((m) =>
             m.id === messageId ? applyStoredRow(m, row) : m,
@@ -1524,7 +1542,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
-    // Local-only switch (history recording disabled).
+    // Local-only switch: recording is disabled or this retry has no DB row.
     const versions = target.versions;
     if (!versions || index < 0 || index >= versions.length) return;
     const version = versions[index];
@@ -1554,6 +1572,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
    * useful.  Nothing is branched while a generation is running.
    */
   branchFrom: async (messageId: string) => {
+    if (get().importingBackup) return;
     const { messages, streams, conversationNonce } = get();
     if (Object.keys(streams).length > 0) return;
     const index = messages.findIndex((m) => m.id === messageId);
@@ -1569,7 +1588,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const navigationScope = get().approvalSessionId;
     try {
-      const detail = await historyApi.branchConversation(sourceId, messageId);
+      const detail = await trackOperation(historyApi.branchConversation(sourceId, messageId));
       // A navigation or reload while the backend worked invalidates this branch.
       if (get().approvalSessionId !== navigationScope) return;
       if (visibleConversationId(get(), useHistoryStore.getState().activeId) !== sourceId) return;
@@ -1598,13 +1617,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearConversation: () => {
+    if (get().importingBackup) return;
     const { streams, backgroundMessages, conversationNonce } = get();
     const currentId = visibleConversationId(get(), useHistoryStore.getState().activeId);
     // Only this conversation's generations are cancelled; runs in other
     // conversations are left alone (multi-conversation support).
     for (const [requestId, stream] of Object.entries(streams)) {
       if (stream.conversationId === currentId) {
-        void invoke("chat_cancel", { requestId }).catch(() => undefined);
+        get().stopStream(requestId);
       }
     }
     const { [currentId ?? ""]: _droppedSnapshot, ...restBackground } = backgroundMessages;
@@ -1623,6 +1643,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   loadConversation: async (id) => {
+    if (get().importingBackup) return;
     const currentId = useHistoryStore.getState().activeId;
     if (currentId === id) return;
     const navigationScope = get().approvalSessionId;
@@ -1677,6 +1698,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setConversationModel: async (providerId, modelKey) => {
+    if (get().importingBackup) return;
     const activeId = useHistoryStore.getState().activeId;
     if (!activeId) {
       // No conversation yet: remember the choice for the conversation the
@@ -1684,11 +1706,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ draftSelection: { providerId, modelKey } });
       return;
     }
+    const epoch = dataEpoch;
     try {
-      await historyApi.setConversationModel(activeId, providerId, modelKey);
+      await trackOperation(historyApi.setConversationModel(activeId, providerId, modelKey));
     } catch (err) {
       console.error("更新会话模型失败:", err);
     }
+    if (!operationAllowed(epoch)) return;
     useHistoryStore.setState((state) => ({
       conversations: state.conversations.map((c) =>
         c.id === activeId ? { ...c, providerId, modelKey } : c,
@@ -1704,6 +1728,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   startNewConversation: () => {
+    if (get().importingBackup) return;
     const { messages, backgroundMessages, conversationNonce } = get();
     const currentId = visibleConversationId(get(), useHistoryStore.getState().activeId);
     const patch: Partial<ChatState> = {

@@ -7,6 +7,7 @@ import { useChatStore } from "../stores/chat-store";
 export type { Conversation } from "./history-api";
 
 const HISTORY_ENABLED_KEY = "historyEnabled";
+let listRevision = 0;
 
 interface HistoryState {
   loaded: boolean;
@@ -38,19 +39,27 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
   activeId: null,
 
   load: async () => {
+    const revision = ++listRevision;
     const enabled = (await uiPrefsStore.get<boolean | null>(HISTORY_ENABLED_KEY)) ?? true;
+    if (revision !== listRevision) return;
     set({ historyEnabled: enabled });
     if (enabled) {
       const conversations = await api.listConversations();
+      if (revision !== listRevision) return;
       set({ conversations: sortConversations(conversations) });
     }
     set({ loaded: true });
   },
 
   refreshList: async () => {
-    if (!get().historyEnabled) return;
+    const revision = ++listRevision;
+    if (!get().historyEnabled) {
+      set({ conversations: [] });
+      return;
+    }
     const conversations = await api.listConversations();
-    set({ conversations: sortConversations(conversations) });
+    // An older pre-import refresh must not replace the post-import list.
+    if (revision === listRevision) set({ conversations: sortConversations(conversations) });
   },
 
   setActive: (id) => set({ activeId: id }),

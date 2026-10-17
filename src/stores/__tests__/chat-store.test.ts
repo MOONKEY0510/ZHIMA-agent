@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { useChatStore } from "../chat-store";
 import { useProvidersStore } from "../providers-store";
@@ -107,6 +107,407 @@ beforeEach(() => {
   resetStores();
   vi.clearAllMocks();
   mockedInvoke.mockResolvedValue(undefined);
+});
+
+afterEach(() => vi.unstubAllGlobals());
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+const imageUrl = "data:image/png;base64,aW1hZ2U=";
+function mockImages() {
+  const pending: Array<{ onerror: () => void }> = [];
+  vi.stubGlobal("Image", class {
+    onerror = () => {};
+    set src(_value: string) { pending.push(this); }
+  });
+  return pending;
+}
+function seedVisionModel() {
+  useProvidersStore.setState({ providers: [{ ...seededProvider, models: [
+    { ...seededProvider.models[0], supportsVision: true },
+  ] }] });
+}
+const importedConversation: historyApi.Conversation = {
+  id: "c1", title: "导入会话", providerId: "p1", modelKey: "m1",
+  systemPrompt: null, assistantId: null, pinned: false, createdAt: 1, updatedAt: 2,
+};
+function seedImport() {
+  useHistoryStore.setState({ activeId: "c1", conversations: [importedConversation] });
+  useChatStore.setState({
+    messages: [{ id: "a1", role: "assistant", content: "旧数据", status: "done" }],
+    backgroundMessages: { c2: [{ id: "a2", role: "assistant", content: "旧后台", status: "done" }] },
+    unreadDone: { c2: true },
+  });
+  vi.mocked(historyApi.listConversations).mockResolvedValue([importedConversation]);
+  vi.mocked(historyApi.getConversation).mockResolvedValue({
+    conversation: importedConversation,
+    messages: [storedRow({ id: "a1", role: "assistant", content: "导入数据" })],
+  });
+}
+
+describe("version persistence review regressions", () => {
+  it("rechecks persistence after a fast finish waits for initial history", async () => {
+    useHistoryStore.setState({ activeId: "c1", conversations: [importedConversation] });
+    const initial = deferred<void>();
+    vi.mocked(historyApi.beginChatTurn).mockImplementationOnce(() => initial.promise);
+    const sending = useChatStore.getState().send("问题");
+    await vi.waitFor(() => expect(historyApi.beginChatTurn).toHaveBeenCalled());
+    const rid = Object.keys(useChatStore.getState().streams)[0];
+    const assistantId = useChatStore.getState().messages[1].id;
+    useChatStore.getState().appendDelta(rid, "原回答");
+    useChatStore.getState().onFinish(rid);
+    expect(useChatStore.getState().messages[1].historyPersisted).toBe(false);
+    vi.mocked(historyApi.startMessageVersion).mockResolvedValueOnce(storedRow({
+      id: assistantId, role: "assistant", status: "streaming",
+      versionsJson: JSON.stringify([
+        { content: "原回答", status: "done", createdAt: 1 },
+        { content: "", status: "streaming", createdAt: 2 },
+      ]), activeVersion: 1,
+    }));
+    const regenerating = useChatStore.getState().regenerate(assistantId);
+    expect(historyApi.startMessageVersion).not.toHaveBeenCalled();
+    initial.resolve();
+    await Promise.all([sending, regenerating]);
+    expect(historyApi.startMessageVersion).toHaveBeenCalledWith(assistantId);
+    expect(useChatStore.getState().messages[1].historyPersisted).toBe(true);
+    const retryId = Object.keys(useChatStore.getState().streams)[0];
+    useChatStore.getState().appendDelta(retryId, "新回答");
+    useChatStore.getState().onFinish(retryId);
+    await vi.waitFor(() => expect(historyApi.saveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: assistantId, conversationId: "c1", content: "新回答", status: "done" }),
+    ));
+  });
+
+  it("switches an unpersisted retry version locally inside a saved conversation", async () => {
+    useHistoryStore.setState({ activeId: "c1", conversations: [importedConversation] });
+    useChatStore.setState({ messages: [{
+      id: "local-answer", role: "assistant", content: "新回答", status: "done", historyPersisted: false,
+      versions: [
+        { content: "原回答", status: "done", createdAt: 1 },
+        { content: "新回答", status: "done", createdAt: 2 },
+      ], activeVersion: 1,
+    }] });
+    await useChatStore.getState().switchMessageVersion("local-answer", 0);
+    expect(historyApi.activateMessageVersion).not.toHaveBeenCalled();
+    expect(useChatStore.getState().messages[0]).toMatchObject({
+      content: "原回答", activeVersion: 0, historyPersisted: false,
+    });
+  });
+});
+
+describe("cancellation and image replay regressions", () => {
+  it("does not launch chat_send after stop during image compression", async () => {
+    seedVisionModel();
+    const images = mockImages();
+    const sending = useChatStore.getState().send("图片", [imageUrl]);
+    useChatStore.getState().stop();
+    images[0].onerror();
+    await sending;
+    expect(mockedInvoke).not.toHaveBeenCalledWith("chat_send", expect.anything());
+    expect(historyApi.beginChatTurn).not.toHaveBeenCalled();
+    expect(historyApi.saveMessage).not.toHaveBeenCalled();
+    expect(useChatStore.getState().messages[1].status).toBe("cancelled");
+  });
+
+  it("ignores a compression exception that arrives after cancellation", async () => {
+    seedVisionModel();
+    let fail!: () => void;
+    vi.stubGlobal("Image", class {
+      onload = () => {};
+      get width(): number { throw new Error("decode failed"); }
+      set src(_value: string) { fail = () => this.onload(); }
+    });
+    const sending = useChatStore.getState().send("图片", [imageUrl]);
+    useChatStore.getState().stop();
+    fail();
+    await sending;
+    expect(useChatStore.getState().messages[1].status).toBe("cancelled");
+    expect(mockedInvoke).not.toHaveBeenCalledWith("chat_send", expect.anything());
+  });
+
+  it("does not launch the main request after stopping a vision description", async () => {
+    useProvidersStore.setState({ visionProviderId: "p1", visionModelKey: "vision" });
+    const images = mockImages();
+    const description = deferred<string>();
+    mockedInvoke.mockImplementation((command) => command === "describe_image" ? description.promise : Promise.resolve(undefined));
+    const sending = useChatStore.getState().send("图片", [imageUrl, imageUrl]);
+    images[0].onerror();
+    await vi.waitFor(() => expect(mockedInvoke).toHaveBeenCalledWith("describe_image", expect.anything()));
+    useChatStore.getState().stop();
+    description.reject(new Error("描述失败"));
+    await sending;
+    expect(images).toHaveLength(1);
+    expect(mockedInvoke).not.toHaveBeenCalledWith("chat_send", expect.anything());
+    expect(useChatStore.getState().messages[1].status).toBe("cancelled");
+  });
+
+  it("keeps cancelled state when an unregistered request rejects late", async () => {
+    const registration = deferred<unknown>();
+    mockedInvoke.mockImplementation((command) => command === "chat_send" ? registration.promise : Promise.resolve(undefined));
+    const sending = useChatStore.getState().send("问题");
+    useChatStore.getState().stop();
+    registration.reject(new Error("late failure"));
+    await sending;
+    expect(useChatStore.getState().messages[1].status).toBe("cancelled");
+  });
+
+  it("cancels again after registration and does not initialize stopped history", async () => {
+    const registration = deferred<unknown>();
+    mockedInvoke.mockImplementation((command) => command === "chat_send" ? registration.promise : Promise.resolve(undefined));
+    const sending = useChatStore.getState().send("问题");
+    useChatStore.getState().stop();
+    registration.resolve(undefined);
+    await sending;
+    expect(mockedInvoke.mock.calls.filter(([command]) => command === "chat_cancel")).toHaveLength(2);
+    expect(historyApi.beginChatTurn).not.toHaveBeenCalled();
+  });
+
+  it("does not replace cancellation when initial history rejects", async () => {
+    const initial = deferred<void>();
+    vi.mocked(historyApi.beginChatTurn).mockImplementationOnce(() => initial.promise);
+    const sending = useChatStore.getState().send("问题");
+    await vi.waitFor(() => expect(historyApi.beginChatTurn).toHaveBeenCalled());
+    useChatStore.getState().stop();
+    initial.reject(new Error("history unavailable"));
+    await sending;
+    expect(useChatStore.getState().messages[1].status).toBe("cancelled");
+    expect(useHistoryStore.getState().activeId).toBeNull();
+  });
+
+  it("does not create a new stream after stopping version initialization", async () => {
+    seedImport();
+    useChatStore.setState({ messages: [
+      { id: "u1", role: "user", content: "问题", status: "done" },
+      { id: "a1", role: "assistant", content: "旧回答", status: "done" },
+    ] });
+    const version = deferred<historyApi.StoredMessage>();
+    vi.mocked(historyApi.startMessageVersion).mockImplementationOnce(() => version.promise);
+    const regenerating = useChatStore.getState().regenerate("a1");
+    await vi.waitFor(() => expect(historyApi.startMessageVersion).toHaveBeenCalled());
+    useChatStore.getState().stop();
+    version.resolve(storedRow({ id: "a1", role: "assistant", status: "streaming" }));
+    await regenerating;
+    expect(mockedInvoke).not.toHaveBeenCalledWith("chat_send", expect.anything());
+    expect(useChatStore.getState().streams).toEqual({});
+    expect(useChatStore.getState().messages[1].status).toBe("cancelled");
+  });
+
+  it("regenerates an image prompt without history recording", async () => {
+    useHistoryStore.setState({ historyEnabled: false });
+    seedVisionModel();
+    const images = mockImages();
+    useChatStore.setState({ messages: [
+      { id: "u1", role: "user", content: "图片问题", images: [imageUrl], status: "done" },
+      { id: "a1", role: "assistant", content: "旧回答", status: "done" },
+    ] });
+    const regenerating = useChatStore.getState().regenerate("a1");
+    await vi.waitFor(() => expect(images).toHaveLength(1));
+    images[0].onerror();
+    await regenerating;
+    expect(mockedInvoke).toHaveBeenCalledWith("chat_send", expect.objectContaining({ request: expect.objectContaining({
+      messages: [{ role: "user", content: "图片问题", images: [imageUrl] }],
+    }) }));
+    expect(historyApi.startMessageVersion).not.toHaveBeenCalled();
+  });
+
+  it("retries an image preprocessing failure in an existing chat without archiving a missing DB row", async () => {
+    useHistoryStore.setState({ activeId: "c1", conversations: [importedConversation] });
+    await useChatStore.getState().send("看图", [imageUrl], true, true);
+    const assistant = useChatStore.getState().messages[1];
+    expect(assistant.status).toBe("error");
+    expect(historyApi.beginChatTurn).not.toHaveBeenCalled();
+    seedVisionModel();
+    const images = mockImages();
+    const regenerating = useChatStore.getState().regenerate(assistant.id);
+    await vi.waitFor(() => expect(images).toHaveLength(1));
+    images[0].onerror();
+    await regenerating;
+    expect(historyApi.startMessageVersion).not.toHaveBeenCalled();
+    expect(mockedInvoke).toHaveBeenCalledWith("chat_send", expect.objectContaining({ request: expect.objectContaining({
+      messages: [{ role: "user", content: "看图", images: [imageUrl] }], webSearch: true, enableTools: true,
+    }) }));
+  });
+
+  it("replays persisted image payloads through regenerate", async () => {
+    seedVisionModel();
+    const images = mockImages();
+    vi.mocked(historyApi.getConversation).mockResolvedValue({
+      conversation: importedConversation,
+      messages: [
+        storedRow({ id: "u1", role: "user", content: "已保存图片", imagesJson: JSON.stringify([imageUrl]) }),
+        storedRow({ id: "a1", role: "assistant", content: "原回答" }),
+      ],
+    });
+    vi.mocked(historyApi.startMessageVersion).mockResolvedValue(storedRow({ id: "a1", role: "assistant", status: "streaming" }));
+    await useChatStore.getState().loadConversation("c1");
+    const regenerating = useChatStore.getState().regenerate("a1");
+    await vi.waitFor(() => expect(images).toHaveLength(1));
+    images[0].onerror();
+    await regenerating;
+    expect(mockedInvoke).toHaveBeenCalledWith("chat_send", expect.objectContaining({ request: expect.objectContaining({
+      messages: [{ role: "user", content: "已保存图片", images: [imageUrl] }],
+    }) }));
+  });
+
+  it("uses vision fallback on retry without sending raw images to a text model", async () => {
+    useHistoryStore.setState({ historyEnabled: false });
+    useProvidersStore.setState({ visionProviderId: "p1", visionModelKey: "vision" });
+    const images = mockImages();
+    mockedInvoke.mockResolvedValue("图片中有一只猫");
+    useChatStore.setState({ messages: [
+      { id: "old", role: "user", content: "历史图片", images: [imageUrl], status: "done" },
+      { id: "u1", role: "user", content: "图片问题", images: [imageUrl], status: "done" },
+      { id: "a1", role: "assistant", content: "", status: "error", retryable: true },
+    ] });
+    const regenerating = useChatStore.getState().regenerate("a1", { disableTools: true });
+    await vi.waitFor(() => expect(images).toHaveLength(1));
+    images[0].onerror();
+    await regenerating;
+    const call = mockedInvoke.mock.calls.find(([command]) => command === "chat_send");
+    expect(call?.[1]).toMatchObject({ request: { messages: [
+      { role: "user", content: "历史图片" },
+      { role: "user", content: expect.stringContaining("图片中有一只猫") },
+    ], enableTools: false } });
+    expect(JSON.stringify(call?.[1])).not.toContain(imageUrl);
+  });
+});
+
+describe("backup import coordination regressions", () => {
+  it.each(["replace", "merge"] as const)("invalidates same-ID and background caches on %s", async (strategy) => {
+    seedImport();
+    await useChatStore.getState().importBackup("mock.json", strategy);
+    expect(useHistoryStore.getState().activeId).toBe("c1");
+    expect(useChatStore.getState().messages[0].content).toBe("导入数据");
+    expect(useChatStore.getState().backgroundMessages).toEqual({});
+    expect(useChatStore.getState().unreadDone).toEqual({});
+  });
+
+  it("abandons image preprocessing without blocking import", async () => {
+    seedImport();
+    seedVisionModel();
+    const images = mockImages();
+    const sending = useChatStore.getState().send("图片", [imageUrl]);
+    await useChatStore.getState().importBackup("mock.json", "replace");
+    images[0].onerror();
+    await sending;
+    expect(mockedInvoke).not.toHaveBeenCalledWith("chat_send", expect.anything());
+    expect(useChatStore.getState().messages[0].content).toBe("导入数据");
+  });
+
+  it("waits for pending registration and cancels it again before import", async () => {
+    seedImport();
+    const registration = deferred<unknown>();
+    mockedInvoke.mockImplementation((command) => command === "chat_send" ? registration.promise : Promise.resolve(undefined));
+    const sending = useChatStore.getState().send("问题");
+    const importing = useChatStore.getState().importBackup("mock.json", "replace");
+    await Promise.resolve();
+    expect(mockedInvoke).not.toHaveBeenCalledWith("import_data", expect.anything());
+    registration.resolve(undefined);
+    await Promise.all([sending, importing]);
+    expect(historyApi.beginChatTurn).not.toHaveBeenCalled();
+    const commands = mockedInvoke.mock.calls.map(([command]) => command);
+    expect(commands).toEqual(["chat_send", "chat_cancel", "chat_cancel", "import_data"]);
+  });
+
+  it("drains history initialization and its cancelled final write before import", async () => {
+    seedImport();
+    const initial = deferred<void>();
+    vi.mocked(historyApi.beginChatTurn).mockImplementationOnce(() => initial.promise);
+    const sending = useChatStore.getState().send("问题");
+    await vi.waitFor(() => expect(historyApi.beginChatTurn).toHaveBeenCalled());
+    const importing = useChatStore.getState().importBackup("mock.json", "replace");
+    await Promise.resolve();
+    expect(mockedInvoke).not.toHaveBeenCalledWith("import_data", expect.anything());
+    initial.resolve();
+    await Promise.all([sending, importing]);
+    expect(historyApi.saveMessage).toHaveBeenCalledWith(expect.objectContaining({ status: "cancelled" }));
+    expect(useChatStore.getState().messages[0].content).toBe("导入数据");
+  });
+
+  it("rejects late pre-import list and conversation loads", async () => {
+    seedImport();
+    const oldList = deferred<historyApi.Conversation[]>();
+    const oldDetail = deferred<historyApi.ConversationDetail>();
+    vi.mocked(historyApi.listConversations).mockImplementationOnce(() => oldList.promise);
+    vi.mocked(historyApi.getConversation).mockImplementationOnce(() => oldDetail.promise);
+    const refreshing = useHistoryStore.getState().refreshList();
+    const loading = useChatStore.getState().loadConversation("c3");
+    await useChatStore.getState().importBackup("mock.json", "replace");
+    oldList.resolve([{ ...importedConversation, title: "旧列表" }]);
+    oldDetail.resolve({ conversation: { ...importedConversation, id: "c3" }, messages: [] });
+    await Promise.all([refreshing, loading]);
+    expect(useHistoryStore.getState().conversations[0].title).toBe("导入会话");
+    expect(useHistoryStore.getState().activeId).toBe("c1");
+    expect(useChatStore.getState().messages[0].content).toBe("导入数据");
+  });
+
+  it("clears an active conversation missing after replacement", async () => {
+    seedImport();
+    vi.mocked(historyApi.listConversations).mockResolvedValue([]);
+    await useChatStore.getState().importBackup("mock.json", "replace");
+    expect(useHistoryStore.getState().activeId).toBeNull();
+    expect(useChatStore.getState().messages).toEqual([]);
+  });
+
+  it("cancels background streams as well as the displayed conversation", async () => {
+    seedImport();
+    const rid = await sendAndGetRid("后台运行");
+    useChatStore.getState().startNewConversation();
+    await useChatStore.getState().importBackup("mock.json", "merge");
+    expect(mockedInvoke).toHaveBeenCalledWith("chat_cancel", { requestId: rid });
+    expect(useChatStore.getState().streams).toEqual({});
+    expect(useChatStore.getState().backgroundMessages).toEqual({});
+  });
+
+  it("releases the import lock without clearing local data if import fails", async () => {
+    seedImport();
+    mockedInvoke.mockRejectedValueOnce(new Error("invalid backup"));
+    await expect(useChatStore.getState().importBackup("mock.json", "replace")).rejects.toThrow("invalid backup");
+    expect(useChatStore.getState().importingBackup).toBe(false);
+    expect(useChatStore.getState().messages[0].content).toBe("旧数据");
+  });
+
+  it("drains a pending edit without regenerating or applying its stale row", async () => {
+    seedImport();
+    useChatStore.setState({ messages: [
+      { id: "u1", role: "user", content: "问题", status: "done" },
+      { id: "a1", role: "assistant", content: "回答", status: "done" },
+    ] });
+    const edit = deferred<historyApi.StoredMessage>();
+    vi.mocked(historyApi.editMessage).mockImplementationOnce(() => edit.promise);
+    const editing = useChatStore.getState().editMessage("u1", "新问题");
+    const importing = useChatStore.getState().importBackup("mock.json", "replace");
+    await Promise.resolve();
+    expect(mockedInvoke).not.toHaveBeenCalledWith("import_data", expect.anything());
+    edit.resolve(storedRow({ id: "u1", role: "user", content: "过期编辑" }));
+    await Promise.all([editing, importing]);
+    expect(mockedInvoke).not.toHaveBeenCalledWith("chat_send", expect.anything());
+    expect(useChatStore.getState().messages[0].content).toBe("导入数据");
+  });
+
+  it("cancels all requests and waits for existing saves before importing", async () => {
+    seedImport();
+    const rid = await sendAndGetRid("运行中");
+    const save = deferred<void>();
+    vi.mocked(historyApi.saveMessage).mockImplementationOnce(() => save.promise);
+    const importing = useChatStore.getState().importBackup("mock.json", "replace");
+    await Promise.resolve();
+    expect(mockedInvoke).toHaveBeenCalledWith("chat_cancel", { requestId: rid });
+    expect(mockedInvoke).not.toHaveBeenCalledWith("import_data", expect.anything());
+    await useChatStore.getState().send("不得发送");
+    expect(mockedInvoke.mock.calls.filter(([command]) => command === "chat_send")).toHaveLength(1);
+    save.resolve();
+    await importing;
+    useChatStore.getState().appendDelta(rid, "迟到内容");
+    useChatStore.getState().onFinish(rid);
+    expect(useChatStore.getState().messages[0].content).toBe("导入数据");
+    expect(mockedInvoke).toHaveBeenCalledWith("import_data", { path: "mock.json", strategy: "replace" });
+  });
 });
 
 /** Helper: send a message and return the frontend-generated requestId. */
