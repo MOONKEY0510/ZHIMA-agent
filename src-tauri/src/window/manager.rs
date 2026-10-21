@@ -59,6 +59,26 @@ pub fn toggle(app: &impl Manager<Wry>) {
     }
 }
 
+/// Full-mode hotkey semantics: a hidden window is shown straight in the full
+/// conversation layout; a visible one flips between compact and full mode.
+///
+/// The layout change itself belongs to the renderer (the store owns
+/// `fullMode`, and `App` resizes the window from it), so we only wake the
+/// window when needed and hand over the intent.
+pub fn toggle_full_mode(app: &impl Manager<Wry>) {
+    let Some(window) = main_window(app) else {
+        return;
+    };
+    let visible = window.is_visible().unwrap_or(false);
+    if !visible {
+        show_and_focus(&window);
+        let _ = window.emit("shortcut-full-mode", "expand");
+        return;
+    }
+    let _ = window.set_focus();
+    let _ = window.emit("shortcut-full-mode", "toggle");
+}
+
 /// Hide the window if the exit animation never reports back.  Without this a
 /// busy or crashed renderer would leave an undismissable window on screen.
 fn arm_hide_fallback(window: &WebviewWindow) {

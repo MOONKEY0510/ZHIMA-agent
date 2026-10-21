@@ -34,7 +34,7 @@ function dateGroup(updatedAt: number): string {
  * row shows a spinner while its conversation generates, and a dot once it
  * finished in the background (the dot clears when the row is opened).
  */
-export function HistorySidebar() {
+export function HistorySidebar({ className }: { className?: string }) {
   const conversations = useHistoryStore((s) => s.conversations);
   const activeId = useHistoryStore((s) => s.activeId);
   const remove = useHistoryStore((s) => s.remove);
@@ -226,7 +226,7 @@ export function HistorySidebar() {
     <aside
       className={`cf-print-hide flex shrink-0 flex-col border-r border-line bg-panel-2 transition-all duration-200 ease-out ${
         collapsed ? "w-10 items-center" : "w-64"
-      }`}
+      } ${className ?? ""}`}
     >
       {collapsed ? (
         <div className="flex flex-col items-center gap-2 py-3">

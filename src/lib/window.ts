@@ -75,6 +75,7 @@ export async function syncWindowSize(expanded: boolean, full = false): Promise<v
 
   const target = await resolveSize(expanded, full);
 
+  let from: { width: number; height: number } | null = null;
   try {
     const current = (await win.innerSize()).toLogical(await win.scaleFactor());
     if (
@@ -83,11 +84,12 @@ export async function syncWindowSize(expanded: boolean, full = false): Promise<v
     ) {
       return;
     }
+    from = current;
   } catch {
     // Size read failed; fall through and set it anyway.
   }
 
-  await animateSize(win, target);
+  await animateSize(win, from, target);
 }
 
 async function resolveSize(
@@ -118,33 +120,60 @@ async function resolveSize(
   return { width: WINDOW_WIDTH, height: Math.min(FALLBACK_EXPANDED_HEIGHT, maxHeight) };
 }
 
-/** Height-only changes glide; width changes apply in one go. */
+/**
+ * Glide from the current size to the target through an ease-in-out timeline
+ * of keyframes, applied on a dedicated Rust thread (see the `animate_size`
+ * command).  Width and height animate together so the quick ↔ full-mode
+ * transition reads as one smooth morph instead of a snap-plus-stretch.
+ *
+ * Keyframes are in logical size on the JS side and converted to physical
+ * pixels for the backend, which keeps the thread's work in the same unit the
+ * window API expects.
+ */
 async function animateSize(
   win: ReturnType<typeof getCurrentWindow>,
+  from: { width: number; height: number } | null,
   target: { width: number; height: number },
 ): Promise<void> {
-  const from = (await win.innerSize()).toLogical(await win.scaleFactor());
-  if (Math.abs(from.width - target.width) >= 2) {
+  if (!from) {
     await win.setSize(new LogicalSize(target.width, target.height));
     return;
   }
-  const delta = Math.round(target.height - from.height);
-  if (Math.abs(delta) < 3) return;
-  // Frame-paced with an ease-out curve: one resize request per frame keeps
-  // the motion continuous, and the request is not awaited so IPC latency
-  // cannot stall the animation.
-  const duration = Math.min(240, 100 + Math.abs(delta) * 0.3);
-  const start = performance.now();
-  await new Promise<void>((resolve) => {
-    const step = (now: number) => {
-      const t = Math.min(1, (now - start) / duration);
-      const eased = 1 - Math.pow(1 - t, 3);
-      void win.setSize(
-        new LogicalSize(target.width, Math.round(from.height + delta * eased)),
-      );
-      if (t < 1) requestAnimationFrame(step);
-      else resolve();
-    };
-    requestAnimationFrame(step);
-  });
+
+  const dw = target.width - from.width;
+  const dh = target.height - from.height;
+  if (Math.abs(dw) < 2 && Math.abs(dh) < 3) return;
+
+  let scale = 1;
+  try {
+    scale = await win.scaleFactor();
+  } catch {
+    // Assume 1x if the factor cannot be read.
+  }
+
+  const span = Math.hypot(dw, dh);
+  const duration = Math.round(Math.min(360, Math.max(160, 140 + span * 0.22)));
+  // ~60 fps worth of keyframes; the backend interpolates inside each gap.
+  const steps = Math.max(2, Math.round(duration / 16));
+  const frames: Array<{ width: number; height: number; ms: number }> = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const eased = easeInOutCubic(t);
+    frames.push({
+      width: Math.max(1, Math.round((from.width + dw * eased) * scale)),
+      height: Math.max(1, Math.round((from.height + dh * eased) * scale)),
+      ms: Math.round(t * duration),
+    });
+  }
+
+  try {
+    await invoke("animate_size", { frames });
+  } catch {
+    // Command missing or failed — land on the target instead of being stuck.
+    await win.setSize(new LogicalSize(target.width, target.height));
+  }
+}
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }

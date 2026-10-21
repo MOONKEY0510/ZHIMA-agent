@@ -179,6 +179,10 @@ pub struct ProvidersConfig {
     /// Whether the selected-text hotkey is active (P1-5).
     #[serde(default = "kb_default_auto_inject")]
     pub quick_action_enabled: bool,
+    /// Global chord that switches the window into full conversation mode;
+    /// `None` = the default chord.
+    #[serde(default)]
+    pub full_mode_shortcut: Option<String>,
 }
 
 /// One MCP server launched as a child process (P1-10).
@@ -426,6 +430,7 @@ mod tests {
             mcp_servers: Vec::new(),
             quick_action_shortcut: Some("Alt+Q".into()),
             quick_action_enabled: true,
+            full_mode_shortcut: Some("Alt+M".into()),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: ProvidersConfig = serde_json::from_str(&json).unwrap();

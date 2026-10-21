@@ -189,6 +189,30 @@
   box-shadow: inset 0 0 0 1px var(--cf-border);
 }
 
+/* --- Quick ↔ full conversation mode morph ---------------------------------- */
+/* The sidebar stays mounted across the transition and glides open alongside
+   the window resize (src/lib/window.ts `animate_size`). Timings roughly match
+   the size animation (160–360 ms) so the rail finishes as the window does. */
+.cf-sidebar--hidden {
+  width: 0 !important;
+  min-width: 0 !important;
+  margin-left: -1px;
+  border-right-color: transparent !important;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition:
+    width 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 200ms ease-out,
+    border-color 200ms ease-out;
+}
+.cf-layout-full > aside {
+  transition:
+    width 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 200ms ease-out,
+    border-color 200ms ease-out;
+}
+
 /* While the water is moving: the shell is inert (a half-transparent window must
    not take clicks), and the compositor is told up front which properties are
    about to change so the blur does not cost a relayout every frame.  Both hints

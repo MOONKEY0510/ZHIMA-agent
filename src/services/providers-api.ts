@@ -151,3 +151,12 @@ export function getQuickAction(): Promise<QuickActionView> {
 export function setQuickAction(enabled: boolean, value: string): Promise<QuickActionView> {
   return invoke<QuickActionView>("set_quick_action", { enabled, value });
 }
+
+/** Full-conversation-mode hotkey; an empty string means "unbound". */
+export function getFullModeShortcut(): Promise<string> {
+  return invoke<string>("get_full_mode_shortcut");
+}
+
+export function setFullModeShortcut(value: string): Promise<string> {
+  return invoke<string>("set_full_mode_shortcut", { value });
+}

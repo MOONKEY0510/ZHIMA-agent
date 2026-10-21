@@ -2057,9 +2057,10 @@ function acceleratorKey(code: string): string | null {
 /**
  * Records one accelerator.  `kind` selects which chord is being edited:
  * `wake` = show/hide the window, `quick` = the selected-text hotkey (P1-5),
- * which additionally has an on/off switch.
+ * which additionally has an on/off switch, `full` = switch to the full
+ * conversation layout (unbindable).
  */
-function ShortcutRecorder({ kind = "wake" }: { kind?: "wake" | "quick" }) {
+function ShortcutRecorder({ kind = "wake" }: { kind?: "wake" | "quick" | "full" }) {
   const [current, setCurrent] = useState<string>("");
   const [recording, setRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2074,6 +2075,8 @@ function ShortcutRecorder({ kind = "wake" }: { kind?: "wake" | "quick" }) {
           setEnabled(view.enabled);
         })
         .catch(() => undefined);
+    } else if (kind === "full") {
+      void api.getFullModeShortcut().then(setCurrent).catch(() => undefined);
     } else {
       void api.getShortcut().then(setCurrent).catch(() => undefined);
     }
@@ -2107,7 +2110,11 @@ function ShortcutRecorder({ kind = "wake" }: { kind?: "wake" | "quick" }) {
       const accel = parts.join("+");
       setRecording(false);
       const request =
-        kind === "quick" ? api.setQuickAction(enabled, accel) : api.setShortcut(accel);
+        kind === "quick"
+          ? api.setQuickAction(enabled, accel)
+          : kind === "full"
+            ? api.setFullModeShortcut(accel)
+            : api.setShortcut(accel);
       request
         .then((value) => {
           setCurrent(typeof value === "string" ? value : value.shortcut);
@@ -2135,21 +2142,44 @@ function ShortcutRecorder({ kind = "wake" }: { kind?: "wake" | "quick" }) {
       });
   };
 
+  const clearFullMode = () => {
+    void api
+      .setFullModeShortcut("")
+      .then((value) => {
+        setCurrent(value);
+        setError(null);
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  };
+
+  const fallbackLabel =
+    kind === "quick" ? "Alt+Q" : kind === "full" ? "未绑定" : "Alt+Space";
+
   return (
     <div className="flex w-full flex-col gap-1">
       <div className="flex items-center gap-2">
-        <span className="min-w-24 flex-1 rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-center text-meta text-ink">
-          {recording ? "按下新快捷键…" : current || (kind === "quick" ? "Alt+Q" : "Alt+Space")}
+        <span className="min-w-0 flex-1 truncate rounded-btn border border-line bg-panel-2 px-2.5 py-1.5 text-center text-meta text-ink">
+          {recording ? "按下新快捷键…" : current || fallbackLabel}
         </span>
         <button
           onClick={() => {
             setError(null);
             setRecording(!recording);
           }}
-          className="rounded-btn border border-line px-2.5 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2"
+          className="shrink-0 whitespace-nowrap rounded-btn border border-line px-2.5 py-1.5 text-meta text-ink transition-colors hover:bg-panel-2"
         >
           {recording ? "取消" : "重新录入"}
         </button>
+        {kind === "full" && current && (
+          <button
+            onClick={clearFullMode}
+            title="取消绑定该快捷键"
+            aria-label="取消绑定该快捷键"
+            className="grid shrink-0 place-items-center rounded-btn border border-line p-1.5 text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+          >
+            <X size={13} />
+          </button>
+        )}
       </div>
       {kind === "quick" && (
         <button
@@ -2203,7 +2233,7 @@ function GeneralTab() {
               录入后立即生效并保存；若与系统或其他软件冲突会提示失败。Esc 取消录入。
             </p>
           </div>
-          <div className="flex w-44 shrink-0 flex-col gap-1">
+          <div className="flex w-52 shrink-0 flex-col gap-1">
             <ShortcutRecorder />
           </div>
         </div>
@@ -2216,8 +2246,20 @@ function GeneralTab() {
               解释 / 总结等动作。管理员权限（UAC 提升）的窗口无法取词，这是 Windows 限制。
             </p>
           </div>
-          <div className="flex w-44 shrink-0 flex-col gap-1">
+          <div className="flex w-52 shrink-0 flex-col gap-1">
             <ShortcutRecorder kind="quick" />
+          </div>
+        </div>
+        <div className="cf-form-row items-start">
+          <div className="flex-1">
+            <p className="text-ui font-medium text-ink">完整对话模式快捷键</p>
+            <p className="mt-0.5 text-meta text-ink-2">
+              按此快捷键把小窗口切换为带历史侧栏的完整对话模式，再按一次收回。
+              窗口未显示时会直接以完整模式唤起。
+            </p>
+          </div>
+          <div className="flex w-52 shrink-0 flex-col gap-1">
+            <ShortcutRecorder kind="full" />
           </div>
         </div>
       </SettingsSection>

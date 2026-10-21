@@ -242,6 +242,26 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
+  // Global full-mode hotkey: the backend only reports the intent, the store
+  // owns the layout, and the resize effect above follows it.  `expand` comes
+  // from a window we just woke up (always grow); `toggle` flips.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listen<string>("shortcut-full-mode", (e) => {
+      const store = useWindowStore.getState();
+      if (store.view !== "chat") store.switchToChat();
+      store.setFullMode(e.payload === "expand" ? true : !store.fullMode);
+    }).then((u) => {
+      if (cancelled) u();
+      else unlisten = u;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   // Surface global-shortcut conflicts and other shell notices.
   useEffect(() => {
     const showToast = (message: string) => {
@@ -285,11 +305,16 @@ export default function App() {
         </animated.div>
 
         <animated.div
-          className="relative z-0 flex min-h-0 flex-1"
+          className={`relative z-0 flex min-h-0 flex-1 ${
+            fullMode ? "cf-layout-full" : "cf-layout-quick"
+          }`}
           style={{ transform: tail.y.to((y) => `translateY(${y}px)`) }}
         >
-          {fullMode && view === "chat" && <HistorySidebar />}
-          {fullMode && view === "image" && <ImageHistorySidebar />}
+          {/* Always mounted in chat view; CSS animates the sidebar in and out
+              of the layout so the history rail glides open alongside the
+              window resize instead of popping in afterwards. */}
+          <HistorySidebar className={fullMode && view === "chat" ? undefined : "cf-sidebar--hidden"} />
+          {view === "image" && <ImageHistorySidebar />}
 
           <div className="flex min-w-0 flex-1 flex-col">
             <Suspense fallback={<div className="flex flex-1 items-center justify-center text-meta text-ink-2">正在加载…</div>}>

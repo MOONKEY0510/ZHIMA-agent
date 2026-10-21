@@ -80,3 +80,35 @@ pub fn set_quick_action(
         shortcut: value,
     })
 }
+
+/// Full-conversation-mode hotkey settings.
+#[tauri::command]
+pub fn get_full_mode_shortcut(config: State<'_, ConfigStore>) -> String {
+    config
+        .read(|c| c.full_mode_shortcut.clone())
+        .unwrap_or_else(|| shortcuts::DEFAULT_FULL_MODE_SHORTCUT.to_string())
+}
+
+/// Validate, (re)register and persist the full-mode hotkey.  An empty value
+/// unbinds it (the feature stays reachable from the title bar).
+#[tauri::command]
+pub fn set_full_mode_shortcut(
+    app: AppHandle,
+    config: State<'_, ConfigStore>,
+    value: String,
+) -> Result<String, String> {
+    let value = value.trim().to_string();
+    if !value.is_empty() {
+        // Throws before we touch anything if the accelerator is malformed.
+        shortcuts::parse_shortcut(&value)?;
+        // Throws (and notifies the window) if another program holds the chord.
+        shortcuts::register_full_mode(&app, &value)?;
+    } else {
+        shortcuts::register_full_mode(&app, "")?;
+    }
+    config.update(|c| {
+        c.full_mode_shortcut = Some(value.clone());
+        Ok(())
+    })?;
+    Ok(value)
+}

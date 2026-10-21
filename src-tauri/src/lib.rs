@@ -37,10 +37,12 @@ pub fn run() {
                     if event.state != tauri_plugin_global_shortcut::ShortcutState::Pressed {
                         return;
                     }
-                    // Selected-text key captures the selection; the wake key
-                    // toggles the window (P1-5).
+                    // Selected-text key captures the selection; the full-mode
+                    // key expands the window; the wake key toggles it (P1-5).
                     if window::shortcuts::is_quick_action(app, shortcut) {
                         window::quick_action::trigger(app);
+                    } else if window::shortcuts::is_full_mode(app, shortcut) {
+                        window::manager::toggle_full_mode(app);
                     } else {
                         window::manager::toggle(app);
                     }
@@ -65,6 +67,8 @@ pub fn run() {
             commands::settings::set_shortcut,
             commands::settings::get_quick_action,
             commands::settings::set_quick_action,
+            commands::settings::get_full_mode_shortcut,
+            commands::settings::set_full_mode_shortcut,
             commands::providers::get_providers_state,
             commands::providers::upsert_provider,
             commands::providers::delete_provider,
@@ -131,6 +135,7 @@ pub fn run() {
             commands::tools::read_clipboard_text,
             commands::tools::write_clipboard_text,
             commands::window::finish_hide,
+            commands::window::animate_size,
             commands::history::search_messages,
             commands::history::edit_message,
             commands::history::start_message_version,
