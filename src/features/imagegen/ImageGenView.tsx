@@ -11,11 +11,10 @@ import {
   Star,
   Pencil,
 } from "lucide-react";
-import { generateImage } from "../../services/providers-api";
-import { currentModel, useProvidersStore } from "../../stores/providers-store";
+import { generateImage, type ReferenceImageMode } from "../../services/providers-api";
+import { useProvidersStore } from "../../stores/providers-store";
 import { useImageGenStore } from "../../stores/imagegen-store";
 import { useWindowStore } from "../../stores/window-store";
-import { useChatStore } from "../../stores/chat-store";
 import { Dropdown } from "../../features/settings/ui";
 import type { ImageGeneration } from "../../services/imagegen-api";
 
@@ -31,6 +30,8 @@ const SIZE_OPTIONS = [
 // Do not infer quality/format/background/moderation support from a model name:
 // compatible providers may expose that same name with a different protocol.
 const MAX_REFERENCE_IMAGES = 3;
+const MAX_REFERENCE_IMAGE_BYTES = 10 * 1024 * 1024;
+const REFERENCE_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
 
 function parseSize(value: string): { w: number; h: number } | null {
   const m = /^(\d+)\s*[x×X]\s*(\d+)$/.exec(value.trim());
@@ -54,7 +55,9 @@ function getReferenceImages(item: ImageGeneration): string[] {
   if (!item.referenceImagesJson) return [];
   try {
     const parsed = JSON.parse(item.referenceImagesJson);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string" && /^data:image\/(png|jpeg|webp);base64,.+/.test(value))
+      : [];
   } catch {
     return [];
   }
@@ -82,7 +85,15 @@ export function ImageGenView() {
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState<string>("auto");
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
+  const referenceImagesRef = useRef(referenceImages);
+  referenceImagesRef.current = referenceImages;
   const [generating, setGenerating] = useState(false);
+  const [readingReferences, setReadingReferences] = useState(false);
+  const [referenceImageMode, setReferenceImageMode] = useState<ReferenceImageMode>("edits");
+  const generatingRef = useRef(false);
+  const readingReferencesRef = useRef(false);
+  // Ignore reads belonging to a previous new/history draft.
+  const draftEpoch = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ImageGeneration | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -109,14 +120,18 @@ export function ImageGenView() {
     const onSelect = (e: Event) => {
       const detail = (e as CustomEvent<{ id?: string }>).detail;
       const id = detail?.id;
-      if (!id) return;
+      if (!id || generatingRef.current) return;
       const item = useImageGenStore.getState().history.find((g) => g.id === id);
       if (item) loadIntoWorkbench(item);
     };
     const onNew = () => {
+      if (generatingRef.current) return;
+      resetReferenceRead();
       setSelected(null);
+      setDetailOpen(false);
       setError(null);
       setPrompt("");
+      setSize("auto");
       setReferenceImages([]);
       textareaRef.current?.focus();
     };
@@ -129,13 +144,15 @@ export function ImageGenView() {
   }, []);
 
   useEffect(() => {
-    if (!selected && history.length > 0) {
-      setSelected(history[0]);
-    }
-  }, [history, selected]);
+    // Deletion/clear in the sidebar must update the canvas. A new blank
+    // workbench must not immediately reselect the newest historical image.
+    setSelected((previous) => previous && !history.some((item) => item.id === previous.id)
+      ? history[0] ?? null : previous);
+  }, [history]);
 
   useEffect(() => {
     const onPaste = async (e: ClipboardEvent) => {
+      if (generatingRef.current) return;
       const files = Array.from(e.clipboardData?.files ?? []).filter((f) =>
         f.type.startsWith("image/"),
       );
@@ -154,10 +171,20 @@ export function ImageGenView() {
       const m = p?.models.find((x) => x.modelKey === imageModelKey);
       if (p && m) return { provider: p, model: m };
     }
-    return currentModel();
+    return null;
   }, [imageProviderId, imageModelKey, providers]);
 
+  const resetReferenceRead = () => {
+    draftEpoch.current += 1;
+    readingReferencesRef.current = false;
+    setReadingReferences(false);
+  };
+
   const loadIntoWorkbench = (item: ImageGeneration) => {
+    resetReferenceRead();
+    setError(null);
+    setDetailOpen(false);
+    setSize("auto");
     setSelected(item);
     setPrompt(item.prompt);
     setReferenceImages(getReferenceImages(item).slice(0, MAX_REFERENCE_IMAGES));
@@ -172,12 +199,29 @@ export function ImageGenView() {
   };
 
   const appendReferenceFiles = async (files: File[]) => {
+    if (!files.length || generatingRef.current || readingReferencesRef.current) return;
     setError(null);
+    const epoch = draftEpoch.current;
+    readingReferencesRef.current = true;
+    setReadingReferences(true);
     try {
-      const dataUrls = await Promise.all(files.map((f) => readFileAsDataUrl(f)));
+      if (referenceImagesRef.current.length + files.length > MAX_REFERENCE_IMAGES) {
+        throw new Error("一次最多支持 3 张参考图，请移除已有图片后再添加");
+      }
+      for (const file of files) {
+        if (!REFERENCE_IMAGE_TYPES.includes(file.type)) throw new Error("参考图仅支持 PNG、JPEG 或 WebP 格式");
+        if (file.size > MAX_REFERENCE_IMAGE_BYTES) throw new Error("每张参考图不能超过 10 MB");
+      }
+      const dataUrls = await Promise.all(files.map(readFileAsDataUrl));
+      if (epoch !== draftEpoch.current) return;
       setReferenceImages((prev) => [...prev, ...dataUrls].slice(0, MAX_REFERENCE_IMAGES));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "读取参考图失败");
+      if (epoch === draftEpoch.current) setError(err instanceof Error ? err.message : "读取参考图失败");
+    } finally {
+      if (epoch === draftEpoch.current) {
+        readingReferencesRef.current = false;
+        setReadingReferences(false);
+      }
     }
   };
 
@@ -195,7 +239,9 @@ export function ImageGenView() {
 
   const generate = async () => {
     const text = prompt.trim();
-    if (!text || generating || !imageModel) return;
+    if (!text || generatingRef.current || readingReferencesRef.current || !imageModel) return;
+
+    generatingRef.current = true;
 
     setGenerating(true);
     setError(null);
@@ -208,16 +254,25 @@ export function ImageGenView() {
         undefined,
         undefined,
         referenceImages.length > 0 ? referenceImages : undefined,
+        referenceImageMode,
       );
-      await addHistory(text, dataUrl, resolvedSize.label, referenceImages);
-      const item = useImageGenStore.getState().history[0];
-      if (item) setSelected(item);
+      // Keep a usable result even when the history database fails to save.
+      setSelected({ id: `unsaved-${Date.now()}`, prompt: text, imageData: dataUrl,
+        sizeLabel: resolvedSize.label, referenceImagesJson: JSON.stringify(referenceImages), createdAt: Date.now() });
+      try {
+        const item = await addHistory(text, dataUrl, resolvedSize.label, referenceImages);
+        setSelected(item);
+      } catch (err) {
+        setError(`图片已生成，但保存历史失败：${err instanceof Error ? err.message : String(err)}`);
+      }
       setPrompt("");
       setReferenceImages([]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      generatingRef.current = false;
       setGenerating(false);
+      textareaRef.current?.focus();
     }
   };
 
@@ -233,7 +288,8 @@ export function ImageGenView() {
     try {
       const a = document.createElement("a");
       a.href = selected.imageData;
-      a.download = `zhima-${selected.id}.png`;
+      const extension = selected.imageData.startsWith("data:image/jpeg;") ? "jpg" : selected.imageData.startsWith("data:image/webp;") ? "webp" : "png";
+      a.download = `zhima-${selected.id}.${extension}`;
       a.click();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -242,25 +298,27 @@ export function ImageGenView() {
 
   const deleteSelected = async () => {
     if (!selected) return;
-    await useImageGenStore.getState().remove(selected.id);
-    setSelected(useImageGenStore.getState().history[0] ?? null);
-    setDetailOpen(false);
+    try {
+      await useImageGenStore.getState().remove(selected.id);
+      setSelected(useImageGenStore.getState().history[0] ?? null);
+      setDetailOpen(false);
+    } catch (err) {
+      setError(`删除历史失败：${String(err)}`);
+    }
   };
 
   const reuseConfig = () => {
-    if (!selected) return;
-    setPrompt(selected.prompt);
-    setReferenceImages(getReferenceImages(selected).slice(0, MAX_REFERENCE_IMAGES));
-    setDetailOpen(false);
+    if (!selected || generatingRef.current) return;
+    loadIntoWorkbench(selected);
     textareaRef.current?.focus();
   };
 
   const editOutput = () => {
-    if (!selected) return;
-    useChatStore.getState().setComposerPrefill(
-      `参考这张图：${selected.prompt}`,
-    );
-    useWindowStore.getState().switchToChat();
+    if (!selected || generatingRef.current) return;
+    loadIntoWorkbench(selected);
+    setPrompt("");
+    setReferenceImages([selected.imageData]);
+    textareaRef.current?.focus();
   };
 
   const copyPrompt = async () => {
@@ -299,11 +357,8 @@ export function ImageGenView() {
             <p className="text-ui">正在创作中，请稍候…</p>
           </div>
         ) : selected ? (
-          <button
-            type="button"
-            onClick={() => setDetailOpen(true)}
-            className="group relative max-h-full max-w-full cursor-zoom-in overflow-hidden rounded-input border border-line bg-panel shadow-sm transition-shadow hover:shadow-md"
-          >
+          <div className="group relative max-h-full max-w-full overflow-hidden rounded-input border border-line bg-panel shadow-sm transition-shadow hover:shadow-md">
+            <button type="button" onClick={() => setDetailOpen(true)} className="block cursor-zoom-in">
             <img
               src={selected.imageData}
               alt={selected.prompt}
@@ -320,6 +375,7 @@ export function ImageGenView() {
                 </span>
               )}
             </div>
+            </button>
             {/* Top-right download */}
             <button
               type="button"
@@ -336,7 +392,7 @@ export function ImageGenView() {
             <span className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-panel-2/80 px-3 py-1 text-meta text-ink opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
               点击查看详情
             </span>
-          </button>
+          </div>
         ) : (
           <div className="flex flex-col items-center gap-4 text-center">
             <div className="grid h-16 w-16 place-items-center rounded-full bg-panel-2">
@@ -384,6 +440,7 @@ export function ImageGenView() {
                   className="h-full w-full object-cover"
                 />
                 <button
+                  disabled={generating}
                   onClick={() => removeReference(idx)}
                   className="absolute right-0.5 top-0.5 grid h-4 w-4 place-items-center rounded-full bg-danger text-white opacity-0 transition-opacity group-hover:opacity-100"
                 >
@@ -392,8 +449,9 @@ export function ImageGenView() {
               </div>
             ))}
             <button
-              onClick={() => setReferenceImages([])}
+              onClick={() => { resetReferenceRead(); setReferenceImages([]); }}
               className="grid h-12 w-12 shrink-0 place-items-center rounded-btn border border-dashed border-line text-ink-3 transition-colors hover:border-danger hover:text-danger"
+              disabled={generating}
               title="清空参考图"
             >
               <Trash2 size={14} />
@@ -406,23 +464,30 @@ export function ImageGenView() {
           <textarea
             ref={textareaRef}
             value={prompt}
+            disabled={generating}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={onKeyDown}
             rows={2}
-            placeholder="描述你想生成的图片，可输入 @ 来指定参考图…"
+            placeholder="描述你想生成的图片，可上传、粘贴或拖入参考图…"
             className="w-full resize-none bg-transparent px-3.5 pt-3 text-body leading-6 text-ink outline-none placeholder:text-ink-3"
           />
 
           {/* Param row */}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3.5 pb-2.5 pt-1">
-            <ParamPicker label="尺寸" value={size} onChange={setSize}
+            <ParamPicker label="尺寸" value={size} onChange={(value) => { if (!generatingRef.current) setSize(value); }}
               options={[{ value: "auto", label: "auto" }, ...SIZE_OPTIONS.map((s) => ({ value: s.value, label: s.label }))]} />
+            {referenceImages.length > 0 && (
+              <ParamPicker label="参考图接口" value={referenceImageMode}
+                onChange={(value) => { if (!generatingRef.current) setReferenceImageMode(value as ReferenceImageMode); }}
+                options={[{ value: "edits", label: "标准编辑（文件上传）" }, { value: "generations", label: "JSON 兼容（Data URL）" }]} />
+            )}
             <span className="text-meta text-ink-3">数量：1（每次仅生成 1 张，暂不支持批量）</span>
 
             <div className="ml-auto flex items-center gap-1">
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
+                disabled={generating || readingReferences || referenceImages.length >= MAX_REFERENCE_IMAGES}
                 title={
                   referenceImages.length >= MAX_REFERENCE_IMAGES
                     ? `最多 ${MAX_REFERENCE_IMAGES} 张参考图`
@@ -435,7 +500,7 @@ export function ImageGenView() {
               <button
                 type="button"
                 onClick={() => void generate()}
-                disabled={!prompt.trim() || generating || !imageModel}
+                disabled={!prompt.trim() || generating || readingReferences || !imageModel}
                 title="生成"
                 className="grid h-8 w-8 place-items-center rounded-btn bg-accent text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40"
               >
@@ -453,6 +518,10 @@ export function ImageGenView() {
           当前接口未声明质量、格式、透明背景和审核参数能力，暂不提供这些设置，也不会发送这些参数。
         </p>
 
+        {readingReferences && <p role="status" className="mt-2 text-meta text-ink-3">正在读取参考图，读取完成后才能生成…</p>}
+        {referenceImages.length > 0 && <p className="mt-1 text-meta text-ink-3">
+          将发送 {referenceImages.length} 张参考图；{referenceImageMode === "edits" ? "使用 /images/edits 文件上传" : "使用 /images/generations JSON（完整 Data URL）"}。请确认服务商和模型支持此接口；失败不会退回纯文生图。
+        </p>}
         {error && (
           <p className="mt-2 rounded-btn border border-[color-mix(in_srgb,var(--cf-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--cf-danger)_6%,transparent)] px-3 py-2 text-meta leading-5 text-danger">
             {error}
@@ -462,7 +531,8 @@ export function ImageGenView() {
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/png,image/jpeg,image/webp"
+          disabled={generating || readingReferences}
           multiple
           className="hidden"
           onChange={(e) => {
@@ -600,7 +670,7 @@ function ImageDetailDrawer({
           <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
             {/* Prompt */}
             <section>
-              <div className="mb-1 flex items-center justify-between">
+              <div className="mb-1 flex items-center justify-between pr-8">
                 <h3 className="text-meta font-medium text-ink-3">输入内容</h3>
                 <button
                   onClick={onCopyPrompt}

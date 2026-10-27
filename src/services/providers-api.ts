@@ -63,6 +63,8 @@ export function setImageModel(providerId: string, modelKey: string): Promise<voi
 
 
 
+export type ReferenceImageMode = "edits" | "generations";
+
 export function generateImage(
   providerId: string,
   modelKey: string,
@@ -71,9 +73,10 @@ export function generateImage(
   width?: number,
   height?: number,
   referenceImages?: string[],
+  referenceImageMode?: ReferenceImageMode,
 ): Promise<string> {
   return invoke<string>("generate_image", {
-    request: { providerId, modelKey, prompt, size, width, height, referenceImages },
+    request: { providerId, modelKey, prompt, size, width, height, referenceImages, referenceImageMode },
   });
 }
 

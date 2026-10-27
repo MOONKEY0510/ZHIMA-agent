@@ -53,7 +53,7 @@ describe("ImageGen UI protocol regressions", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_image_generation", expect.anything()));
     expect(invoke).toHaveBeenCalledWith("generate_image", { request: {
       providerId: "fixture", modelKey: "gpt-image-1", prompt: "测试图像", size: "1024x1792",
-      width: undefined, height: undefined, referenceImages: [referenceUrl],
+      width: undefined, height: undefined, referenceImages: [referenceUrl], referenceImageMode: "edits",
     } });
     expect(invoke).toHaveBeenCalledWith("save_image_generation", { request: {
       id: expect.any(String), prompt: "测试图像", imageData, sizeLabel: "1024x1792", referenceImagesJson: JSON.stringify([referenceUrl]),
@@ -62,6 +62,54 @@ describe("ImageGen UI protocol regressions", () => {
     expect(useImageGenStore.getState().history[0]).toBe(saved);
     expect(saved).not.toHaveProperty("extraParams");
     expect(screen.queryByText(/Cannot add property/)).not.toBeInTheDocument();
+  });
+
+  it("passes all references when the JSON compatibility protocol is selected", async () => {
+    const { container } = render(<ImageGenView />);
+    await waitFor(() => expect(useImageGenStore.getState().loaded).toBe(true));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "组合两张参考图" } });
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [
+      new File(["first"], "first.png", { type: "image/png" }),
+      new File(["second"], "second.jpg", { type: "image/jpeg" }),
+    ] } });
+    const firstUrl = (await screen.findByAltText("参考图 1")).getAttribute("src");
+    const secondUrl = (await screen.findByAltText("参考图 2")).getAttribute("src");
+    fireEvent.click(screen.getByText("参考图接口").closest("label")!.querySelector("button")!);
+    fireEvent.click(screen.getByRole("button", { name: "JSON 兼容（Data URL）" }));
+    fireEvent.click(screen.getByTitle("生成"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("generate_image", { request: {
+      providerId: "fixture", modelKey: "gpt-image-1", prompt: "组合两张参考图", size: "1024x1024",
+      width: undefined, height: undefined, referenceImages: [firstUrl, secondUrl], referenceImageMode: "generations",
+    } }));
+  });
+
+  it("restores historical references when reusing a configuration", async () => {
+    const historical = { ...saved, referenceImagesJson: JSON.stringify([imageData]) };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_image_generations") return [historical];
+      if (command === "generate_image") return imageData;
+      if (command === "save_image_generation") return saved;
+      return undefined;
+    });
+    render(<ImageGenView />);
+    fireEvent.click(await screen.findByAltText("测试图像"));
+    fireEvent.click(screen.getByRole("button", { name: "复用配置" }));
+    expect(screen.getByRole("textbox")).toHaveValue("测试图像");
+    expect(await screen.findByAltText("参考图 1")).toHaveAttribute("src", imageData);
+    fireEvent.click(screen.getByTitle("生成"));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("generate_image", { request: {
+      providerId: "fixture", modelKey: "gpt-image-1", prompt: "测试图像", size: "1024x1792",
+      width: undefined, height: undefined, referenceImages: [imageData], referenceImageMode: "edits",
+    } }));
+  });
+
+  it("reserves separate space for the prompt copy and dialog close buttons", async () => {
+    vi.mocked(invoke).mockResolvedValue([saved]);
+    render(<ImageGenView />);
+    fireEvent.click(await screen.findByAltText("测试图像"));
+    const detail = within(screen.getByRole("dialog", { name: "生成详情" }));
+    expect(detail.getByTitle("复制").parentElement).toHaveClass("pr-8");
+    expect(detail.getByTitle("关闭")).toBeInTheDocument();
   });
 
   it("does not display unused parameters or invented defaults in historical details", async () => {

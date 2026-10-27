@@ -1,7 +1,9 @@
-//! Text-to-image generation via OpenAI-compatible `/v1/images/generations`.
+//! Image generation and reference-image editing via OpenAI-compatible APIs.
 //!
 //! Also manages persisted generation history (`image_generations` table).
 
+use base64::Engine;
+use reqwest::multipart::{Form, Part};
 use serde::Deserialize;
 use tauri::State;
 
@@ -18,6 +20,17 @@ const MAX_IMAGE_DATA_BYTES: usize = 20 * 1024 * 1024; // 20 MB
 /// Upper bound on reference images per request (mirrors the image workbench
 /// composer, which caps the attached chips at three).
 const MAX_REFERENCE_IMAGES: usize = 3;
+const MAX_REFERENCE_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+
+/// Reference protocols are selected explicitly, never guessed from model names
+/// or retried as text-only generation when an image request fails.
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum ReferenceImageMode {
+    #[default]
+    Edits,
+    Generations,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,47 +50,164 @@ pub struct GenerateImageRequest {
     /// Reference images as base64 data URLs (image-to-image / reference generation).
     #[serde(default)]
     pub reference_images: Option<Vec<String>>,
+    #[serde(default)]
+    pub reference_image_mode: ReferenceImageMode,
 }
 
 fn default_image_size() -> String {
     "1024x1024".into()
 }
 
-/// Build the `image` field carrying the reference images.
-///
-/// A single reference keeps the plain-string shape, which every compatible API
-/// understands. Several references are sent as an array instead of dropping all
-/// but the first, which is the shape multi-reference providers expect.
-/// `Ok(None)` means there is no usable reference and the field stays unset.
-fn reference_image_value(refs: Vec<String>) -> Result<Option<serde_json::Value>, String> {
-    let images: Vec<String> = refs
-        .into_iter()
-        .map(strip_data_url_prefix)
-        .filter(|data| !data.is_empty())
-        .collect();
-    if images.len() > MAX_REFERENCE_IMAGES {
-        return Err(format!(
-            "一次最多支持 {MAX_REFERENCE_IMAGES} 张参考图（当前 {} 张）",
-            images.len()
-        ));
-    }
-    match images.len() {
-        0 => Ok(None),
-        1 => Ok(Some(serde_json::Value::String(
-            images.into_iter().next().unwrap_or_default(),
-        ))),
-        _ => Ok(Some(serde_json::Value::Array(
-            images.into_iter().map(serde_json::Value::String).collect(),
-        ))),
-    }
+struct ReferenceImage {
+    data_url: String,
+    bytes: Vec<u8>,
+    mime: &'static str,
+    extension: &'static str,
 }
 
-/// Drop the `data:image/png;base64,` prefix so only the payload is sent.
-fn strip_data_url_prefix(value: String) -> String {
-    value
-        .strip_prefix("data:")
-        .and_then(|rest| rest.split_once(',').map(|(_, data)| data.to_string()))
-        .unwrap_or(value)
+fn parse_reference_images(refs: &[String]) -> Result<Vec<ReferenceImage>, String> {
+    if refs.len() > MAX_REFERENCE_IMAGES {
+        return Err(format!(
+            "一次最多支持 {MAX_REFERENCE_IMAGES} 张参考图（当前 {} 张）",
+            refs.len()
+        ));
+    }
+    refs.iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let invalid = || {
+                format!(
+                    "参考图 {} 无效，请重新上传 PNG、JPEG 或 WebP 图片",
+                    index + 1
+                )
+            };
+            let (header, data) = value.split_once(',').ok_or_else(invalid)?;
+            let (mime, extension) = match header {
+                "data:image/png;base64" => ("image/png", "png"),
+                "data:image/jpeg;base64" => ("image/jpeg", "jpg"),
+                "data:image/webp;base64" => ("image/webp", "webp"),
+                _ => return Err(invalid()),
+            };
+            if data.len() > MAX_REFERENCE_IMAGE_BYTES.div_ceil(3) * 4 {
+                return Err(format!("参考图 {} 超过 10 MB", index + 1));
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|_| invalid())?;
+            if bytes.is_empty() {
+                return Err(invalid());
+            }
+            if bytes.len() > MAX_REFERENCE_IMAGE_BYTES {
+                return Err(format!("参考图 {} 超过 10 MB", index + 1));
+            }
+            Ok(ReferenceImage {
+                data_url: value.clone(),
+                bytes,
+                mime,
+                extension,
+            })
+        })
+        .collect()
+}
+
+/// Pure request construction shared by the command and wire-level regression tests.
+fn image_request(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    request: &GenerateImageRequest,
+) -> Result<reqwest::RequestBuilder, String> {
+    if request.prompt.trim().is_empty() {
+        return Err("请输入图像描述".into());
+    }
+    let refs = parse_reference_images(request.reference_images.as_deref().unwrap_or_default())?;
+    let base = base_url.trim_end_matches('/');
+    let mut body = serde_json::json!({
+        "model": request.model_key,
+        "prompt": request.prompt.trim(),
+        "n": 1,
+        "response_format": "b64_json",
+    });
+    match (request.width, request.height) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => {
+            body["width"] = w.into();
+            body["height"] = h.into();
+        }
+        (None, None) => {
+            body["size"] = request.size.clone().into();
+        }
+        _ => return Err("自定义宽度和高度必须同时设置且大于 0".into()),
+    }
+
+    // Native GPT Image APIs always return base64 and reject response_format.
+    // This is a documented protocol exception, not a guess about optional
+    // quality/background/moderation capabilities on compatible providers.
+    if request.model_key.starts_with("gpt-image-") {
+        body.as_object_mut().unwrap().remove("response_format");
+    }
+
+    if !refs.is_empty() && request.reference_image_mode == ReferenceImageMode::Edits {
+        let mut form = Form::new();
+        for (key, value) in body.as_object().unwrap() {
+            let value = value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string());
+            form = form.text(key.clone(), value);
+        }
+        let field = if refs.len() == 1 { "image" } else { "image[]" };
+        for (index, image) in refs.into_iter().enumerate() {
+            let part = Part::bytes(image.bytes)
+                .file_name(format!("reference-{}.{}", index + 1, image.extension))
+                .mime_str(image.mime)
+                .map_err(|e| format!("构造参考图失败: {e}"))?;
+            form = form.part(field, part);
+        }
+        return Ok(client
+            .post(format!("{base}/images/edits"))
+            .bearer_auth(api_key)
+            .multipart(form));
+    }
+
+    if !refs.is_empty() {
+        // JSON reference providers require complete data URLs, including MIME.
+        body["image"] = if refs.len() == 1 {
+            refs[0].data_url.clone().into()
+        } else {
+            refs.into_iter()
+                .map(|image| image.data_url)
+                .collect::<Vec<_>>()
+                .into()
+        };
+    }
+    Ok(client
+        .post(format!("{base}/images/generations"))
+        .bearer_auth(api_key)
+        .json(&body))
+}
+
+fn image_response(text: &str) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("解析图像响应失败: {e}"))?;
+    let b64 = value
+        .get("data")
+        .and_then(|d| d.get(0))
+        .and_then(|d| d.get("b64_json"))
+        .and_then(|b| b.as_str())
+        .filter(|b| !b.is_empty())
+        .ok_or_else(|| {
+            "图像生成未返回有效的 base64 图片数据，请确认服务商支持当前图像接口".to_string()
+        })?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|_| "图像响应包含无效的 base64 数据".to_string())?;
+    let mime = match image::guess_format(&bytes) {
+        Ok(image::ImageFormat::Png) => "image/png",
+        Ok(image::ImageFormat::Jpeg) => "image/jpeg",
+        Ok(image::ImageFormat::WebP) => "image/webp",
+        _ => return Err("图像响应不是支持的 PNG、JPEG 或 WebP 图片".into()),
+    };
+    Ok(format!("data:{mime};base64,{b64}"))
 }
 
 /// Generate an image and return it as a base64-encoded PNG/JPEG data URL.
@@ -87,8 +217,7 @@ pub async fn generate_image(
     config: State<'_, ConfigStore>,
     request: GenerateImageRequest,
 ) -> Result<String, String> {
-    // Resolve provider + API key + base URL.
-    let (url, api_key, model) = config.read(|cfg| {
+    let (base_url, api_key) = config.read(|cfg| {
         let provider = cfg
             .providers
             .iter()
@@ -96,71 +225,23 @@ pub async fn generate_image(
             .ok_or_else(|| "图像模型服务商不存在".to_string())?;
         let key = secrets::get_api_key(&provider.id)?
             .ok_or_else(|| "图像模型服务商未配置 API Key".to_string())?;
-        let base = provider.base_url.trim_end_matches('/').to_string();
-        let url = format!("{base}/images/generations");
-        Ok::<_, String>((url, key, request.model_key.clone()))
+        Ok::<_, String>((provider.base_url.clone(), key))
     })?;
 
-    if request.prompt.trim().is_empty() {
-        return Err("请输入图像描述".into());
-    }
-
-    // Build the request body. Reference images are sent as base64 in the
-    // `image` field — the de facto convention used by most OpenAI-compatible
-    // Chinese image APIs (CogView, Wanxiang, Spark, Seedream, etc.).
-    let mut body = serde_json::json!({
-        "model": model,
-        "prompt": request.prompt.trim(),
-        "n": 1,
-        "response_format": "b64_json",
-    });
-
-    if let Some(refs) = request.reference_images {
-        if let Some(value) = reference_image_value(refs)? {
-            body["image"] = value;
-        }
-    }
-
-    // Custom dimensions take precedence over the preset `size` string.
-    // Many OpenAI-compatible image APIs (SDXL, CogView, …) accept
-    // width/height directly; DALL·E 3 only understands the `size` string.
-    match (request.width, request.height) {
-        (Some(w), Some(h)) => {
-            body["width"] = serde_json::Value::Number(serde_json::Number::from(w));
-            body["height"] = serde_json::Value::Number(serde_json::Number::from(h));
-        }
-        _ => {
-            body["size"] = serde_json::Value::String(request.size);
-        }
-    }
-
     let client = state.http.lock().unwrap().clone();
-    let resp = client
-        .post(&url)
-        .bearer_auth(&api_key)
-        .json(&body)
+    let resp = image_request(&client, &base_url, &api_key, &request)?
         .send()
         .await
         .map_err(|e| format!("图像生成请求失败: {}", brief(&e)))?;
 
     let status = resp.status().as_u16();
     let text = read_body_capped(resp, MAX_IMAGE_RESPONSE_BYTES).await?;
-    if status != 200 {
+    if !(200..300).contains(&status) {
         let (_, message, _) = crate::api::openai_chat::map_http_error(status, &text);
         return Err(message);
     }
 
-    // Extract base64 from `{ data: [{ b64_json: "..." }] }`.
-    let v: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("解析图像响应失败: {e}"))?;
-    let b64 = v
-        .get("data")
-        .and_then(|d| d.get(0))
-        .and_then(|d| d.get("b64_json"))
-        .and_then(|b| b.as_str())
-        .ok_or_else(|| "图像生成未返回有效数据".to_string())?;
-
-    Ok(format!("data:image/png;base64,{b64}"))
+    image_response(&text)
 }
 
 /// Save a generated image into history.
@@ -188,6 +269,17 @@ pub fn save_image_generation(
             "图片数据过大（超过 {} MB）",
             MAX_IMAGE_DATA_BYTES / 1024 / 1024
         ));
+    }
+
+    if let Some(json) = &request.reference_images_json {
+        let max_json_bytes =
+            MAX_REFERENCE_IMAGES * (MAX_REFERENCE_IMAGE_BYTES.div_ceil(3) * 4 + 64);
+        if json.len() > max_json_bytes {
+            return Err("参考图数据过大".into());
+        }
+        let refs: Vec<String> =
+            serde_json::from_str(json).map_err(|_| "参考图历史数据格式无效".to_string())?;
+        parse_reference_images(&refs)?;
     }
 
     // The frontend generates the id (same convention as conversation ids).
@@ -228,46 +320,122 @@ pub fn clear_image_generations(db: State<'_, Database>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http_body_util::BodyExt;
 
-    const PNG: &str = "data:image/png;base64,AAAA";
-    const JPG: &str = "data:image/jpeg;base64,BBBB";
+    const PNG_REFERENCE: &str = "data:image/png;base64,iVBORw0KGgo=";
+    const JPEG_REFERENCE: &str = "data:image/jpeg;base64,/9j/";
 
-    #[test]
-    fn no_usable_reference_leaves_field_unset() {
-        assert!(reference_image_value(Vec::new()).unwrap().is_none());
-        assert!(reference_image_value(vec![String::new()])
+    fn request(refs: Vec<&str>, mode: ReferenceImageMode) -> GenerateImageRequest {
+        GenerateImageRequest {
+            provider_id: "fixture".into(),
+            model_key: "gpt-image-1".into(),
+            prompt: "改成蓝色背景".into(),
+            size: "1024x1024".into(),
+            width: None,
+            height: None,
+            reference_images: Some(refs.into_iter().map(str::to_owned).collect()),
+            reference_image_mode: mode,
+        }
+    }
+
+    fn build(request: &GenerateImageRequest) -> reqwest::Request {
+        image_request(
+            &reqwest::Client::new(),
+            "https://fixture.invalid/v1/",
+            "secret",
+            request,
+        )
+        .unwrap()
+        .build()
+        .unwrap()
+    }
+
+    fn json_body(request: &reqwest::Request) -> serde_json::Value {
+        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap()
+    }
+
+    async fn body_bytes(mut request: reqwest::Request) -> Vec<u8> {
+        request
+            .body_mut()
+            .take()
             .unwrap()
-            .is_none());
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec()
     }
 
     #[test]
-    fn single_reference_keeps_string_shape() {
-        let value = reference_image_value(vec![PNG.to_string()])
-            .unwrap()
-            .unwrap();
-        assert_eq!(value, serde_json::json!("AAAA"));
+    fn generations_json_contains_every_reference_as_complete_data_url() {
+        let request = build(&request(
+            vec![PNG_REFERENCE, JPEG_REFERENCE],
+            ReferenceImageMode::Generations,
+        ));
+        assert_eq!(request.url().path(), "/v1/images/generations");
+        let body = json_body(&request);
+        assert_eq!(
+            body["image"],
+            serde_json::json!([PNG_REFERENCE, JPEG_REFERENCE])
+        );
+        assert_eq!(body["prompt"], "改成蓝色背景");
     }
 
     #[test]
-    fn multiple_references_use_array_shape() {
-        let value = reference_image_value(vec![PNG.to_string(), JPG.to_string()])
-            .unwrap()
-            .unwrap();
-        assert_eq!(value, serde_json::json!(["AAAA", "BBBB"]));
+    fn generations_json_keeps_single_reference_shape() {
+        let request = build(&request(
+            vec![PNG_REFERENCE],
+            ReferenceImageMode::Generations,
+        ));
+        assert_eq!(json_body(&request)["image"], PNG_REFERENCE);
     }
 
     #[test]
-    fn raw_base64_passes_through() {
-        let value = reference_image_value(vec!["CCCC".to_string()])
+    fn no_reference_stays_on_generations_without_image_field() {
+        let request = build(&request(Vec::new(), ReferenceImageMode::Edits));
+        assert_eq!(request.url().path(), "/v1/images/generations");
+        assert!(json_body(&request).get("image").is_none());
+    }
+
+    #[tokio::test]
+    async fn edits_multipart_uploads_the_actual_image_bytes() {
+        let request = build(&request(vec![PNG_REFERENCE], ReferenceImageMode::Edits));
+        assert_eq!(request.url().path(), "/v1/images/edits");
+        assert!(request.headers()[reqwest::header::CONTENT_TYPE]
+            .to_str()
             .unwrap()
-            .unwrap();
-        assert_eq!(value, serde_json::json!("CCCC"));
+            .starts_with("multipart/form-data; boundary="));
+        let body = body_bytes(request).await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(text.matches("name=\"image\"").count(), 1);
+        assert!(text.contains("filename=\"reference-1.png\""));
+        assert!(text.contains("name=\"prompt\""));
+        assert!(text.contains("改成蓝色背景"));
+        assert!(body.windows(8).any(|bytes| bytes == b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[tokio::test]
+    async fn edits_multipart_uploads_all_images_with_array_fields() {
+        let request = build(&request(
+            vec![PNG_REFERENCE, JPEG_REFERENCE],
+            ReferenceImageMode::Edits,
+        ));
+        let body = body_bytes(request).await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(text.matches("name=\"image[]\"").count(), 2);
+        assert!(text.contains("filename=\"reference-1.png\""));
+        assert!(text.contains("filename=\"reference-2.jpg\""));
+        assert!(body.windows(2).any(|bytes| bytes == b"\xff\xd8"));
     }
 
     #[test]
-    fn references_beyond_cap_are_rejected() {
-        let refs = vec![PNG.to_string(); MAX_REFERENCE_IMAGES + 1];
-        let err = reference_image_value(refs).unwrap_err();
-        assert!(err.contains(&format!("最多支持 {MAX_REFERENCE_IMAGES} 张参考图")));
+    fn malformed_reference_is_rejected_instead_of_falling_back_to_text_only() {
+        let result = image_request(
+            &reqwest::Client::new(),
+            "https://fixture.invalid/v1",
+            "secret",
+            &request(vec!["not-a-data-url"], ReferenceImageMode::Edits),
+        );
+        assert!(result.is_err());
     }
 }

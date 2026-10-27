@@ -838,7 +838,7 @@ function ImageGenSection() {
   return (
     <SettingsSection
       title="图像生成"
-      description="配置后可在文生图模式中生成图片（调用 /v1/images/generations 接口）。"
+      description="配置图像模型后可使用生图工作台；纯文本调用 /images/generations，参考图默认通过 /images/edits 上传，也可在工作台选择 JSON 兼容接口。"
     >
       <FormRow label="文生图模型">
         <Dropdown

@@ -9,7 +9,7 @@ interface ImageGenState {
   loaded: boolean;
   history: ImageGeneration[];
   load: () => Promise<void>;
-  add: (prompt: string, imageData: string, sizeLabel?: string, referenceImages?: string[]) => Promise<void>;
+  add: (prompt: string, imageData: string, sizeLabel?: string, referenceImages?: string[]) => Promise<ImageGeneration>;
   remove: (id: string) => Promise<void>;
   clear: () => Promise<void>;
 }
@@ -30,6 +30,7 @@ export const useImageGenStore = create<ImageGenState>((set) => ({
   add: async (prompt, imageData, sizeLabel, referenceImages) => {
     const item = await api.saveImageGeneration(nextId(), prompt, imageData, sizeLabel, referenceImages);
     set((state) => ({ history: [item, ...state.history] }));
+    return item;
   },
 
   remove: async (id) => {
