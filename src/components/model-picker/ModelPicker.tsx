@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { Check, ChevronDown, Search, Settings2, Star } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Check, ChevronDown, Search, Settings2, Star, X } from "lucide-react";
 import { useProvidersStore } from "../../stores/providers-store";
 import { useWindowStore } from "../../stores/window-store";
 import { useChatStore, type ModelTarget } from "../../stores/chat-store";
@@ -9,6 +10,12 @@ import type { ModelEntry, ProviderView } from "../../types";
 
 /** Maximum models compared in one turn (mirrors the backend cap). */
 const MAX_COMPARE = 4;
+const MENU_MAX_HEIGHT = 480;
+const MENU_GAP = 8;
+const MENU_VIEWPORT_MARGIN = 12;
+const COMPACT_WINDOW_MAX_HEIGHT = 400;
+/** Keep the popover below the 36px title bar, with an 8px viewport margin. */
+const MENU_SAFE_TOP = 44;
 
 /**
  * Composer-level model switcher (对话级模型).
@@ -38,8 +45,13 @@ export function ModelPicker() {
     (s) => s.assistants.find((a) => a.id === activeAssistantId) ?? null,
   );
 
+  const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [menuMaxHeight, setMenuMaxHeight] = useState(MENU_MAX_HEIGHT);
+  const [compactLayout, setCompactLayout] = useState(
+    () => window.innerHeight <= COMPACT_WINDOW_MAX_HEIGHT,
+  );
   // Multi-model comparison (P1-6): pick up to MAX_COMPARE models.
   const compareTargets = useChatStore((s) => s.compareTargets);
   const setCompareTargets = useChatStore((s) => s.setCompareTargets);
@@ -89,6 +101,34 @@ export function ModelPicker() {
     if (!open) setQuery("");
   }, [open]);
 
+  useLayoutEffect(() => {
+    if (!open) return;
+    const updateMenuLayout = () => {
+      const compact = window.innerHeight <= COMPACT_WINDOW_MAX_HEIGHT;
+      setCompactLayout(compact);
+      if (compact) return;
+
+      const viewportMax = Math.min(
+        MENU_MAX_HEIGHT,
+        Math.round(window.innerHeight * 0.7),
+      );
+      const rect = rootRef.current?.getBoundingClientRect();
+      // jsdom and other non-layout environments have no meaningful rect.
+      if (!rect || rect.height === 0) {
+        setMenuMaxHeight(viewportMax);
+        return;
+      }
+      const availableAbove = Math.max(
+        0,
+        Math.floor(rect.top - MENU_SAFE_TOP - MENU_GAP),
+      );
+      setMenuMaxHeight(Math.min(viewportMax, availableAbove));
+    };
+    updateMenuLayout();
+    window.addEventListener("resize", updateMenuLayout);
+    return () => window.removeEventListener("resize", updateMenuLayout);
+  }, [open]);
+
   const q = query.trim().toLowerCase();
   const matches = (p: ProviderView, m: ModelEntry) =>
     !q ||
@@ -132,7 +172,7 @@ export function ModelPicker() {
           : "未选择模型";
 
   return (
-    <div className="relative shrink-0">
+    <div ref={rootRef} className="relative shrink-0">
       <button
         type="button"
         onClick={openPicker}
@@ -148,15 +188,30 @@ export function ModelPicker() {
         <ChevronDown size={12} className="shrink-0" />
       </button>
 
-      {open && (
+      {open && createPortal(
         <>
           {/* Click-away layer covering the whole window */}
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
 
-          {/* Opens upward and right-aligned: the picker now sits on the
-              composer's right edge, next to the send button. */}
-          <div className="cf-menu-pop absolute bottom-8 right-0 z-40 flex max-h-[min(70vh,30rem)] w-[min(88vw,26rem)] flex-col overflow-hidden rounded-menu border border-line bg-panel shadow-menu">
-            <div className="flex items-center gap-2 border-b border-line px-3 py-2">
+          {/* Quick mode needs a usable model list, not a compressed popover:
+              occupy the window below the title bar. Larger windows keep the
+              composer-anchored, upward-opening menu. */}
+          <div
+            role="dialog"
+            aria-label="选择模型"
+            style={compactLayout
+              ? {
+                  top: MENU_SAFE_TOP,
+                  right: MENU_VIEWPORT_MARGIN,
+                  bottom: MENU_VIEWPORT_MARGIN,
+                  left: MENU_VIEWPORT_MARGIN,
+                }
+              : { bottom: `calc(100% + ${MENU_GAP}px)`, maxHeight: menuMaxHeight }}
+            className={`cf-menu-pop z-40 flex flex-col overflow-hidden rounded-menu border border-line bg-panel shadow-menu ${
+              compactLayout ? "fixed" : "absolute right-0 w-[min(88vw,26rem)]"
+            }`}
+          >
+            <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
               <Search size={13} className="text-ink-2" />
               <input
                 autoFocus
@@ -172,7 +227,7 @@ export function ModelPicker() {
                   }
                 }}
                 placeholder="搜索模型或服务商…"
-                className="flex-1 bg-transparent text-meta text-ink outline-none placeholder:text-ink-2"
+                className="min-w-0 flex-1 bg-transparent text-meta text-ink outline-none placeholder:text-ink-2"
               />
               <button
                 type="button"
@@ -186,9 +241,20 @@ export function ModelPicker() {
               >
                 对比
               </button>
+              {compactLayout && (
+                <button
+                  type="button"
+                  title="关闭模型选择"
+                  aria-label="关闭模型选择"
+                  onClick={() => setOpen(false)}
+                  className="grid h-6 w-6 shrink-0 place-items-center rounded-btn text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+                >
+                  <X size={13} />
+                </button>
+              )}
             </div>
 
-            <div className="flex-1 overflow-y-auto py-1">
+            <div className="min-h-0 flex-1 overflow-y-auto py-1">
               {providers.length === 0 && (
                 <p className="px-3 py-4 text-center text-meta text-ink-2">
                   还没有服务商，请先在设置中添加
@@ -235,7 +301,7 @@ export function ModelPicker() {
             </div>
 
             {compareMode ? (
-              <div className="flex items-center justify-between gap-2 border-t border-line px-3 py-2">
+              <div className="flex shrink-0 items-center justify-between gap-2 border-t border-line px-3 py-2">
                 <span className="text-ui text-ink-2">
                   已选 {draft.length}/{MAX_COMPARE}
                 </span>
@@ -268,13 +334,14 @@ export function ModelPicker() {
                   setOpen(false);
                   openSettings();
                 }}
-                className="flex items-center gap-1.5 border-t border-line px-3 py-2 text-meta text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
+                className="flex shrink-0 items-center gap-1.5 border-t border-line px-3 py-2 text-meta text-ink-2 transition-colors hover:bg-panel-2 hover:text-ink"
               >
                 <Settings2 size={12} /> 管理服务商与模型…
               </button>
             )}
           </div>
-        </>
+        </>,
+        compactLayout ? document.body : rootRef.current ?? document.body,
       )}
     </div>
   );
